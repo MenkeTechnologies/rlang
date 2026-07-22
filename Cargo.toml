@@ -1,0 +1,83 @@
+[package]
+name = "rlang"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
+description = "R as a fusevm frontend: a lexer/parser and compiler to fusevm::Chunk on an RHost vector heap, with no bespoke VM or JIT — a compiled standalone R runtime"
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/rlang"
+homepage = "https://menketechnologies.github.io/rlang/"
+documentation = "https://docs.rs/rlang"
+readme = "README.md"
+keywords = ["r", "statistics", "interpreter", "jit", "fusevm"]
+categories = ["command-line-utilities", "compilers"]
+publish = true
+# Dev-only artifacts kept out of the published crate. Consumers get src, the
+# `Rscript` binary, the man page and completions — not the HUD site, CI config,
+# integration corpus, or the bug tracker. None are referenced at compile time.
+exclude = [
+    "/docs/",
+    "/.github/",
+    "/tests/",
+    "/examples/",
+    "/BUGS.md",
+]
+
+# rlang is a standalone crate, not a workspace member. An explicit empty
+# `[workspace]` stops cargo walking up to the MenkeTechnologiesMeta parent.
+[workspace]
+
+[lib]
+name = "rlang"
+path = "src/lib.rs"
+# staticlib so an AOT object can be linked against the rlang runtime (the
+# extension-op dispatch + the fusevm AOT runtime) into a standalone native
+# executable via `Rscript --build`.
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "Rscript"
+path = "src/main.rs"
+
+[dependencies]
+# R executes on fusevm. rlang is a pure frontend: it lowers R to fusevm bytecode
+# (src/compiler.rs) and hosts the R vector heap (src/host.rs, reached from
+# fusevm's builtin dispatch). Every R value rides through the VM as a
+# `Value::Obj(u32)` handle into that heap, because in R even a scalar is a
+# length-1 vector with attributes.
+#
+# `jit-disk-cache` turns on fusevm's three-tier Cranelift JIT *and* its
+# persistent on-disk cache of compiled native code, so hot R loops trace-compile
+# and warm runs skip recompilation. `aot` enables the ahead-of-time emitter
+# behind `Rscript --build`.
+fusevm = { version = "0.14.10", features = ["jit", "jit-disk-cache", "aot"] }
+
+clap = { version = "4.5", features = ["derive", "cargo"] }
+# R vectors and lists carry ordered `names`; attribute maps are insertion-ordered
+# and observable (`attributes(x)`), so IndexMap is the right container.
+indexmap = "2"
+
+# rkyv-backed bytecode cache at ~/.rlang/scripts.rkyv (mirrors zshrs/rubylang):
+# the outer shard is a zero-copy rkyv archive; the inner per-script fusevm::Chunk
+# is bincode (fusevm::Chunk is serde-owned, not rkyv::Archive).
+rkyv = { version = "0.7", features = ["validation", "archive_le", "size_32"] }
+bincode = "1.3"
+serde = { version = "1", features = ["derive"] }
+dirs = "5"
+
+# LSP (`Rscript --lsp`) over stdio.
+lsp-server = "0.7.9"
+lsp-types = "0.97.0"
+serde_json = "1"
+libc = "0.2"
+
+# Interactive REPL (`Rscript --repl` / TTY fallthrough).
+reedline = "0.47.0"
+nu-ansi-term = "0.50"
+
+# Glob matcher for the AOP call-intercept registry (src/intercepts.rs).
+glob = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
