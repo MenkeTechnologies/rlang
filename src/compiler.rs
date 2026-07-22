@@ -8,8 +8,8 @@
 //! VM's native `Add` could do.
 //!
 //! Assignment is compiled the way R defines it: `f(x) <- v` is
-//! `x <- \`f<-\`(x, v)`, and `x[i] <- v` rebuilds `x` and re-binds it, so nested
-//! targets like `x$a[[2]] <- v` unwind outward-in through the same two rules.
+//! `x <- \`f<-\`(x, v)`, and `x\[i\] <- v` rebuilds `x` and re-binds it, so nested
+//! targets like `x$a\[\[2\]\] <- v` unwind outward-in through the same two rules.
 
 use crate::ast::*;
 use crate::host::{ops, ClosureDef};
