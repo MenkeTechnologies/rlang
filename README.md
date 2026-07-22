@@ -67,7 +67,7 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
   registry, the same design as zshrs's function intercepts.
 - **Editor-ready** — an LSP server over stdio and a REPL on a persistent host,
   where a function defined at one prompt completes at the next.
-- **Differential parity** — a 44-snippet corpus diffed live against the reference
+- **Differential parity** — a 48-snippet corpus diffed live against the reference
   `Rscript`, frozen and replayed in CI with no R installed.
 
 ---

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="rlang — R in Rust. A compiled R runtime: source lexed and parsed to an AST, lowered to fusevm bytecode, and run on the shared bytecode VM with a three-tier Cranelift JIT. MIT licensed.">
+  <title>rlang — Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 68rem; }
+    .docs-build-line {
+      margin: 0.35rem 0 0;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.03em;
+      max-width: 42rem;
+      opacity: 0.75;
+    }
+    .hub-scheme-strip {
+      border-bottom: 1px dashed var(--border);
+      background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+      padding: 0.55rem 1.5rem 0.65rem;
+      position: relative;
+    }
+    .hub-scheme-strip-inner {
+      max-width: 68rem;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .hub-scheme-strip .hud-scheme-label {
+      flex: 0 0 auto;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--accent);
+      text-align: left;
+    }
+    .hub-scheme-strip .scheme-grid {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    @media (max-width: 720px) {
+      .hub-scheme-strip-inner { flex-direction: column; align-items: stretch; }
+      .hub-scheme-strip .scheme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .cat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+      gap: 0.6rem;
+      margin: 0.7rem 0;
+    }
+    .cat-card {
+      border: 1px solid var(--border);
+      border-left: 2px solid var(--cyan);
+      padding: 0.6rem 0.8rem;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      border-radius: 2px;
+    }
+    .cat-card h4 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin: 0 0 0.35rem;
+    }
+    .cat-card p { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+    .cat-card code { font-size: 11px; color: var(--accent-light); }
+    .reflection-table { width: 100%; border-collapse: collapse; margin: 0.6rem 0 0.2rem; font-size: 12px; }
+    .reflection-table th {
+      background: var(--bg-secondary); color: var(--cyan);
+      font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700;
+      letter-spacing: 1px; text-transform: uppercase; text-align: left;
+      padding: 6px 10px; border: 1px solid var(--border);
+    }
+    .reflection-table td { padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+    .reflection-table td code { color: var(--accent-light); background: var(--bg); }
+    .status-pill {
+      display: inline-block; font-family: 'Orbitron', sans-serif; font-size: 9px;
+      font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+      padding: 2px 7px; border-radius: 2px; border: 1px solid var(--border);
+    }
+    .status-ported { color: var(--cyan); border-color: var(--cyan); }
+    .status-implemented { color: var(--green); border-color: var(--green); }
+    .status-progress { color: var(--accent-light); }
+    .status-planned { color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// RLANG — R IN RUST</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Docs</span>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering Report</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line" id="rlangBuildLine">rlang v0.1.0 · R on fusevm · lex/parse → AST → bytecode → Cranelift JIT · a fusevm language host (with zshrs, stryke, awkrs, elisp, rubylang) · MIT · in active development</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/rlang/issues" target="_blank" rel="noopener noreferrer">Issues</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>RLANG REFERENCE</h2>
+      <p class="tutorial-subtitle">A compiled R runtime written in Rust. Source is lexed and parsed to an AST, lowered to <code>fusevm</code> bytecode, and executed on the same language-agnostic VM + three-tier Cranelift JIT that hosts <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>elisp</code>, and <code>rubylang</code>. <strong>In active development.</strong></p>
+
+      <section class="tutorial-section">
+        <h2>What it is</h2>
+        <p>GNU R evaluates R by walking a parse tree in C. <code>rlang</code> runs R programs as ordinary compiled bytecode: it lexes and parses the source, lowers it to <code>fusevm</code> instructions, and lets the shared engine execute and JIT-compile them. There is no bespoke VM or tree-walker — <code>if</code>, <code>for</code>, <code>while</code>, <code>repeat</code>, <code>&amp;&amp;</code>, and <code>||</code> lower to native fusevm jumps over native integer counters so the tracing JIT sees ordinary loops, while R-specific behaviour (vectors, attributes, recycling, environments, S3 dispatch) is served by the runtime host.</p>
+        <p>It is another language hosted on <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a>, the shared bytecode VM and Cranelift JIT behind <code>zshrs</code> (the shell), <code>stryke</code> (the language), <code>awkrs</code> (AWK), <code>elisp</code> (Emacs Lisp), and <code>rubylang</code> (Ruby). rlang carries no VM or JIT of its own. The binary is named <code>Rscript</code>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Architecture</h2>
+        <p>The pipeline mirrors how <code>zshrs</code> hosts zsh and <code>rubylang</code> hosts Ruby:</p>
+        <pre>R source  →  lexer  →  parser (AST)  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
+                                                 │
+                                RHost heap (vectors, attributes, environments, closures)</pre>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>fusevm-hosted</h4><p>No local <code>vm.rs</code> / <code>jit.rs</code>. R is lowered to fusevm bytecode and executed on the shared three-tier Cranelift JIT; <code>jit-disk-cache</code> persists native code across runs.</p></div>
+          <div class="cat-card"><h4>Native control flow</h4><p>Loops and branches lower to native fusevm jumps over native integer counters (<code>src/compiler.rs</code>), so hot loops trace-compile instead of re-entering a builtin per iteration.</p></div>
+          <div class="cat-card"><h4>Everything is a vector</h4><p>There are no scalars: <code>1</code> is a length-one double vector. Every value is a <code>Value::Obj</code> handle into the <code>RHost</code> heap because any value can carry attributes.</p></div>
+          <div class="cat-card"><h4>Environments by reference</h4><p>Frames are <code>Rc&lt;RefCell&lt;..&gt;&gt;</code> environments chained to their enclosure — R's lexical scoping, and what lets <code>&lt;&lt;-</code> reach the defining frame.</p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>The value model</h2>
+        <p>R's semantics are not object semantics; they are vector semantics. rlang implements them directly rather than approximating them.</p>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>Recycling &amp; NA</h4><p>Every operator recycles the shorter operand and propagates <code>NA</code> through all four atomic types. Three-valued logic is honoured: <code>NA &amp; FALSE</code> is <code>FALSE</code>, <code>NA | TRUE</code> is <code>TRUE</code>.</p></div>
+          <div class="cat-card"><h4>Copy-on-modify</h4><p><code>z &lt;- y; z[1] &lt;- 99</code> leaves <code>y</code> untouched. Assignment into an index rebuilds the container and re-binds the name, which is what R's semantics actually specify.</p></div>
+          <div class="cat-card"><h4>Attributes</h4><p><code>names</code>, <code>dim</code>, <code>class</code>, and arbitrary <code>attr()</code> ride along on every value in an insertion-ordered map, preserved through arithmetic and subsetting.</p></div>
+          <div class="cat-card"><h4>R truthiness</h4><p>A condition must be a single non-<code>NA</code> logical, so conditions normalize through a <code>TRUTHY</code> host op before a native branch rather than using the VM's numeric truthiness.</p></div>
+        </div>
+<pre>y &lt;- c(1, 2, 3)
+z &lt;- y
+z[1] &lt;- 99
+print(y)                              # [1] 1 2 3
+print(z)                              # [1] 99  2  3
+
+print(c(1, 2, 3) + c(10, 20, 30, 40, 50, 60))
+# [1] 11 22 33 41 52 63
+print(c(1, NA, 3) * 2)                # [1]  2 NA  6
+print(NA &amp; FALSE)                     # [1] FALSE
+print(NA | TRUE)                      # [1] TRUE
+
+v &lt;- c(10, 20, 30)
+v[5] &lt;- 50                            # growing assignment past the end
+print(v)                              # [1] 10 20 30 NA 50</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Indexing — all four forms</h2>
+        <p>Positive, negative (exclusion), logical (recycled), and character (by name), plus <code>[[</code>, <code>$</code>, and 2-D matrix indexing <code>m[i, j]</code>.</p>
+<pre>x &lt;- 1:10
+print(x[x &gt; 5])                       # [1]  6  7  8  9 10
+print(x[-(1:5)])                      # [1]  6  7  8  9 10
+print(x[c(TRUE, FALSE)])              # [1] 1 3 5 7 9
+
+v &lt;- c(a = 1, b = 2, c = 3)
+print(v[v &gt; 1])
+# b c
+# 2 3
+
+m &lt;- matrix(1:6, nrow = 2)
+print(m)
+#      [,1] [,2] [,3]
+# [1,]    1    3    5
+# [2,]    2    4    6
+print(m[, 2])                         # [1] 3 4</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Functions, closures, and complex assignment</h2>
+        <p>Defaults may refer to other arguments, <code>...</code> forwards, and argument matching follows R's exact/partial/positional rules. Complex assignment targets compile the way R defines them: <code>f(x) &lt;- v</code> becomes <code>x &lt;- `f&lt;-`(x, v)</code>, and nested targets unwind through the same rule.</p>
+<pre>fib &lt;- function(n) if (n &lt; 2) n else fib(n - 1) + fib(n - 2)
+print(sapply(0:10, fib))
+# [1]  0  1  1  2  3  5  8 13 21 34 55
+
+counter &lt;- function() {
+  n &lt;- 0
+  function() {
+    n &lt;&lt;- n + 1
+    n
+  }
+}
+tick &lt;- counter()
+tick(); tick()
+print(tick())                         # [1] 3
+
+l &lt;- list(v = c(1, 2, 3))
+l$v[2] &lt;- 99                          # nested complex target
+print(l$v)                            # [1]  1 99  3
+
+x &lt;- c(1, 2, 3)
+names(x) &lt;- c("a", "b", "c")          # replacement function
+print(x)
+# a b c
+# 1 2 3</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>S3 dispatch</h2>
+        <p><code>UseMethod</code> walks the class vector and falls back to <code>.default</code>, with implicit classes for the builtin types. <code>class()</code>, <code>inherits()</code>, <code>structure()</code>, and <code>unclass()</code> are present.</p>
+<pre>area &lt;- function(s) UseMethod("area")
+area.square &lt;- function(s) s$side^2
+area.default &lt;- function(s) stop("unknown shape")
+
+sq &lt;- structure(list(side = 3), class = "square")
+print(area(sq))                       # [1] 9
+print(class(sq))                      # [1] "square"
+print(inherits(sq, "square"))         # [1] TRUE</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Operators, pipes, and the primitive library</h2>
+        <p>The full precedence ladder from <code>?Syntax</code>, <code>%%</code>/<code>%/%</code> taking the sign of the divisor, <code>%in%</code>, user-defined <code>%op%</code>, and the native pipe <code>|&gt;</code>. 131 primitives are registered in <code>builtins::PRIMITIVES</code> — the apply family, string and regex functions, numeric summaries, sequence and set functions, and matrix helpers.</p>
+<pre>print(-5 %% 3)                        # [1] 1
+print(7 %/% 2)                        # [1] 3
+print(1:3 %in% c(2, 3, 9))            # [1] FALSE  TRUE  TRUE
+
+`%+%` &lt;- function(a, b) paste0(a, b)
+print("fu" %+% "sevm")                # [1] "fusevm"
+
+print(c(3, 1, 2) |&gt; sort() |&gt; rev())  # [1] 3 2 1
+
+print(Reduce(function(a, b) a + b, 1:5))        # [1] 15
+print(Filter(function(x) x %% 2 == 0, 1:10))    # [1]  2  4  6  8 10
+print(do.call(sum, list(1, 2, 3)))              # [1] 6
+
+print(mean(c(1, 2, 3, 4)))            # [1] 2.5
+print(sd(c(1, 2, 3, 4)))              # [1] 1.290994
+print(cumsum(1:5))                    # [1]  1  3  6 10 15
+
+print(gsub("[aeiou]", "-", "compiled r"))       # [1] "c-mp-l-d r"
+print(sprintf("%.3f", 2 / 3))                   # [1] "0.667"
+print(substr("bytecode", 1, 4))                 # [1] "byte"</pre>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Command-line flags</h2>
+        <table class="reflection-table">
+          <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>FILE</code></td><td>Run a <code>.R</code> script.</td></tr>
+            <tr><td><code>-e SRC</code></td><td>Run a one-liner.</td></tr>
+            <tr><td><code>--repl</code></td><td>Interactive REPL on a persistent host — a function defined at one prompt completes at the next.</td></tr>
+            <tr><td><code>--lsp</code></td><td>Language Server Protocol over stdio (diagnostics, hover, completion).</td></tr>
+            <tr><td><code>--build FILE</code></td><td>Ahead-of-time compile the script's bytecode into the on-disk cache.</td></tr>
+            <tr><td><code>--dump-bytecode FILE</code></td><td>Print the lowered fusevm chunk.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Status &amp; roadmap</h2>
+        <p>The table below reflects the current state of the tree. The honest known-gaps list lives in <a href="https://github.com/MenkeTechnologies/rlang/blob/main/BUGS.md">BUGS.md</a>; nothing is faked as working, and calling an unimplemented primitive raises <code>could not find function</code>.</p>
+        <table class="reflection-table">
+          <thead><tr><th>Component</th><th>State</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Lexer / parser → AST</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Full <code>?Syntax</code> precedence ladder, <code>%op%</code>, native pipe (<code>src/lexer.rs</code>, <code>src/parser.rs</code>).</td></tr>
+            <tr><td>AST → fusevm bytecode lowering</td><td><span class="status-pill status-implemented">Implemented</span></td><td>No local VM; native jumps and integer loop counters (<code>src/compiler.rs</code>).</td></tr>
+            <tr><td>Vector heap &amp; attributes</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Logical/integer/double/character/list with <code>NA</code>, recycling, promotion; <code>names</code>/<code>dim</code>/<code>class</code>/<code>attr</code> (<code>src/host.rs</code>).</td></tr>
+            <tr><td>All four index forms + <code>[[</code>, <code>$</code>, <code>m[i, j]</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td>Positive, negative, logical (recycled), character.</td></tr>
+            <tr><td>Assignment &amp; replacement functions</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>&lt;-</code>, <code>=</code>, <code>-&gt;</code>, <code>&lt;&lt;-</code>, growing assignment, nested targets, user-defined <code>`f&lt;-`</code>.</td></tr>
+            <tr><td>Functions, closures, <code>...</code>, arg matching</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Defaults referring to other arguments; exact/partial/positional matching; lexical closures.</td></tr>
+            <tr><td>Control flow</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>if</code> as an expression, <code>for</code>/<code>while</code>/<code>repeat</code>, <code>break</code>/<code>next</code>, short-circuit <code>&amp;&amp;</code>/<code>||</code>.</td></tr>
+            <tr><td>S3 (<code>UseMethod</code>, <code>class</code>, <code>inherits</code>)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Class-vector walk, implicit classes, <code>.default</code> fallback.</td></tr>
+            <tr><td>Primitive library (131)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Apply family, string/regex, numeric summaries, sequence/set, matrix helpers (<code>src/builtins.rs</code>).</td></tr>
+            <tr><td>R's printing rules</td><td><span class="status-pill status-implemented">Implemented</span></td><td><code>[n]</code> prefixes with 80-column wrapping, shared decimal widths, named-vector column pairs, matrix and list layout.</td></tr>
+            <tr><td>Standalone <code>Rscript</code> binary + REPL</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Files, <code>-e</code> one-liners, persistent-host REPL (<code>src/main.rs</code>, <code>src/repl.rs</code>).</td></tr>
+            <tr><td>rkyv bytecode script cache</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Versioned shard at <code>~/.rlang/scripts.rkyv</code> (<code>src/cache.rs</code>).</td></tr>
+            <tr><td>Parity harness vs reference <code>Rscript</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td>48-snippet differential corpus plus 8 runnable examples, frozen and replayed in CI with no R installed.</td></tr>
+            <tr><td>LSP server (<code>--lsp</code>)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Diagnostics, hover, completion over stdio (<code>src/lsp.rs</code>).</td></tr>
+            <tr><td>AOP call intercepts</td><td><span class="status-pill status-progress">Partial</span></td><td>Glob-matched before/after/around registry is live and tested; the dispatcher does not consult it yet (<code>src/intercepts.rs</code>).</td></tr>
+            <tr><td>Promises / non-standard evaluation</td><td><span class="status-pill status-planned">Planned</span></td><td>Arguments evaluate eagerly, so <code>substitute()</code>, <code>quote()</code>, <code>match.call()</code>, and formulas are absent.</td></tr>
+            <tr><td>Condition system (<code>tryCatch</code>)</td><td><span class="status-pill status-planned">Planned</span></td><td><code>stop()</code> aborts and <code>warning()</code>/<code>message()</code> write to stderr; nothing can catch them.</td></tr>
+            <tr><td>Data frames, factors, linear algebra</td><td><span class="status-pill status-planned">Planned</span></td><td>No <code>data.frame</code>, <code>factor</code>, complex numbers, <code>apply</code> over margins, <code>%*%</code>, or <code>cbind</code>/<code>rbind</code>.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Parity harness</h2>
+        <p>Behaviour is checked against the reference <code>Rscript</code> by a differential harness rather than a self-recorded baseline. <code>cargo run --bin parity</code> diffs the 48-snippet corpus (<code>tests/data/parity_corpus.R</code>) live against the system R; <code>tests/parity.rs</code> replays the frozen outputs in CI with no R installed. The 8 programs in <code>examples/</code> double as tests — they embed <code>stopifnot</code> assertions and <code>tests/examples.rs</code> runs each through the binary asserting a clean exit and stdout matching the frozen reference output. Corpus and examples are byte-identical to GNU R 4.6.1.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Why rlang</h2>
+        <div class="cat-grid">
+          <div class="cat-card"><h4>Compiled, not tree-walked</h4><p>GNU R walks a node tree in C; rlang lowers R to bytecode and JITs hot paths through Cranelift — the same architecture that makes zshrs and stryke fast.</p></div>
+          <div class="cat-card"><h4>One shared engine</h4><p>Bug fixes and JIT improvements in fusevm benefit zshrs, stryke, awkrs, elisp, rubylang, and rlang at once.</p></div>
+          <div class="cat-card"><h4>Differential, not self-graded</h4><p>Every corpus snippet is diffed against the reference <code>Rscript</code>, and an unimplemented primitive raises rather than silently returning something plausible.</p></div>
+          <div class="cat-card"><h4>Editor-ready</h4><p>Ships an LSP server over stdio and a REPL on a persistent host, where a function defined at one prompt completes at the next.</p></div>
+        </div>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Building from source</h2>
+        <p>rlang builds as a standalone Rust crate (it is not a workspace member of the meta repo):</p>
+<pre># clone
+git clone https://github.com/MenkeTechnologies/rlang
+cd rlang
+
+# build (debug)
+cargo build
+
+# run a script, a one-liner, or the REPL
+./target/debug/Rscript script.R
+./target/debug/Rscript -e 'print(sum(1:100))'
+./target/debug/Rscript --repl
+
+# run tests
+cargo test</pre>
+        <p>fusevm 0.14.10 is pulled from crates.io with the <code>jit</code>, <code>jit-disk-cache</code>, and <code>aot</code> features. A zsh completion for <code>Rscript</code> ships in <code>completions/_Rscript</code>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>License</h2>
+        <p>rlang is <strong>MIT licensed</strong> — free and open source. See <a href="https://github.com/MenkeTechnologies/rlang/blob/main/LICENSE">LICENSE</a>.</p>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>Repository &amp; links</h2>
+        <ul>
+          <li><strong>Engineering report</strong> — <a href="report.html">report.html</a> (architecture, fusevm hosting, roadmap, dependency posture)</li>
+          <li><strong>Primitive reference</strong> — <a href="reference.html">reference.html</a> (the primitive library)</li>
+          <li><strong>Known gaps</strong> — <a href="https://github.com/MenkeTechnologies/rlang/blob/main/BUGS.md">BUGS.md</a></li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/rlang">github.com/MenkeTechnologies/rlang</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/rlang/issues">github.com/MenkeTechnologies/rlang/issues</a></li>
+          <li><strong>The shared VM</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> (also behind <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>elisp</code>, <code>rubylang</code>)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

@@ -778,6 +778,12 @@ pub fn call_value(
     }
 }
 
+/// The call-depth ceiling. R stops at `options(expressions = 5000)` with
+/// "evaluation nested too deeply"; rlang stops at the same place so runaway
+/// recursion reports an R error instead of exhausting the native stack (each R
+/// call runs its body on a nested VM, so depth costs real stack).
+pub const MAX_DEPTH: usize = 5000;
+
 /// Call a closure: match the arguments to the formals, push a frame whose
 /// environment encloses the closure's captured environment, and run the body.
 pub fn call_closure(
@@ -788,6 +794,9 @@ pub fn call_closure(
 ) -> Result<Value, String> {
     let def = with_host(|h| h.closures.get(id).cloned())
         .ok_or_else(|| format!("internal: unknown closure #{id}"))?;
+    if with_host(|h| h.frames.len()) >= MAX_DEPTH {
+        return Err("evaluation nested too deeply: infinite recursion?".into());
+    }
     let frame_env = new_env(Some(env));
     let bindings = match_args(&def.params, &args)?;
     {

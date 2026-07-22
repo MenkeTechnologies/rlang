@@ -25,7 +25,21 @@ const EXPECTED: &str = "tests/data/parity_expected.txt";
 const EXAMPLES_DIR: &str = "examples";
 const EXAMPLES_OUT: &str = "tests/data/examples";
 
+/// The harness evaluates snippets in-process, and R recursion consumes Rust
+/// stack (each call runs its body on a nested VM), so it runs on the same
+/// large-stack thread the `Rscript` binary uses.
+const STACK_SIZE: usize = 512 * 1024 * 1024;
+
 fn main() {
+    std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(run)
+        .expect("spawn parity thread")
+        .join()
+        .expect("parity thread panicked");
+}
+
+fn run() {
     if std::env::args().any(|a| a == "--freeze-examples") {
         freeze_examples();
         return;

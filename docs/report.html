@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="rlang — Engineering report. A compiled R runtime in Rust, hosted on the fusevm bytecode VM with a three-tier Cranelift JIT. Architecture, value model, parity harness, known gaps, and dependency posture. MIT licensed.">
+  <title>rlang &mdash; Engineering Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
+    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
+    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
+    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
+    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
+    .feature-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(22rem,1fr));gap:0.65rem;margin:0.8rem 0; }
+    .feature-card { border:1px solid var(--border);border-left:3px solid var(--cyan);background:var(--bg-card);padding:0.7rem 1rem;border-radius:2px; }
+    .feature-card h4 { font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--cyan);margin:0 0 0.3rem; }
+    .feature-card p { margin:0;font-size:11px;color:var(--text-dim);line-height:1.55; }
+    .feature-card code { font-size:10.5px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .section-rule { border:none;border-top:1px dashed var(--border);margin:2rem 0; }
+    .hub-scheme-strip { border-bottom:1px dashed var(--border);background:color-mix(in srgb, var(--bg-secondary) 85%, transparent);padding:0.55rem 1.5rem 0.65rem;position:relative; }
+    .hub-scheme-strip-inner { max-width:76rem;margin:0 auto;display:flex;align-items:center;gap:0.85rem; }
+    .hub-scheme-strip .hud-scheme-label { flex:0 0 auto;font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--accent);text-align:left; }
+    .hub-scheme-strip .scheme-grid { flex:1 1 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px; }
+    @media (max-width:720px){ .hub-scheme-strip-inner{flex-direction:column;align-items:stretch}.hub-scheme-strip .scheme-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:42rem;opacity:0.75; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// RLANG — ENGINEERING REPORT</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <span class="current">Engineering Report</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">rlang v0.1.0 · R on fusevm · lex/parse → AST → bytecode → Cranelift JIT · MIT · in active development</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="reference.html">Reference</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="hub-scheme-strip">
+      <div class="hub-scheme-strip-inner">
+        <span class="hud-scheme-label">// Color scheme</span>
+        <div class="scheme-grid" id="hudSchemeGrid"></div>
+      </div>
+    </div>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>ENGINEERING REPORT</h2>
+      <p class="tutorial-subtitle">rlang is a compiled R runtime in Rust, hosted on the <code>fusevm</code> bytecode VM and its three-tier Cranelift JIT. This report describes the architecture, the value model, how behaviour is verified, what is not implemented, and the dependency posture. The statements below are facts about the design, the manifest, and the tree — not aspirational metrics.</p>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val accent">R</div><div class="stat-label">fusevm language host</div></div>
+        <div class="stat-card"><div class="stat-val">3</div><div class="stat-label">Cranelift JIT tiers</div></div>
+        <div class="stat-card"><div class="stat-val">48</div><div class="stat-label">parity snippets vs GNU R</div></div>
+        <div class="stat-card"><div class="stat-val">v0.1.0</div><div class="stat-label">version</div></div>
+        <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">license · free / OSS</div></div>
+      </div>
+
+      <section class="tutorial-section">
+        <h2>Summary</h2>
+        <p>GNU R evaluates R by walking a parse tree in C. rlang takes a different path: it lexes and parses R to an AST, lowers that to <code>fusevm</code> bytecode, and runs it on a compiled VM with a Cranelift JIT. Control flow lowers to native VM jumps over native integer counters so the JIT can trace hot loops; R-specific behaviour is served by a thread-local <code>RHost</code>. It joins <a href="https://github.com/MenkeTechnologies/fusevm">fusevm</a> alongside <code>zshrs</code>, <code>stryke</code>, <code>awkrs</code>, <code>elisp</code>, and <code>rubylang</code>, and reuses that shared bytecode VM and JIT rather than shipping its own. The binary is <code>Rscript</code>.</p>
+        <p>The current tree implements the lexer/parser, AST-to-bytecode lowering, the vector heap with attributes (logical, integer, double, character, list, each with <code>NA</code>), recycling and type promotion, copy-on-modify assignment including nested and replacement-function targets, all four index forms plus <code>[[</code>/<code>$</code>/<code>m[i, j]</code>, functions with defaults / <code>...</code> / R's argument matching, lexical closures and <code>&lt;&lt;-</code>, the full <code>?Syntax</code> operator ladder with user-defined <code>%op%</code> and the native pipe, S3 <code>UseMethod</code> dispatch, 131 primitives, R's printing rules, the standalone <code>Rscript</code> binary and REPL, the rkyv bytecode cache, an AOP intercept registry, and an LSP server. Behaviour is diffed against the reference <code>Rscript</code> by a 48-snippet differential parity corpus and 8 runnable examples; both are byte-identical to GNU R 4.6.1. Promises and non-standard evaluation, the condition system, data frames, factors, and the linear-algebra surface are not implemented — see <a href="#known-gaps">Known gaps</a>.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Hosting on fusevm</h2>
+        <p>rlang contains no virtual machine or JIT of its own. The execution path is:</p>
+<pre>R source  →  lexer  →  parser → AST  →  lower to fusevm bytecode  →  fusevm VM + Cranelift JIT
+                                                 │
+                                RHost heap (vectors, attributes, environments, closures)</pre>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Shared engine</h4><p>fusevm 0.14.10 is pulled from crates.io with the <code>jit</code>, <code>jit-disk-cache</code>, and <code>aot</code> features. JIT and VM improvements land once and benefit zshrs, stryke, awkrs, elisp, rubylang, and rlang together.</p></div>
+          <div class="feature-card"><h4>Native control flow</h4><p><code>if</code>, <code>for</code>, <code>while</code>, <code>repeat</code>, <code>&amp;&amp;</code> and <code>||</code> emit real <code>Jump</code> / <code>JumpIfFalse</code> / <code>JumpIfTrue</code> ops over native <code>Int</code> counters (<code>src/compiler.rs</code>), so the tracing JIT sees ordinary loops instead of a builtin call per iteration.</p></div>
+          <div class="feature-card"><h4>Persistent native code</h4><p><code>jit-disk-cache</code> persists compiled machine code across runs, so warm starts skip recompilation. <code>aot</code> backs <code>Rscript --build</code>, which compiles a script's bytecode into the on-disk cache ahead of time.</p></div>
+          <div class="feature-card"><h4>Handles, not immediates</h4><p>Unlike a language with scalars, every R value rides through the VM as <code>Value::Obj(u32)</code> — a handle into the host heap — because in R even a "scalar" is a length-one vector that can carry attributes.</p></div>
+        </div>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Value model</h2>
+        <p>R has no scalars. <code>1</code> is a double vector of length one, and any value may carry an insertion-ordered attribute map (<code>names</code>, <code>dim</code>, <code>class</code>, or anything set with <code>attr()</code>). rlang models this directly: <code>RData</code> is a tagged vector (logical / integer / double / character / list), each element optional so <code>NA</code> exists in every atomic type, and every object lives on the <code>RHost</code> heap. Attributes are an <code>IndexMap</code> because <code>attributes(x)</code> exposes their order.</p>
+        <p>Arithmetic recycles the shorter operand and propagates <code>NA</code>. Logical operators implement three-valued logic — <code>NA &amp; FALSE</code> is <code>FALSE</code> and <code>NA | TRUE</code> is <code>TRUE</code>, because the answer is decided regardless of the missing value. Type promotion in <code>c()</code> follows R's rank order (logical &lt; integer &lt; double &lt; character).</p>
+        <p>Assignment is copy-on-modify, not reference mutation: <code>z &lt;- y; z[1] &lt;- 99</code> rebuilds <code>z</code>'s vector and re-binds the name, leaving <code>y</code> untouched. Complex targets reduce to that same rule — <code>f(x) &lt;- v</code> compiles to <code>x &lt;- `f&lt;-`(x, v)</code>, so <code>names(x) &lt;- v</code>, <code>dim(x) &lt;- v</code>, <code>class(x) &lt;- v</code>, user-defined <code>`f&lt;-`</code>, and nested targets like <code>l$v[2] &lt;- 9</code> all unwind through rebuild-then-rebind.</p>
+        <p>Environments are the one reference-typed thing: frames are <code>Rc&lt;RefCell&lt;EnvData&gt;&gt;</code> chained to their enclosure, which gives R's lexical scoping and is what lets <code>&lt;&lt;-</code> assign in the defining frame rather than the caller's. Truthiness follows R, not C or the shell: a condition must be a single non-<code>NA</code> logical, so conditions normalize through a <code>TRUTHY</code> host op before a native branch.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Dispatch and the primitive library</h2>
+        <p>S3 is the object system that exists here. <code>UseMethod</code> walks the value's class vector, tries each <code>generic.class</code> binding in order, and falls back to <code>generic.default</code>; builtin types get their implicit classes. <code>class()</code>, <code>inherits()</code>, <code>structure()</code>, and <code>unclass()</code> are present. Function-position lookup skips non-function bindings, so a variable named <code>c</code> does not shadow the <code>c()</code> primitive.</p>
+        <p><code>builtins::PRIMITIVES</code> registers 131 names: the apply family (<code>lapply</code>, <code>sapply</code>, <code>vapply</code>, <code>Map</code>, <code>Reduce</code>, <code>Filter</code>, <code>do.call</code>), string and regex functions (<code>paste</code>, <code>sprintf</code>, <code>substr</code>, <code>strsplit</code>, <code>grepl</code>, <code>grep</code>, <code>sub</code>, <code>gsub</code>, <code>trimws</code>), numeric summaries (<code>sum</code>, <code>mean</code>, <code>median</code>, <code>var</code>, <code>sd</code>, <code>cumsum</code>, <code>cumprod</code>, <code>diff</code>, <code>range</code>), sequence and set functions (<code>seq</code>, <code>rep</code>, <code>rev</code>, <code>sort</code>, <code>order</code>, <code>unique</code>, <code>union</code>, <code>intersect</code>, <code>setdiff</code>), coercions and predicates, and matrix helpers (<code>matrix</code>, <code>dim</code>, <code>nrow</code>, <code>ncol</code>, <code>t</code>). The same corpus backs the LSP's completion and hover.</p>
+        <p>Printing is its own body of work, because R's console output is part of its observable behaviour: <code>[n]</code> index prefixes with 80-column wrapping, shared decimal widths across a vector, quoted and left-justified character vectors, named-vector column pairs, <code>[i,]</code>/<code>[,j]</code> matrix layout, and <code>$name</code> / <code>[[n]]</code> list sections. Parity is measured on that output, so the formatter is held to the same standard as the evaluator.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Verification</h2>
+        <p>Correctness is measured differentially against the reference implementation, not against a self-recorded baseline.</p>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Live diff against GNU R</h4><p><code>cargo run --bin parity</code> runs the 48-snippet corpus (<code>tests/data/parity_corpus.R</code>) through both rlang and the system <code>Rscript</code> and diffs stdout. It needs R on PATH, so CI never runs it.</p></div>
+          <div class="feature-card"><h4>Frozen replay in CI</h4><p><code>tests/parity.rs</code> replays the frozen reference outputs (<code>tests/data/parity_expected.txt</code>) with no R installed, so the corpus is enforced on every build.</p></div>
+          <div class="feature-card"><h4>Examples are tests</h4><p>The 8 programs in <code>examples/</code> embed <code>stopifnot</code> assertions that abort on divergence, and <code>tests/examples.rs</code> runs each through the binary asserting a clean exit and stdout matching the frozen output.</p></div>
+          <div class="feature-card"><h4>Nothing faked as working</h4><p>An unimplemented primitive raises <code>could not find function</code> rather than returning a plausible value, and <code>Recall()</code> / <code>Negate()</code> are explicit raising stubs rather than silent approximations.</p></div>
+        </div>
+        <p>The 48-snippet corpus and all 8 examples are byte-identical to the reference <code>Rscript</code> from GNU R 4.6.1.</p>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Component status</h2>
+        <table class="file-table">
+          <thead><tr><th>Component</th><th>State</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>lexer / parser → AST</td><td>Implemented</td><td>Full <code>?Syntax</code> precedence ladder, <code>%op%</code>, native pipe <code>|&gt;</code> (<code>src/lexer.rs</code>, <code>src/parser.rs</code>).</td></tr>
+            <tr><td>AST → fusevm bytecode</td><td>Implemented</td><td>Native jumps and integer loop counters; no local VM (<code>src/compiler.rs</code>).</td></tr>
+            <tr><td>vector heap &amp; attributes</td><td>Implemented</td><td>Five vector types with <code>NA</code>, recycling, promotion, ordered attribute map (<code>src/host.rs</code>).</td></tr>
+            <tr><td>indexing</td><td>Implemented</td><td>Positive / negative / logical / character, plus <code>[[</code>, <code>$</code>, and 2-D <code>m[i, j]</code>.</td></tr>
+            <tr><td>assignment &amp; replacement functions</td><td>Implemented</td><td><code>&lt;-</code>, <code>=</code>, <code>-&gt;</code>, <code>&lt;&lt;-</code>, growing assignment, nested targets, user-defined <code>`f&lt;-`</code>.</td></tr>
+            <tr><td>functions, closures, argument matching</td><td>Implemented</td><td>Defaults referring to other arguments (compiled as a body prologue), <code>...</code> forwarding, exact/partial/positional matching.</td></tr>
+            <tr><td>control flow</td><td>Implemented</td><td><code>if</code> as an expression, <code>for</code>/<code>while</code>/<code>repeat</code>, <code>break</code>/<code>next</code>, short-circuit <code>&amp;&amp;</code>/<code>||</code>.</td></tr>
+            <tr><td>S3 dispatch</td><td>Implemented</td><td><code>UseMethod</code> over the class vector, implicit classes, <code>.default</code> fallback.</td></tr>
+            <tr><td>primitive library (131)</td><td>Implemented</td><td>Apply family, string/regex, numeric summaries, sequence/set, matrix helpers (<code>src/builtins.rs</code>).</td></tr>
+            <tr><td>R printing rules</td><td>Implemented</td><td>Index prefixes, 80-column wrapping, shared decimal widths, named-vector, matrix and list layout.</td></tr>
+            <tr><td>parity harness vs reference <code>Rscript</code></td><td>Implemented</td><td>48 snippets + 8 examples, frozen and replayed in CI (<code>src/bin/parity.rs</code>, <code>tests/parity.rs</code>, <code>tests/examples.rs</code>).</td></tr>
+            <tr><td>standalone <code>Rscript</code> binary + REPL</td><td>Implemented</td><td>Files, <code>-e</code> one-liners, persistent-host REPL (<code>src/main.rs</code>, <code>src/repl.rs</code>).</td></tr>
+            <tr><td>rkyv bytecode cache</td><td>Implemented</td><td>Versioned shard at <code>~/.rlang/scripts.rkyv</code> (<code>src/cache.rs</code>).</td></tr>
+            <tr><td>AOT build (<code>--build</code>) / <code>--dump-bytecode</code></td><td>Implemented</td><td>Bytecode compiled into the cache ahead of time; the lowered chunk can be printed (<code>src/aot.rs</code>, <code>src/cli.rs</code>).</td></tr>
+            <tr><td>LSP server (<code>--lsp</code>)</td><td>Implemented</td><td>Diagnostics from the runtime parser, hover and completion from the primitive corpus (<code>src/lsp.rs</code>).</td></tr>
+            <tr><td>AOP call intercepts</td><td>Partial</td><td>Glob-matched before/after/around registry is live and tested; the dispatcher does not consult it yet (<code>src/intercepts.rs</code>).</td></tr>
+            <tr><td>promises / non-standard evaluation</td><td>Not implemented</td><td>Arguments evaluate eagerly at the call site.</td></tr>
+            <tr><td>condition system</td><td>Not implemented</td><td>No <code>tryCatch</code>, <code>withCallingHandlers</code>, <code>on.exit</code>, or restarts.</td></tr>
+            <tr><td>data frames / factors / linear algebra</td><td>Not implemented</td><td>No <code>data.frame</code>, <code>factor</code>, complex numbers, <code>apply</code> over margins, <code>%*%</code>, <code>cbind</code>/<code>rbind</code>.</td></tr>
+            <tr><td>DAP adapter</td><td>Not implemented</td><td>The LSP server is in the tree; there is no debug adapter.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section" id="known-gaps">
+        <h2>Known gaps</h2>
+        <p>The honest list, mirroring <a href="https://github.com/MenkeTechnologies/rlang/blob/main/BUGS.md">BUGS.md</a>. Nothing here is faked as working: an unimplemented primitive raises <code>could not find function</code>, and parity is measured against the real <code>Rscript</code> rather than a self-recorded baseline.</p>
+        <table class="file-table">
+          <thead><tr><th>Area</th><th>Gap</th></tr></thead>
+          <tbody>
+            <tr><td>evaluation model</td><td>Arguments are evaluated eagerly, not as promises, so <code>substitute()</code>, <code>quote()</code>, <code>deparse()</code>, <code>match.call()</code>, <code>sys.call()</code>, and every non-standard-evaluation idiom are absent. Defaults still behave lazily — they compile into a body prologue, so a default may refer to another argument.</td></tr>
+            <tr><td>conditions</td><td>No <code>tryCatch</code>, <code>withCallingHandlers</code>, <code>simpleError</code>, <code>on.exit</code>, <code>signalCondition</code>, or restarts. <code>stop()</code> aborts the program; <code>warning()</code>/<code>message()</code> write to stderr; nothing can catch them.</td></tr>
+            <tr><td>formulas</td><td><code>~</code> lexes but nothing consumes it.</td></tr>
+            <tr><td>environments</td><td>Beyond <code>new.env()</code>, <code>environment()</code>, and <code>$</code>/<code>[[</code> on an environment: no <code>local()</code>, <code>sys.function()</code>, <code>parent.frame()</code>, or <code>eval(expr, envir)</code>.</td></tr>
+            <tr><td>types</td><td>No data frames (and so no <code>subset</code>, <code>merge</code>, <code>aggregate</code>, <code>read.csv</code>), no factors, no complex numbers, no raw vectors, no <code>Date</code>/<code>POSIXct</code>.</td></tr>
+            <tr><td>arrays</td><td>Nothing past 2 dimensions: a length-2 <code>dim</code> prints and indexes as a matrix, longer <code>dim</code> vectors are carried but not honoured.</td></tr>
+            <tr><td>linear algebra</td><td>No <code>apply</code> over matrix margins, <code>outer</code>, <code>%*%</code>, <code>solve</code>, <code>crossprod</code>; <code>cbind</code>/<code>rbind</code> are not implemented.</td></tr>
+            <tr><td>numerics</td><td>Integer overflow wraps to a double instead of producing <code>NA</code> with a warning, because arithmetic is computed in <code>f64</code> and narrowed back.</td></tr>
+            <tr><td>printing</td><td>Small numbers do not switch to scientific notation (R prints <code>1e-10</code>, rlang prints the expanded decimal). <code>format()</code> is a thin <code>as.character</code> with no <code>nsmall</code>/<code>width</code>/<code>justify</code>/<code>big.mark</code>. No <code>str()</code>, <code>summary()</code>, or <code>dput()</code>.</td></tr>
+            <tr><td>syntax</td><td><code>else</code> may start a new line at top level, which R rejects outside <code>{ }</code> — so a program R rejects can run here. <code>pkg::name</code> parses and the qualifier is dropped (rlang has one namespace); <code>?</code> is lexed and unused. No <code>library()</code>/<code>require()</code> and no package system, so CRAN-dependent programs are out of scope by construction.</td></tr>
+            <tr><td>S3 / S4 / R5</td><td><code>NextMethod()</code> is missing — dispatch stops at the first matching method. No S4, Reference Classes, or R6; <code>@</code> parses and reads an attribute, which is not slot semantics. No group generics (<code>Ops</code>, <code>Math</code>, <code>Summary</code>), so a class cannot overload <code>+</code> through S3.</td></tr>
+            <tr><td>runtime</td><td>No garbage collection — the <code>RHost</code> heap only grows within a run. Closure bodies are cloned per call, which costs on deeply recursive workloads. The AOP registry is not yet consulted by the dispatcher. No DAP adapter. <code>Recall()</code> and <code>Negate()</code> are stubs that raise.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Dependency posture</h2>
+        <p>Dependencies are kept foundational and durable — the goal is a crate that still builds cleanly years from now. Direct dependencies from <code>Cargo.toml</code>:</p>
+        <table class="file-table">
+          <thead><tr><th>Crate</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM + three-tier Cranelift JIT, version 0.14.10 (<code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code>)</td></tr>
+            <tr><td>clap</td><td>CLI argument parsing (<code>derive</code>, <code>cargo</code>)</td></tr>
+            <tr><td>indexmap</td><td>Ordered <code>names</code> and attribute maps — <code>attributes(x)</code> exposes their order</td></tr>
+            <tr><td>rkyv / bincode / serde</td><td>Zero-copy outer shard + serde inner <code>Chunk</code> blobs for the bytecode cache</td></tr>
+            <tr><td>dirs</td><td>Home directory for the <code>~/.rlang</code> cache shard</td></tr>
+            <tr><td>lsp-server / lsp-types / serde_json</td><td>LSP transport + protocol types (<code>--lsp</code> server)</td></tr>
+            <tr><td>reedline / nu-ansi-term</td><td>Interactive REPL line editor and colors</td></tr>
+            <tr><td>regex</td><td><code>grepl</code>/<code>grep</code>/<code>sub</code>/<code>gsub</code> — R's default patterns are POSIX ERE</td></tr>
+            <tr><td>glob</td><td>Pattern matching for the AOP call-intercept registry</td></tr>
+            <tr><td>libc</td><td>Platform calls behind the binary and LSP stdio path</td></tr>
+            <tr><td>tempfile <em>(dev)</em></td><td>Scratch files for the cache and example test harnesses</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Compatibility &amp; longevity</h2>
+        <div class="feature-grid">
+          <div class="feature-card"><h4>Versioned caches</h4><p>The rkyv script-cache shard carries a schema version in the key from the first release, so a source or format change misses cleanly instead of loading stale bytecode.</p></div>
+          <div class="feature-card"><h4>Reference semantics</h4><p>Behaviour tracks GNU R — recycling, <code>NA</code> propagation, three-valued logic, <code>%%</code>/<code>%/%</code> taking the sign of the divisor, copy-on-modify — as the compatibility target, measured on console output.</p></div>
+          <div class="feature-card"><h4>Cross-architecture</h4><p>macOS aarch64 and Linux x86_64 / aarch64 via the Cranelift JIT; portable bytecode underneath.</p></div>
+          <div class="feature-card"><h4>Standalone crate</h4><p>An explicit empty <code>[workspace]</code> keeps rlang buildable on its own, independent of the meta repo. The published crate excludes the docs site, CI config, and integration corpus.</p></div>
+        </div>
+      </section>
+
+      <hr class="section-rule">
+
+      <section class="tutorial-section">
+        <h2>Links</h2>
+        <ul>
+          <li><strong>Docs</strong> — <a href="index.html">index.html</a></li>
+          <li><strong>Primitive reference</strong> — <a href="reference.html">reference.html</a></li>
+          <li><strong>Known gaps</strong> — <a href="https://github.com/MenkeTechnologies/rlang/blob/main/BUGS.md">BUGS.md</a></li>
+          <li><strong>Source</strong> — <a href="https://github.com/MenkeTechnologies/rlang">github.com/MenkeTechnologies/rlang</a></li>
+          <li><strong>Issues</strong> — <a href="https://github.com/MenkeTechnologies/rlang/issues">github.com/MenkeTechnologies/rlang/issues</a></li>
+          <li><strong>fusevm</strong> — <a href="https://github.com/MenkeTechnologies/fusevm">github.com/MenkeTechnologies/fusevm</a> (the shared VM)</li>
+          <li><strong>License</strong> — MIT (<a href="https://github.com/MenkeTechnologies/rlang/blob/main/LICENSE">LICENSE</a>)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="hud-theme.js"></script>
+</body>
+</html>

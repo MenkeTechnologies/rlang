@@ -1141,10 +1141,18 @@ fn copy_of(x: &Value) -> Value {
 // The primitive function library.
 // ===========================================================================
 
-/// Whether `name` is one of the primitives implemented in Rust.
+/// Whether `name` is one of the primitives implemented in Rust. Operators
+/// count: in R they are ordinary functions, which is what lets
+/// ``Reduce(`+`, 1:4)`` and ``sapply(xs, `[`, 1)`` work.
 pub fn is_primitive(name: &str) -> bool {
-    PRIMITIVES.contains(&name)
+    PRIMITIVES.contains(&name) || OPERATORS.contains(&name)
 }
+
+/// The operators reachable as functions through their backtick names.
+pub const OPERATORS: &[&str] = &[
+    "+", "-", "*", "/", "^", "%%", "%/%", "==", "!=", "<", ">", "<=", ">=", "&", "|", "!", ":",
+    "[", "[[", "$",
+];
 
 /// Every primitive rlang implements; also the corpus the LSP completes from.
 pub const PRIMITIVES: &[&str] = &[
@@ -1283,6 +1291,9 @@ pub const PRIMITIVES: &[&str] = &[
 
 /// Call a primitive by name with evaluated arguments.
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
+    if OPERATORS.contains(&name) {
+        return call_operator(name, &args);
+    }
     let a = Args::new(args);
     match name {
         // ── construction and coercion ───────────────────────────────────
@@ -1431,7 +1442,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     parts.push(s.unwrap_or_else(|| "NA".into()));
                 }
             }
-            print!("{}", parts.join(&sep));
+            // R ends `cat` output with a newline whenever the separator itself
+            // contains one — `cat(c("a", "b"), sep = "\n")` prints three lines'
+            // worth of output, not two.
+            let tail = if sep.contains('\n') { "\n" } else { "" };
+            print!("{}{tail}", parts.join(&sep));
             with_host(|h| h.visible = false);
             Ok(null())
         }
@@ -2192,6 +2207,47 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     }
 }
 
+/// An operator invoked through its function name: ``\`+\`(1, 2)``, ``\`[\`(x, 2)``.
+/// A one-argument call of `-`/`+`/`!` is the unary form.
+fn call_operator(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    let vals: Vec<Value> = args.iter().map(|(_, v)| v.clone()).collect();
+    let first = vals
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("argument to '{name}' is missing"))?;
+    match name {
+        "[" => return index_single(&first, &args[1..]),
+        "[[" => return index_double(&first, &args[1..]),
+        "$" => {
+            let key = vals.get(1).and_then(str1).unwrap_or_default();
+            let names = names_of(&first);
+            return Ok(
+                match names
+                    .iter()
+                    .position(|n| n.as_deref() == Some(key.as_str()))
+                {
+                    Some(i) => element_at(&first, i),
+                    None => null(),
+                },
+            );
+        }
+        _ => {}
+    }
+    match vals.len() {
+        1 => match name {
+            "-" => Ok(mk_dbl(
+                as_dbl(&first).iter().map(|e| e.map(|n| -n)).collect(),
+            )),
+            "+" => Ok(first),
+            "!" => Ok(mk_lgl(
+                as_lgl(&first).iter().map(|e| e.map(|b| !b)).collect(),
+            )),
+            other => Err(format!("invalid unary operator '{other}'")),
+        },
+        _ => binop(name, &first, &vals[1]),
+    }
+}
+
 /// Positional/named argument access for primitives.
 struct Args {
     all: Vec<(Option<String>, Value)>,
@@ -2323,15 +2379,17 @@ fn concat(a: &Args) -> Value {
     out
 }
 
-/// `unlist(x)` — flatten a list to an atomic vector of the widest type.
+/// `unlist(x)` — flatten a list to an atomic vector of the widest type,
+/// recursively, composing names the way R does (`list(a = 1, b = list(2, 3))`
+/// unlists to `a b1 b2`).
 fn unlist(x: &Value) -> Value {
     match data(x) {
         RData::List(items) => {
             let names = names_of(x);
             let parts: Vec<(Option<String>, Value)> = items
-                .into_iter()
+                .iter()
                 .enumerate()
-                .map(|(i, v)| (names.get(i).cloned().flatten(), v))
+                .map(|(i, v)| (names.get(i).cloned().flatten(), unlist(v)))
                 .collect();
             concat(&Args::new(parts))
         }
@@ -2811,7 +2869,8 @@ fn format_function(v: &Value) -> String {
 fn print_element(v: &Value, i: usize) -> String {
     match data(v) {
         RData::Str(xs) => match &xs[i] {
-            Some(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            // `print` shows the escaped source form (`cat` shows the raw text).
+            Some(s) => format!("\"{}\"", escape_string(s)),
             None => "NA".into(),
         },
         RData::Lgl(xs) => match xs[i] {
@@ -2829,6 +2888,23 @@ fn print_element(v: &Value, i: usize) -> String {
         },
         _ => String::new(),
     }
+}
+
+/// Escape a string the way R's `print` renders it: backslash, quote, and the
+/// control characters become their source escapes.
+fn escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Format the elements of a vector with one shared layout — what makes R print

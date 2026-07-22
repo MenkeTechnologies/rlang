@@ -8,7 +8,23 @@
 
 use std::process::ExitCode;
 
+/// Native stack for the interpreter thread. Every R call runs its body on a
+/// nested VM, so R recursion consumes Rust stack; the default 8 MB main-thread
+/// stack runs out around a hundred frames, well short of R's own limits.
+const STACK_SIZE: usize = 512 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(run)
+        .and_then(|h| {
+            h.join()
+                .map_err(|_| std::io::Error::other("interpreter thread panicked"))
+        })
+        .unwrap_or_else(|e| fail(&e.to_string()))
+}
+
+fn run() -> ExitCode {
     let cli = rlang::cli::parse();
 
     if cli.lsp {

@@ -250,3 +250,20 @@ print(as.character(1e5))
 cat(1/3, "\n")
 cat(1e10, "\n")
 cat(TRUE, NA, "\n")
+#==#
+print(c("tab\there", "quote\"q"))
+cat(c("a", "b"), sep = "\n")
+cat("X")
+#==#
+print(unlist(list(a = 1, b = list(2, 3))))
+print(Reduce(`+`, 1:4))
+print(sapply(1:3, `-`))
+print(`[`(c(10, 20, 30), 2))
+#==#
+g <- function(n) if (n == 0) 0 else n + g(n - 1)
+print(g(500))
+#==#
+l <- list(1, "a", c(TRUE, FALSE))
+print(l)
+print(list(x = 1, y = "two"))
+print(list())
