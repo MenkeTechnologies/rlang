@@ -65,8 +65,9 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
   implicit classes for the builtin types.
 - **AOP intercepts** — a glob-matched before/after/around call-intercept
   registry, the same design as zshrs's function intercepts.
-- **Editor-ready** — an LSP server over stdio and a REPL on a persistent host,
-  where a function defined at one prompt completes at the next.
+- **Editor-ready** — an LSP server and a DAP adapter over stdio, introspection
+  dumps (`--dump-tokens`, `--dump-ast`, `--disasm`), and a REPL on a persistent
+  host where a function defined at one prompt completes at the next.
 - **Differential parity** — a 48-snippet corpus diffed live against the reference
   `Rscript`, frozen and replayed in CI with no R installed.
 
@@ -172,8 +173,11 @@ Implemented and checked against the reference `Rscript`:
 | `-e SRC` | Run a one-liner. |
 | `--repl` | Interactive REPL on a persistent host. |
 | `--lsp` | Language Server Protocol over stdio. |
+| `--dap` | Debug Adapter Protocol over stdio (handshake + run to completion). |
 | `--build FILE` | AOT-compile the script's bytecode into the on-disk cache. |
-| `--dump-bytecode FILE` | Print the lowered fusevm chunk. |
+| `--dump-tokens FILE` | Print the lexer token stream. |
+| `--dump-ast FILE` | Print the parsed AST. |
+| `--disasm FILE` | Disassemble the lowered fusevm chunk. |
 
 ---
 
@@ -218,7 +222,8 @@ clean exit and stdout matching the frozen reference output
 ## [0x07] STATUS & ROADMAP
 
 The standalone `Rscript` binary, the REPL, the rkyv bytecode cache, the AOP
-call-intercept registry, and the LSP server are all in the tree. The parity
+call-intercept registry, the LSP server, and the DAP adapter (handshake plus
+run-to-completion; stepping is a later wave) are all in the tree. The parity
 corpus and every example match the reference R byte-for-byte.
 
 Arguments are evaluated eagerly rather than as promises, so `substitute()` /

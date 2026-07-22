@@ -73,6 +73,10 @@ against the reference `Rscript` rather than against a self-recorded baseline.
   call, which costs on deeply recursive workloads.
 - **AOP intercepts are a registry, not a weave.** `intercepts::matches()` is live
   and tested; the dispatcher does not consult it yet.
-- **No DAP adapter.** The LSP server is in the tree; debugging is not.
+- **The DAP adapter does not step.** The handshake, launch, and
+  run-to-completion path with stdout forwarded as `output` events are real;
+  breakpoints and stepping are not wired to the fusevm line table yet.
+- **No inline `rust { }` FFI.** The sibling frontends compile inline Rust blocks
+  to a cached `cdylib` and call them by name; rlang has no such block yet.
 - **`Recall()` and `Negate()` are stubs** that raise rather than pretending to
   work.

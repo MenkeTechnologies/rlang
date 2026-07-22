@@ -22,13 +22,25 @@ pub struct Cli {
     #[arg(long = "lsp")]
     pub lsp: bool,
 
+    /// Speak the Debug Adapter Protocol over stdio.
+    #[arg(long = "dap")]
+    pub dap: bool,
+
     /// Ahead-of-time compile the script's bytecode into the on-disk cache.
     #[arg(long = "build")]
     pub build: bool,
 
-    /// Print the compiled fusevm bytecode for the script and exit.
-    #[arg(long = "dump-bytecode")]
-    pub dump_bytecode: bool,
+    /// Print the lexer token stream for the script and exit.
+    #[arg(long = "dump-tokens")]
+    pub dump_tokens: bool,
+
+    /// Print the parsed AST for the script and exit.
+    #[arg(long = "dump-ast")]
+    pub dump_ast: bool,
+
+    /// Disassemble the compiled fusevm bytecode for the script and exit.
+    #[arg(long = "disasm", alias = "dump-bytecode")]
+    pub disasm: bool,
 
     /// The `.R` script to run (omit with --repl / --lsp / -e).
     #[arg(value_name = "FILE")]

@@ -23,11 +23,20 @@ Start the interactive REPL on a persistent host.
 .B \-\-lsp
 Speak the Language Server Protocol over stdio.
 .TP
+.B \-\-dap
+Speak the Debug Adapter Protocol over stdio.
+.TP
 .B \-\-build " " \fIFILE\fR
 Ahead-of-time compile the script's bytecode into the on-disk cache.
 .TP
-.B \-\-dump\-bytecode " " \fIFILE\fR
-Print the lowered fusevm bytecode and exit.
+.B \-\-dump\-tokens " " \fIFILE\fR
+Print the lexer token stream and exit.
+.TP
+.B \-\-dump\-ast " " \fIFILE\fR
+Print the parsed AST and exit.
+.TP
+.B \-\-disasm " " \fIFILE\fR
+Disassemble the lowered fusevm bytecode and exit.
 .SH EXIT STATUS
 0 on success, 1 on a parse or runtime error (reported to stderr as
 .IR "Rscript: <reason>" ).

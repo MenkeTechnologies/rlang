@@ -281,9 +281,12 @@ print(substr("bytecode", 1, 4))                 # [1] "byte"</pre>
             <tr><td><code>FILE</code></td><td>Run a <code>.R</code> script.</td></tr>
             <tr><td><code>-e SRC</code></td><td>Run a one-liner.</td></tr>
             <tr><td><code>--repl</code></td><td>Interactive REPL on a persistent host — a function defined at one prompt completes at the next.</td></tr>
+            <tr><td><code>--dap</code></td><td>Debug Adapter Protocol over stdio: handshake, launch, and run to completion with stdout forwarded as <code>output</code> events. Stepping is a later wave.</td></tr>
             <tr><td><code>--lsp</code></td><td>Language Server Protocol over stdio (diagnostics, hover, completion).</td></tr>
             <tr><td><code>--build FILE</code></td><td>Ahead-of-time compile the script's bytecode into the on-disk cache.</td></tr>
-            <tr><td><code>--dump-bytecode FILE</code></td><td>Print the lowered fusevm chunk.</td></tr>
+            <tr><td><code>--dump-tokens FILE</code></td><td>Print the lexer token stream.</td></tr>
+            <tr><td><code>--dump-ast FILE</code></td><td>Print the parsed AST.</td></tr>
+            <tr><td><code>--disasm FILE</code></td><td>Disassemble the lowered fusevm chunk.</td></tr>
           </tbody>
         </table>
       </section>
@@ -307,6 +310,7 @@ print(substr("bytecode", 1, 4))                 # [1] "byte"</pre>
             <tr><td>Standalone <code>Rscript</code> binary + REPL</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Files, <code>-e</code> one-liners, persistent-host REPL (<code>src/main.rs</code>, <code>src/repl.rs</code>).</td></tr>
             <tr><td>rkyv bytecode script cache</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Versioned shard at <code>~/.rlang/scripts.rkyv</code> (<code>src/cache.rs</code>).</td></tr>
             <tr><td>Parity harness vs reference <code>Rscript</code></td><td><span class="status-pill status-implemented">Implemented</span></td><td>48-snippet differential corpus plus 8 runnable examples, frozen and replayed in CI with no R installed.</td></tr>
+            <tr><td>DAP adapter (<code>--dap</code>)</td><td><span class="status-pill status-progress">Partial</span></td><td>Handshake, launch, and run to completion with program stdout forwarded as <code>output</code> events; stepping and breakpoints are a later wave (<code>src/dap.rs</code>).</td></tr>
             <tr><td>LSP server (<code>--lsp</code>)</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Diagnostics, hover, completion over stdio (<code>src/lsp.rs</code>).</td></tr>
             <tr><td>AOP call intercepts</td><td><span class="status-pill status-progress">Partial</span></td><td>Glob-matched before/after/around registry is live and tested; the dispatcher does not consult it yet (<code>src/intercepts.rs</code>).</td></tr>
             <tr><td>Promises / non-standard evaluation</td><td><span class="status-pill status-planned">Planned</span></td><td>Arguments evaluate eagerly, so <code>substitute()</code>, <code>quote()</code>, <code>match.call()</code>, and formulas are absent.</td></tr>

@@ -34,13 +34,20 @@ fn run() -> ExitCode {
         };
     }
 
+    if cli.dap {
+        return match rlang::dap::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e),
+        };
+    }
+
     if let Some(src) = cli.eval {
         return run_source(&src);
     }
 
-    if let Some(file) = cli.file {
-        if cli.dump_bytecode {
-            return match dump(&file) {
+    if let Some(file) = cli.file.clone() {
+        if cli.dump_tokens || cli.dump_ast || cli.disasm {
+            return match dump(&file, &cli) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => fail(&e),
             };
@@ -77,16 +84,23 @@ fn run_source(src: &str) -> ExitCode {
     }
 }
 
-fn dump(file: &str) -> Result<(), String> {
+/// The introspection dumps: token stream, AST, and bytecode disassembly. All
+/// three are explicit user-requested output.
+fn dump(file: &str, cli: &rlang::cli::Cli) -> Result<(), String> {
     let src = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let prog = rlang::compile(&src)?;
-    println!("== main ==\n{:#?}", prog.main.ops);
-    for (i, c) in prog.closures.iter().enumerate() {
-        println!(
-            "== closure #{i} ({}) ==\n{:#?}",
-            c.params.join(", "),
-            c.chunk.ops
-        );
+    if cli.dump_tokens {
+        for t in rlang::lexer::lex(&src)? {
+            println!("{:>5}  {:?}", t.line, t.tok);
+        }
+    }
+    if cli.dump_ast {
+        for e in rlang::parser::parse(&src)? {
+            println!("{e:#?}");
+        }
+    }
+    if cli.disasm {
+        let prog = rlang::compile(&src)?;
+        print!("{}", rlang::disasm(&prog));
     }
     Ok(())
 }

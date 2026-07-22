@@ -13,6 +13,7 @@ pub mod builtins;
 pub mod cache;
 pub mod cli;
 pub mod compiler;
+pub mod dap;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
@@ -52,6 +53,27 @@ pub fn run_compiled(prog: compiler::Program) -> Result<Value, String> {
 pub fn eval_file(path: &str) -> Result<Value, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     eval_str(&src)
+}
+
+/// Disassemble a compiled program: the top-level chunk and every closure body,
+/// each op numbered by its index so jump targets read directly.
+pub fn disasm(prog: &compiler::Program) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let mut chunk = |title: String, c: &fusevm::Chunk| {
+        let _ = writeln!(out, "== {title} ==");
+        for (i, op) in c.ops.iter().enumerate() {
+            let _ = writeln!(out, "{i:>5}  {op:?}");
+        }
+        if !c.constants.is_empty() {
+            let _ = writeln!(out, "  constants: {:?}", c.constants);
+        }
+    };
+    chunk("main".to_string(), &prog.main);
+    for (i, c) in prog.closures.iter().enumerate() {
+        chunk(format!("closure #{i} ({})", c.params.join(", ")), &c.chunk);
+    }
+    out
 }
 
 /// Evaluate `src` and return what `print` would show for the last value — the

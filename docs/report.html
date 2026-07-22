@@ -161,13 +161,13 @@
             <tr><td>parity harness vs reference <code>Rscript</code></td><td>Implemented</td><td>48 snippets + 8 examples, frozen and replayed in CI (<code>src/bin/parity.rs</code>, <code>tests/parity.rs</code>, <code>tests/examples.rs</code>).</td></tr>
             <tr><td>standalone <code>Rscript</code> binary + REPL</td><td>Implemented</td><td>Files, <code>-e</code> one-liners, persistent-host REPL (<code>src/main.rs</code>, <code>src/repl.rs</code>).</td></tr>
             <tr><td>rkyv bytecode cache</td><td>Implemented</td><td>Versioned shard at <code>~/.rlang/scripts.rkyv</code> (<code>src/cache.rs</code>).</td></tr>
-            <tr><td>AOT build (<code>--build</code>) / <code>--dump-bytecode</code></td><td>Implemented</td><td>Bytecode compiled into the cache ahead of time; the lowered chunk can be printed (<code>src/aot.rs</code>, <code>src/cli.rs</code>).</td></tr>
+            <tr><td>AOT build (<code>--build</code>) / <code>--disasm</code> / <code>--dump-tokens</code> / <code>--dump-ast</code></td><td>Implemented</td><td>Bytecode compiled into the cache ahead of time; token stream, AST, and disassembly can be printed (<code>src/aot.rs</code>, <code>src/cli.rs</code>).</td></tr>
             <tr><td>LSP server (<code>--lsp</code>)</td><td>Implemented</td><td>Diagnostics from the runtime parser, hover and completion from the primitive corpus (<code>src/lsp.rs</code>).</td></tr>
             <tr><td>AOP call intercepts</td><td>Partial</td><td>Glob-matched before/after/around registry is live and tested; the dispatcher does not consult it yet (<code>src/intercepts.rs</code>).</td></tr>
             <tr><td>promises / non-standard evaluation</td><td>Not implemented</td><td>Arguments evaluate eagerly at the call site.</td></tr>
             <tr><td>condition system</td><td>Not implemented</td><td>No <code>tryCatch</code>, <code>withCallingHandlers</code>, <code>on.exit</code>, or restarts.</td></tr>
             <tr><td>data frames / factors / linear algebra</td><td>Not implemented</td><td>No <code>data.frame</code>, <code>factor</code>, complex numbers, <code>apply</code> over margins, <code>%*%</code>, <code>cbind</code>/<code>rbind</code>.</td></tr>
-            <tr><td>DAP adapter</td><td>Not implemented</td><td>The LSP server is in the tree; there is no debug adapter.</td></tr>
+            <tr><td>DAP adapter (<code>--dap</code>)</td><td>Partial</td><td>Handshake, launch, and run to completion with stdout forwarded as <code>output</code> events; no stepping or breakpoints (<code>src/dap.rs</code>).</td></tr>
           </tbody>
         </table>
       </section>
@@ -191,7 +191,7 @@
             <tr><td>printing</td><td>Small numbers do not switch to scientific notation (R prints <code>1e-10</code>, rlang prints the expanded decimal). <code>format()</code> is a thin <code>as.character</code> with no <code>nsmall</code>/<code>width</code>/<code>justify</code>/<code>big.mark</code>. No <code>str()</code>, <code>summary()</code>, or <code>dput()</code>.</td></tr>
             <tr><td>syntax</td><td><code>else</code> may start a new line at top level, which R rejects outside <code>{ }</code> — so a program R rejects can run here. <code>pkg::name</code> parses and the qualifier is dropped (rlang has one namespace); <code>?</code> is lexed and unused. No <code>library()</code>/<code>require()</code> and no package system, so CRAN-dependent programs are out of scope by construction.</td></tr>
             <tr><td>S3 / S4 / R5</td><td><code>NextMethod()</code> is missing — dispatch stops at the first matching method. No S4, Reference Classes, or R6; <code>@</code> parses and reads an attribute, which is not slot semantics. No group generics (<code>Ops</code>, <code>Math</code>, <code>Summary</code>), so a class cannot overload <code>+</code> through S3.</td></tr>
-            <tr><td>runtime</td><td>No garbage collection — the <code>RHost</code> heap only grows within a run. Closure bodies are cloned per call, which costs on deeply recursive workloads. The AOP registry is not yet consulted by the dispatcher. No DAP adapter. <code>Recall()</code> and <code>Negate()</code> are stubs that raise.</td></tr>
+            <tr><td>runtime</td><td>No garbage collection — the <code>RHost</code> heap only grows within a run. Closure bodies are cloned per call, which costs on deeply recursive workloads. The AOP registry is not yet consulted by the dispatcher. The DAP adapter does not step, and there is no inline <code>rust { }</code> FFI. <code>Recall()</code> and <code>Negate()</code> are stubs that raise.</td></tr>
           </tbody>
         </table>
       </section>
