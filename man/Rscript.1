@@ -1,0 +1,35 @@
+.TH RSCRIPT 1 "2026" "rlang" "User Commands"
+.SH NAME
+Rscript \- compiled R runtime on the fusevm bytecode VM
+.SH SYNOPSIS
+.B Rscript
+[\fIOPTIONS\fR]
+[\fIFILE\fR]
+.SH DESCRIPTION
+.B rlang
+runs R programs by lexing and parsing to an AST, lowering to
+.B fusevm
+bytecode, and executing on a shared bytecode VM with a three-tier Cranelift
+JIT. Loops and branches lower to native VM ops; R's vector, attribute, and
+S3 semantics are served by a runtime host.
+.SH OPTIONS
+.TP
+.BR \-e ", " \-\-eval " " \fISRC\fR
+Execute a one-liner instead of a file.
+.TP
+.B \-\-repl
+Start the interactive REPL on a persistent host.
+.TP
+.B \-\-lsp
+Speak the Language Server Protocol over stdio.
+.TP
+.B \-\-build " " \fIFILE\fR
+Ahead-of-time compile the script's bytecode into the on-disk cache.
+.TP
+.B \-\-dump\-bytecode " " \fIFILE\fR
+Print the lowered fusevm bytecode and exit.
+.SH EXIT STATUS
+0 on success, 1 on a parse or runtime error (reported to stderr as
+.IR "Rscript: <reason>" ).
+.SH SEE ALSO
+Project: https://github.com/MenkeTechnologies/rlang

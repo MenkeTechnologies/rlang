@@ -1,0 +1,22 @@
+#compdef Rscript
+# Zsh completion for the rlang `Rscript` binary.
+
+_Rscript() {
+  local -a opts
+  opts=(
+    '-e[execute a one-liner]:source'
+    '--eval[execute a one-liner]:source'
+    '--repl[start the interactive REPL]'
+    '--lsp[speak the Language Server Protocol over stdio]'
+    '--build[AOT-compile the script bytecode into the cache]'
+    '--dump-bytecode[print the lowered fusevm bytecode]'
+    '-h[show help]'
+    '--help[show help]'
+    '-V[show version]'
+    '--version[show version]'
+    '*:R script:_files -g "*.R"'
+  )
+  _arguments -s $opts
+}
+
+_Rscript "$@"

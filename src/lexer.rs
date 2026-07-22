@@ -218,9 +218,11 @@ impl<'a> Lexer<'a> {
                     let start = self.pos - 1;
                     let len = utf8_len(c);
                     self.pos = start + len;
-                    s.push_str(std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
-                        format!("line {}: invalid UTF-8 in string literal", self.line)
-                    })?);
+                    s.push_str(
+                        std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
+                            format!("line {}: invalid UTF-8 in string literal", self.line)
+                        })?,
+                    );
                 }
             }
         }

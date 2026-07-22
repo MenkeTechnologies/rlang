@@ -1,0 +1,252 @@
+x <- c(3, 1, 2)
+print(sort(x))
+print(rev(x))
+print(order(x))
+#==#
+print(1:5 * 2)
+print(c(1L, 2L) + 1L)
+print(2^10)
+print(7 %/% 2)
+print(-5 %% 3)
+print(1/0)
+#==#
+print(c(1, 2.5, 3))
+print(c(TRUE, FALSE, NA))
+print(c("a", NA))
+print(c(1, "a", TRUE))
+#==#
+v <- c(a = 1, b = 2, c = 3)
+print(v)
+print(v["b"])
+print(v[c(1, 3)])
+print(names(v))
+#==#
+x <- 1:10
+print(x[x > 5])
+print(x[-(1:5)])
+print(x[c(TRUE, FALSE)])
+print(length(x))
+#==#
+f <- function(a, b = 10) a + b
+print(f(1))
+print(f(1, 2))
+print(f(b = 3, a = 4))
+#==#
+counter <- function() {
+  n <- 0
+  function() {
+    n <<- n + 1
+    n
+  }
+}
+step <- counter()
+print(step())
+print(step())
+print(step())
+#==#
+print(sapply(1:5, function(i) i * i))
+print(unlist(lapply(1:3, function(i) i + 1)))
+print(Filter(function(x) x %% 2 == 0, 1:10))
+print(Reduce(function(a, b) a * b, 1:5))
+#==#
+s <- "Hello, World"
+print(nchar(s))
+print(toupper(s))
+print(substr(s, 1, 5))
+print(strsplit(s, ", ")[[1]])
+print(gsub("o", "0", s))
+print(grepl("World", s))
+#==#
+print(paste("a", "b", "c"))
+print(paste0("x", 1:3))
+print(paste(c("a", "b"), collapse = "+"))
+print(sprintf("%d items at %.2f", 3L, 1.5))
+print(sprintf("%-6s|", "ab"))
+#==#
+m <- matrix(1:6, nrow = 2)
+print(m)
+print(dim(m))
+print(m[2, 3])
+print(m[, 2])
+print(t(m))
+#==#
+l <- list(a = 1, b = "two", c = c(3, 4))
+print(l$a)
+print(l[["b"]])
+print(l$c[2])
+print(names(l))
+print(length(l))
+#==#
+l <- list(1, 2)
+l[[3]] <- 3
+print(length(l))
+l$name <- "x"
+print(l$name)
+#==#
+total <- 0
+for (i in 1:10) {
+  if (i %% 2 == 0) next
+  if (i > 7) break
+  total <- total + i
+}
+print(total)
+#==#
+i <- 0
+while (TRUE) {
+  i <- i + 1
+  if (i >= 5) break
+}
+print(i)
+#==#
+fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2)
+print(sapply(0:10, fib))
+#==#
+print(sum(1:100))
+print(mean(c(1, 2, 3, 4)))
+print(median(c(3, 1, 2)))
+print(max(c(1, 9, 5)))
+print(range(c(4, 2, 8)))
+print(prod(1:5))
+#==#
+print(sd(c(2, 4, 4, 4, 5, 5, 7, 9)))
+print(var(c(1, 2, 3, 4)))
+print(cumsum(1:5))
+print(diff(c(1, 4, 9, 16)))
+#==#
+print(round(2.5))
+print(round(3.14159, 2))
+print(floor(-1.5))
+print(ceiling(1.2))
+print(abs(-3L))
+print(sqrt(16))
+#==#
+print(is.na(c(1, NA, 3)))
+print(sum(c(1, NA, 3), na.rm = TRUE))
+print(NA > 1)
+print(NA & FALSE)
+print(NA | TRUE)
+#==#
+print(seq(1, 10, by = 2))
+print(seq_len(5))
+print(seq_along(c("a", "b", "c")))
+print(rep(1:2, times = 3))
+print(rep(1:2, each = 2))
+#==#
+print(unique(c(1, 2, 2, 3, 1)))
+print(union(1:3, 2:5))
+print(intersect(1:5, 3:8))
+print(setdiff(1:5, 3:8))
+print(1:5 %in% c(2, 4))
+#==#
+print(which(c(FALSE, TRUE, TRUE)))
+print(which.max(c(1, 9, 3)))
+print(any(c(FALSE, TRUE)))
+print(all(c(TRUE, TRUE)))
+#==#
+print(head(1:10, 3))
+print(tail(1:10, 3))
+print(identical(c(1, 2), c(1, 2)))
+print(ifelse(c(1, 2, 3) > 2, "big", "small"))
+#==#
+x <- c(1, 2, 3)
+x[2] <- 20
+print(x)
+x[5] <- 50
+print(x)
+names(x) <- c("a", "b", "c", "d", "e")
+print(x)
+#==#
+p <- list(name = "circle", r = 2)
+class(p) <- "shape"
+area <- function(s) UseMethod("area")
+area.shape <- function(s) 3.14 * s$r^2
+print(area(p))
+print(class(p))
+print(inherits(p, "shape"))
+#==#
+describe <- function(x) UseMethod("describe")
+describe.default <- function(x) "unknown"
+describe.numeric <- function(x) "a number"
+print(describe(1))
+print(describe("s"))
+#==#
+`%+%` <- function(a, b) paste0(a, b)
+print("foo" %+% "bar")
+#==#
+add <- function(...) sum(...)
+print(add(1, 2, 3))
+count <- function(...) length(list(...))
+print(count("a", "b"))
+#==#
+f <- function(x) {
+  if (x < 0) return("negative")
+  "non-negative"
+}
+print(f(-1))
+print(f(1))
+#==#
+x <- 5
+print(if (x > 3) "big" else "small")
+print(TRUE && FALSE)
+print(FALSE || TRUE)
+print(!c(TRUE, FALSE))
+#==#
+print(as.integer("42"))
+print(as.numeric("3.5"))
+print(as.character(10))
+print(as.logical("TRUE"))
+print(typeof(1L))
+print(typeof(1))
+print(class(c("a")))
+#==#
+print(do.call(sum, list(1, 2, 3)))
+print(do.call(paste, list("a", "b", sep = "-")))
+#==#
+print(Map(function(a, b) a + b, 1:3, 4:6))
+#==#
+x <- 1:20
+print(x)
+#==#
+print(nchar(c("a", "bb", "ccc")))
+print(trimws("  pad  "))
+print(startsWith("prefix", "pre"))
+print(sort(c("banana", "apple", "cherry")))
+#==#
+v <- 1:5
+v[v > 3] <- 0
+print(v)
+#==#
+lst <- list(a = 1, b = 2)
+lst[["a"]] <- 100
+print(lst$a)
+lst$b <- NULL
+print(length(lst))
+#==#
+print(vapply(1:3, function(i) i * 2, numeric(1)))
+print(setNames(1:3, c("a", "b", "c")))
+#==#
+x <- list(1, 2, 3)
+print(sapply(x, function(e) e * 10))
+#==#
+f <- function(n) {
+  acc <- numeric(0)
+  for (i in seq_len(n)) acc <- c(acc, i^2)
+  acc
+}
+print(f(5))
+#==#
+print(seq(0, 1, length.out = 5))
+print(1:3 |> sum())
+#==#
+print(20000100000)
+print(1e-10)
+print(1234567890123)
+print(1e5)
+print(0.0001)
+print(c(1e10, 1))
+print(2^31)
+print(as.character(1e5))
+#==#
+cat(1/3, "\n")
+cat(1e10, "\n")
+cat(TRUE, NA, "\n")

@@ -1,0 +1,10 @@
+doubled: 20 40 60 80 
+recycled: 11 22 31 42 
+sum: 100 mean: 25 
+sum with NA: NA 
+sum na.rm: 4 
+big: 20 30 40 
+dropped first: 20 30 40 
+ first second  third 
+     1      2      3 
+by name: 2 

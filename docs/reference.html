@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="rlang — Primitive reference. The 131 primitive functions available in the current rlang build, generated from the language-server corpus. MIT licensed.">
+  <title>rlang &mdash; Primitive Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main { max-width: 76rem; }
+    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
+    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
+    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
+    .file-table tr:hover td { background:var(--bg-hover); }
+    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
+    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
+    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
+    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
+    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
+    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
+    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
+    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:42rem;opacity:0.75; }
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="docsApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// RLANG &mdash; PRIMITIVE REFERENCE</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering Report</a>
+            <span class="sep">/</span>
+            <span class="current">Primitive Reference</span>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p class="docs-build-line">rlang v0.1.0 &middot; generated from the language-server corpus &middot; MIT</p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+          <a class="btn btn-secondary" href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <section>
+        <p>Every primitive the current build implements. The table is generated
+        from the same corpus the language server completes from, so a function
+        listed here exists in the runtime and a function missing here raises
+        <code>could not find function</code> rather than failing silently.</p>
+
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-val">131</div>
+            <div class="stat-label">Primitives</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val accent">v0.1.0</div>
+            <div class="stat-label">Build</div>
+          </div>
+        </div>
+
+        <table class="file-table">
+          <thead><tr><th>function</th><th>description</th></tr></thead>
+          <tbody>
+        <tr><td><code>c</code></td><td>c(...) — combine values into a vector, promoting to the widest type.</td></tr>
+        <tr><td><code>length</code></td><td>length(x) — the number of elements.</td></tr>
+        <tr><td><code>names</code></td><td>names(x) — the `names` attribute, or NULL.</td></tr>
+        <tr><td><code>attr</code></td><td>R primitive.</td></tr>
+        <tr><td><code>attributes</code></td><td>R primitive.</td></tr>
+        <tr><td><code>class</code></td><td>class(x) — the class vector (explicit attribute or implicit type).</td></tr>
+        <tr><td><code>inherits</code></td><td>R primitive.</td></tr>
+        <tr><td><code>unclass</code></td><td>R primitive.</td></tr>
+        <tr><td><code>structure</code></td><td>R primitive.</td></tr>
+        <tr><td><code>print</code></td><td>print(x) — print a value in R's default layout.</td></tr>
+        <tr><td><code>cat</code></td><td>cat(...) — write values with no quotes and no newline.</td></tr>
+        <tr><td><code>paste</code></td><td>paste(..., sep = " ", collapse = NULL) — elementwise string join.</td></tr>
+        <tr><td><code>paste0</code></td><td>R primitive.</td></tr>
+        <tr><td><code>format</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sprintf</code></td><td>sprintf(fmt, ...) — C-style formatting, vectorized.</td></tr>
+        <tr><td><code>message</code></td><td>R primitive.</td></tr>
+        <tr><td><code>warning</code></td><td>R primitive.</td></tr>
+        <tr><td><code>stop</code></td><td>stop(...) — signal an error and abort.</td></tr>
+        <tr><td><code>invisible</code></td><td>invisible(x) — return x without the top-level echo.</td></tr>
+        <tr><td><code>identity</code></td><td>R primitive.</td></tr>
+        <tr><td><code>seq</code></td><td>seq(from, to, by =, length.out =) — build a sequence.</td></tr>
+        <tr><td><code>seq_len</code></td><td>seq_len(n) — 1..n as an integer vector.</td></tr>
+        <tr><td><code>seq_along</code></td><td>R primitive.</td></tr>
+        <tr><td><code>rep</code></td><td>rep(x, times =, each =) — repeat elements.</td></tr>
+        <tr><td><code>rev</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sort</code></td><td>R primitive.</td></tr>
+        <tr><td><code>order</code></td><td>R primitive.</td></tr>
+        <tr><td><code>unique</code></td><td>R primitive.</td></tr>
+        <tr><td><code>which</code></td><td>R primitive.</td></tr>
+        <tr><td><code>which.max</code></td><td>R primitive.</td></tr>
+        <tr><td><code>which.min</code></td><td>R primitive.</td></tr>
+        <tr><td><code>any</code></td><td>R primitive.</td></tr>
+        <tr><td><code>all</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sum</code></td><td>R primitive.</td></tr>
+        <tr><td><code>prod</code></td><td>R primitive.</td></tr>
+        <tr><td><code>mean</code></td><td>R primitive.</td></tr>
+        <tr><td><code>median</code></td><td>R primitive.</td></tr>
+        <tr><td><code>var</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sd</code></td><td>R primitive.</td></tr>
+        <tr><td><code>min</code></td><td>R primitive.</td></tr>
+        <tr><td><code>max</code></td><td>R primitive.</td></tr>
+        <tr><td><code>range</code></td><td>R primitive.</td></tr>
+        <tr><td><code>abs</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sqrt</code></td><td>R primitive.</td></tr>
+        <tr><td><code>exp</code></td><td>R primitive.</td></tr>
+        <tr><td><code>log</code></td><td>R primitive.</td></tr>
+        <tr><td><code>log2</code></td><td>R primitive.</td></tr>
+        <tr><td><code>log10</code></td><td>R primitive.</td></tr>
+        <tr><td><code>floor</code></td><td>R primitive.</td></tr>
+        <tr><td><code>ceiling</code></td><td>R primitive.</td></tr>
+        <tr><td><code>round</code></td><td>R primitive.</td></tr>
+        <tr><td><code>trunc</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sign</code></td><td>R primitive.</td></tr>
+        <tr><td><code>cumsum</code></td><td>R primitive.</td></tr>
+        <tr><td><code>cumprod</code></td><td>R primitive.</td></tr>
+        <tr><td><code>diff</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.null</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.na</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.numeric</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.character</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.logical</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.function</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.list</code></td><td>R primitive.</td></tr>
+        <tr><td><code>is.vector</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.numeric</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.double</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.integer</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.character</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.logical</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.vector</code></td><td>R primitive.</td></tr>
+        <tr><td><code>as.list</code></td><td>R primitive.</td></tr>
+        <tr><td><code>list</code></td><td>R primitive.</td></tr>
+        <tr><td><code>unlist</code></td><td>R primitive.</td></tr>
+        <tr><td><code>lapply</code></td><td>lapply(X, FUN, ...) — apply FUN to each element, returning a list.</td></tr>
+        <tr><td><code>sapply</code></td><td>sapply(X, FUN, ...) — lapply, simplified to a vector when possible.</td></tr>
+        <tr><td><code>vapply</code></td><td>R primitive.</td></tr>
+        <tr><td><code>Map</code></td><td>R primitive.</td></tr>
+        <tr><td><code>Reduce</code></td><td>Reduce(f, x, init) — fold a list with a binary function.</td></tr>
+        <tr><td><code>Filter</code></td><td>Filter(f, x) — keep elements for which f is TRUE.</td></tr>
+        <tr><td><code>do.call</code></td><td>do.call(what, args) — call a function with an argument list.</td></tr>
+        <tr><td><code>nchar</code></td><td>R primitive.</td></tr>
+        <tr><td><code>substr</code></td><td>R primitive.</td></tr>
+        <tr><td><code>substring</code></td><td>R primitive.</td></tr>
+        <tr><td><code>toupper</code></td><td>R primitive.</td></tr>
+        <tr><td><code>tolower</code></td><td>R primitive.</td></tr>
+        <tr><td><code>strsplit</code></td><td>R primitive.</td></tr>
+        <tr><td><code>sub</code></td><td>R primitive.</td></tr>
+        <tr><td><code>gsub</code></td><td>gsub(pattern, replacement, x) — replace every regex match.</td></tr>
+        <tr><td><code>grepl</code></td><td>grepl(pattern, x) — TRUE where the regex matches.</td></tr>
+        <tr><td><code>grep</code></td><td>R primitive.</td></tr>
+        <tr><td><code>trimws</code></td><td>R primitive.</td></tr>
+        <tr><td><code>startsWith</code></td><td>R primitive.</td></tr>
+        <tr><td><code>endsWith</code></td><td>R primitive.</td></tr>
+        <tr><td><code>matrix</code></td><td>matrix(data, nrow, ncol) — build a matrix (column-major).</td></tr>
+        <tr><td><code>dim</code></td><td>R primitive.</td></tr>
+        <tr><td><code>nrow</code></td><td>R primitive.</td></tr>
+        <tr><td><code>ncol</code></td><td>R primitive.</td></tr>
+        <tr><td><code>t</code></td><td>R primitive.</td></tr>
+        <tr><td><code>head</code></td><td>R primitive.</td></tr>
+        <tr><td><code>tail</code></td><td>R primitive.</td></tr>
+        <tr><td><code>append</code></td><td>R primitive.</td></tr>
+        <tr><td><code>setdiff</code></td><td>R primitive.</td></tr>
+        <tr><td><code>union</code></td><td>R primitive.</td></tr>
+        <tr><td><code>intersect</code></td><td>R primitive.</td></tr>
+        <tr><td><code>identical</code></td><td>R primitive.</td></tr>
+        <tr><td><code>isTRUE</code></td><td>R primitive.</td></tr>
+        <tr><td><code>isFALSE</code></td><td>R primitive.</td></tr>
+        <tr><td><code>ifelse</code></td><td>R primitive.</td></tr>
+        <tr><td><code>stopifnot</code></td><td>R primitive.</td></tr>
+        <tr><td><code>numeric</code></td><td>R primitive.</td></tr>
+        <tr><td><code>character</code></td><td>R primitive.</td></tr>
+        <tr><td><code>logical</code></td><td>R primitive.</td></tr>
+        <tr><td><code>integer</code></td><td>R primitive.</td></tr>
+        <tr><td><code>vector</code></td><td>R primitive.</td></tr>
+        <tr><td><code>setNames</code></td><td>R primitive.</td></tr>
+        <tr><td><code>exists</code></td><td>R primitive.</td></tr>
+        <tr><td><code>get</code></td><td>R primitive.</td></tr>
+        <tr><td><code>assign</code></td><td>R primitive.</td></tr>
+        <tr><td><code>environment</code></td><td>R primitive.</td></tr>
+        <tr><td><code>new.env</code></td><td>R primitive.</td></tr>
+        <tr><td><code>missing</code></td><td>R primitive.</td></tr>
+        <tr><td><code>return</code></td><td>R primitive.</td></tr>
+        <tr><td><code>UseMethod</code></td><td>UseMethod(generic) — dispatch on the class of the first argument.</td></tr>
+        <tr><td><code>nlevels</code></td><td>R primitive.</td></tr>
+        <tr><td><code>typeof</code></td><td>R primitive.</td></tr>
+        <tr><td><code>mode</code></td><td>R primitive.</td></tr>
+        <tr><td><code>Recall</code></td><td>R primitive.</td></tr>
+        <tr><td><code>Negate</code></td><td>R primitive.</td></tr>
+        <tr><td><code>toString</code></td><td>R primitive.</td></tr>
+        <tr><td><code>rownames</code></td><td>R primitive.</td></tr>
+        <tr><td><code>colnames</code></td><td>R primitive.</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script src="hud-theme.js"></script>
+</body>
+</html>

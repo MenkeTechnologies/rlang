@@ -1,0 +1,10 @@
+chars: 19 
+upper: THE QUICK BROWN FOX 
+first word: The 
+[1] "The"   "quick" "brown" "fox"  
+joined: The-quick-brown-fox 
+numbered: 1.The 2.quick 3.brown 4.fox 
+left    | 3.14|0042
+The quick br0wn f0x 
+has fox: TRUE 
+[1] "apple" "fig"   "pear" 

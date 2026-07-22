@@ -40,6 +40,20 @@ crate-type = ["rlib", "staticlib"]
 name = "Rscript"
 path = "src/main.rs"
 
+# Offline generator for docs/reference.html — renders the primitive library
+# (the src/lsp.rs corpus) as a static page. Run before pushing Pages.
+[[bin]]
+name = "gen-docs"
+path = "src/bin/gen_docs.rs"
+
+# Differential parity harness: runs the corpus through rlang and the reference
+# `Rscript`, diffing stdout. Development tool — it needs R on PATH, so CI never
+# runs it; its frozen outputs live in tests/data/parity_expected.txt, which
+# tests/parity.rs replays with no R installed.
+[[bin]]
+name = "parity"
+path = "src/bin/parity.rs"
+
 [dependencies]
 # R executes on fusevm. rlang is a pure frontend: it lowers R to fusevm bytecode
 # (src/compiler.rs) and hosts the R vector heap (src/host.rs, reached from
@@ -75,6 +89,11 @@ libc = "0.2"
 # Interactive REPL (`Rscript --repl` / TTY fallthrough).
 reedline = "0.47.0"
 nu-ansi-term = "0.50"
+
+# Regular expressions for `grepl`/`sub`/`gsub`, which R programs lean on
+# constantly; R's default patterns are POSIX ERE, close enough to the regex
+# crate's syntax for the common cases.
+regex = "1"
 
 # Glob matcher for the AOP call-intercept registry (src/intercepts.rs).
 glob = "0.3"
