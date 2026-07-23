@@ -9,7 +9,7 @@
 
 use crate::host::{
     call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
-    RData, Signal,
+    CombinatorKind, RData, Signal,
 };
 use fusevm::{Value, VM};
 use indexmap::IndexMap;
@@ -1566,6 +1566,7 @@ pub const PRIMITIVES: &[&str] = &[
     "bitwShiftR",
     "Recall",
     "Negate",
+    "Vectorize",
     "toString",
     "deparse",
     "rownames",
@@ -1575,6 +1576,35 @@ pub const PRIMITIVES: &[&str] = &[
     ".rust",
     ".Call",
 ];
+
+/// Invoke a runtime-constructed function ([`RData::Combinator`]): `Negate`
+/// negates the wrapped function's logical result; `Vectorize` applies it
+/// elementwise over the recycled arguments and simplifies.
+pub fn call_combinator(
+    kind: CombinatorKind,
+    inner: &Value,
+    args: Vec<(Option<String>, Value)>,
+) -> Result<Value, String> {
+    match kind {
+        CombinatorKind::Negate => {
+            let r = call_value(inner, args, None)?;
+            Ok(mk_lgl(as_lgl(&r).iter().map(|e| e.map(|b| !b)).collect()))
+        }
+        CombinatorKind::Vectorize => {
+            let lists: Vec<Vec<Value>> = args.iter().map(|(_, v)| elements(v)).collect();
+            let n = lists.iter().map(|l| l.len()).max().unwrap_or(0);
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let call_args: Vec<(Option<String>, Value)> = lists
+                    .iter()
+                    .map(|l| (None, l[i % l.len().max(1)].clone()))
+                    .collect();
+                out.push(call_value(inner, call_args, None)?);
+            }
+            Ok(simplify(&mk_list(out)))
+        }
+    }
+}
 
 /// Call a primitive by name with evaluated arguments.
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
@@ -3300,8 +3330,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             call_value(&f, call_args, None)
         }
         "Negate" => {
-            let _f = a.req(0, "f")?;
-            Err("Negate() is not implemented yet".into())
+            let f = a.req(0, "f")?;
+            Ok(with_host(|h| {
+                h.alloc(RData::Combinator {
+                    kind: CombinatorKind::Negate,
+                    inner: f,
+                })
+            }))
+        }
+        "Vectorize" => {
+            let f = a.req(0, "FUN")?;
+            Ok(with_host(|h| {
+                h.alloc(RData::Combinator {
+                    kind: CombinatorKind::Vectorize,
+                    inner: f,
+                })
+            }))
         }
 
         // ── matrices ────────────────────────────────────────────────────
@@ -4919,7 +4963,9 @@ pub fn format_value(v: &Value) -> Vec<String> {
     }
     match data(v) {
         RData::Null => vec!["NULL".into()],
-        RData::Closure { .. } | RData::Builtin(_) => vec![format_function(v)],
+        RData::Closure { .. } | RData::Builtin(_) | RData::Combinator { .. } => {
+            vec![format_function(v)]
+        }
         RData::Environment(_) => vec!["<environment>".into()],
         RData::Args(_) => format_list(v),
         RData::List(_) => format_list(v),

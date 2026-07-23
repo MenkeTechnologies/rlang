@@ -149,6 +149,15 @@ pub struct RObj {
 /// The R data types rlang represents. Atomic vectors hold `Option<T>`, where
 /// `None` is `NA` — R's missing value is part of every atomic type, not a
 /// separate one.
+/// Which runtime function-combinator an [`RData::Combinator`] applies.
+#[derive(Clone, Copy)]
+pub enum CombinatorKind {
+    /// `Negate(f)` — logical negation of `f`'s result.
+    Negate,
+    /// `Vectorize(f)` — apply `f` elementwise over recycled arguments.
+    Vectorize,
+}
+
 #[derive(Clone)]
 pub enum RData {
     Null,
@@ -164,6 +173,14 @@ pub enum RData {
     },
     /// A primitive implemented in Rust, named for dispatch and printing.
     Builtin(String),
+    /// A function built at runtime by wrapping another — `Negate(f)` /
+    /// `Vectorize(f)`. The closure model uses compile-time chunk ids, so a
+    /// runtime-constructed function is represented as data: the combinator kind
+    /// plus a handle to the wrapped function.
+    Combinator {
+        kind: CombinatorKind,
+        inner: Value,
+    },
     Environment(Env),
     /// A call-site argument list: `(tag, value)` pairs, produced by `MKARGS`.
     /// `Value::Undef` is an empty argument (`x[, 1]`).
@@ -552,7 +569,7 @@ impl RHost {
     pub fn is_function(&self, v: &Value) -> bool {
         matches!(
             self.get(v).map(|o| &o.data),
-            Some(RData::Closure { .. }) | Some(RData::Builtin(_))
+            Some(RData::Closure { .. }) | Some(RData::Builtin(_)) | Some(RData::Combinator { .. })
         )
     }
 
@@ -574,7 +591,9 @@ impl RHost {
             Some(RData::Dbl(_)) => "numeric",
             Some(RData::Str(_)) => "character",
             Some(RData::List(_)) => "list",
-            Some(RData::Closure { .. }) | Some(RData::Builtin(_)) => "function",
+            Some(RData::Closure { .. }) | Some(RData::Builtin(_)) | Some(RData::Combinator { .. }) => {
+                "function"
+            }
             Some(RData::Environment(_)) => "environment",
             Some(RData::Args(_)) => "list",
         }
@@ -590,7 +609,7 @@ impl RHost {
             Some(RData::Dbl(_)) => "double",
             Some(RData::Str(_)) => "character",
             Some(RData::List(_)) | Some(RData::Args(_)) => "list",
-            Some(RData::Closure { .. }) => "closure",
+            Some(RData::Closure { .. }) | Some(RData::Combinator { .. }) => "closure",
             Some(RData::Builtin(_)) => "builtin",
             Some(RData::Environment(_)) => "environment",
         }
@@ -825,6 +844,7 @@ pub fn call_value(
     match with_host(|h| h.data_of(f)) {
         RData::Builtin(name) => crate::builtins::call_primitive(&name, args),
         RData::Closure { id, env } => call_closure(id, env, args, fun_name),
+        RData::Combinator { kind, inner } => crate::builtins::call_combinator(kind, &inner, args),
         _ => Err("attempt to apply non-function".into()),
     }
 }

@@ -1082,6 +1082,21 @@ fn gen_seqx2(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_combinator(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    one(match r.below(8) {
+        0 => format!("Negate(is.na)(c({}, NA, {}))", si(r), si(r)),
+        1 => format!("Filter(Negate(is.na), c({}, NA, {}, NA, {}))", si(r), si(r), si(r)),
+        2 => format!("Negate(function(x) x > 0)({v})"),
+        3 => format!("Vectorize(function(x) x ^ 2)(1:{})", r.range(2, 6)),
+        4 => format!("Vectorize(function(x, y) x + y)(1:{n}, {n}:1)", n = r.range(2, 5)),
+        5 => format!("sapply({v}, Negate(function(x) x > 0))"),
+        6 => format!("is.function(Negate(is.null))"),
+        _ => format!("Filter(Negate(function(x) x %% 2 == 0), 1:{})", r.range(3, 9)),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1128,6 +1143,7 @@ enum Mode {
     Deparsex,
     Fmtx,
     Seqx2,
+    Combinator,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1171,6 +1187,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Deparsex,
     Mode::Fmtx,
     Mode::Seqx2,
+    Mode::Combinator,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1215,6 +1232,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Deparsex => gen_deparsex(seed),
         Mode::Fmtx => gen_fmtx(seed),
         Mode::Seqx2 => gen_seqx2(seed),
+        Mode::Combinator => gen_combinator(seed),
     }
 }
 
@@ -1260,6 +1278,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Deparsex => "deparsex",
         Mode::Fmtx => "fmtx",
         Mode::Seqx2 => "seqx2",
+        Mode::Combinator => "combinator",
     }
 }
 

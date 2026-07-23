@@ -91,6 +91,8 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **The DAP adapter does not step.** The handshake, launch, and
   run-to-completion path with stdout forwarded as `output` events are real;
   breakpoints and stepping are not wired to the fusevm line table yet.
-- **`Negate()` and `Vectorize()` are missing** — they construct a new function
-  at runtime, which the closure model (compile-time chunk ids) does not support
-  yet. `Recall()` works (it re-invokes the executing closure).
+- **Runtime-constructed functions are limited to `Negate()` and `Vectorize()`.**
+  Both work — a `Combinator` value wraps the inner function — but there is no
+  general first-class function synthesis (`as.function`, `body<-`, `Compose`,
+  building a closure from a body expression). `Recall()` re-invokes the executing
+  closure.
