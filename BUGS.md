@@ -54,9 +54,9 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **`options(digits=, scipen=)` is not implemented.** The 7-significant-digit
   default and the `scipen = 0` fixed-vs-scientific rule are, and are checked
   against R by the parity corpus, but neither is configurable.
-- **`format()` handles `nsmall` and `big.mark`** (and `formatC`/`prettyNum`
-  exist), but not `width`, `justify`, or per-call scientific control, and it does
-  not right-justify a vector to a common width the way R's `format()` does.
+- **`format()` handles `nsmall`, `digits`, `big.mark`, common decimals, and
+  common-width justification** (and `formatC`/`prettyNum`/`deparse` exist), but
+  not the `width`/`justify` arguments or per-call scientific control.
 - **No `str()`, `summary()`, or `dput()`.**
 
 ## Syntax

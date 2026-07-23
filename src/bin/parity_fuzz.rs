@@ -1053,6 +1053,35 @@ fn gen_deparsex(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_fmtx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(8) {
+        0 => format!("format(c({}, {}, {}))", si(r), si(r), si(r)),
+        1 => format!("format(c({}, {}, {}))", ff(r), ff(r), ff(r)),
+        2 => format!("format(c(\"{}\", \"{}\", \"{}\"))", ww(r), ww(r), ww(r)),
+        3 => format!("sprintf(\"%o\", {})", r.range(0, 999)),
+        4 => format!("sprintf(\"%o %x %X\", {}, {}, {})", r.range(0, 500), r.range(0, 500), r.range(0, 500)),
+        5 => format!("format(c({}, {}), nsmall = {})", ff(r), ff(r), r.range(1, 4)),
+        6 => format!("format(c({}, {}, {}), big.mark = \",\")", r.range(1000, 99999), r.range(1000, 99999), r.range(1000, 99999)),
+        _ => format!("format(seq({}, {}, {}))", r.range(0, 3), r.range(8, 20), ff(r)),
+    })
+}
+
+fn gen_seqx2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(9) {
+        0 => format!("rep_len(1:{}, {})", r.range(2, 4), r.range(1, 9)),
+        1 => format!("seq.int({}, {}, {})", r.range(0, 3), r.range(8, 16), r.range(2, 4)),
+        2 => format!("rev(c(a = {}, b = {}, c = {}))", si(r), si(r), si(r)),
+        3 => format!("unname(c(x = {}, y = {}))", si(r), si(r)),
+        4 => format!("isTRUE(all.equal({}, {} + 1e-10))", r.range(1, 9), r.range(1, 9)),
+        5 => format!("isTRUE(all.equal({}, {}))", si(r), si(r)),
+        6 => format!("all.equal(c({}, {}), c({}, {}))", ff(r), ff(r), ff(r), ff(r)),
+        7 => format!("rep_len(c(\"{}\", \"{}\"), {})", ww(r), ww(r), r.range(1, 7)),
+        _ => format!("rev(setNames(1:3, c(\"a\", \"b\", \"c\")))"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1097,6 +1126,8 @@ enum Mode {
     Regexflags,
     Factorx,
     Deparsex,
+    Fmtx,
+    Seqx2,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1138,6 +1169,8 @@ const ALL_MODES: &[Mode] = &[
     Mode::Regexflags,
     Mode::Factorx,
     Mode::Deparsex,
+    Mode::Fmtx,
+    Mode::Seqx2,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1180,6 +1213,8 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Regexflags => gen_regexflags(seed),
         Mode::Factorx => gen_factorx(seed),
         Mode::Deparsex => gen_deparsex(seed),
+        Mode::Fmtx => gen_fmtx(seed),
+        Mode::Seqx2 => gen_seqx2(seed),
     }
 }
 
@@ -1223,6 +1258,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Regexflags => "regexflags",
         Mode::Factorx => "factorx",
         Mode::Deparsex => "deparsex",
+        Mode::Fmtx => "fmtx",
+        Mode::Seqx2 => "seqx2",
     }
 }
 

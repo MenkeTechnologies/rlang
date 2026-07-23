@@ -1379,6 +1379,10 @@ pub const PRIMITIVES: &[&str] = &[
     "invisible",
     "identity",
     "seq",
+    "seq.int",
+    "rep_len",
+    "unname",
+    "all.equal",
     "seq_len",
     "seq_along",
     "rep",
@@ -1848,24 +1852,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `nsmall` sets the minimum decimal places, rendered from the true
             // value (not padded onto the 7-sig repr), so `format(x, nsmall = 5)`
             // shows five accurate decimals.
-            let base: Vec<Option<String>> = if numeric && (digits.is_some() || nsmall > 0) {
-                as_dbl(&x)
-                    .into_iter()
-                    .map(|e| {
-                        e.map(|v| {
-                            if !v.is_finite() {
-                                return render_fixed(v, 0);
+            let is_dbl = matches!(data(&x), RData::Dbl(_));
+            let base: Vec<Option<String>> = if numeric && (is_dbl || digits.is_some() || nsmall > 0)
+            {
+                // Decimals each element needs, then a common count (max) so the
+                // whole vector shares one width — R aligns the decimal point.
+                let dbl = as_dbl(&x);
+                let per: Vec<usize> = dbl
+                    .iter()
+                    .map(|e| match e {
+                        Some(v) if v.is_finite() => match digits {
+                            Some(d) if *v != 0.0 => {
+                                (d - 1 - v.abs().log10().floor() as i32).max(0) as usize
                             }
-                            let sig_dec = match digits {
-                                Some(d) if v != 0.0 => {
-                                    (d - 1 - v.abs().log10().floor() as i32).max(0) as usize
-                                }
-                                Some(_) => 0,
-                                None => crate::host::fixed_decimals(v),
-                            };
-                            render_fixed(v, sig_dec.max(nsmall))
-                        })
+                            Some(_) => 0,
+                            None => crate::host::fixed_decimals(*v),
+                        },
+                        _ => 0,
                     })
+                    .collect();
+                let common = per.into_iter().max().unwrap_or(0).max(nsmall);
+                dbl.into_iter()
+                    .map(|e| e.map(|v| render_fixed(v, common)))
                     .collect()
             } else {
                 as_str(&x)
@@ -1880,6 +1888,30 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     Some(s)
                 })
                 .collect();
+            // R pads every element to a common width: numbers right-justified,
+            // character left-justified. (A length-1 vector needs no alignment.)
+            let out = if out.len() > 1 {
+                let w = out
+                    .iter()
+                    .flatten()
+                    .map(|s| s.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let left = matches!(data(&x), RData::Str(_));
+                out.into_iter()
+                    .map(|s| {
+                        s.map(|s| {
+                            if left {
+                                format!("{s:<w$}")
+                            } else {
+                                format!("{s:>w$}")
+                            }
+                        })
+                    })
+                    .collect()
+            } else {
+                out
+            };
             Ok(mk_str(out))
         }
         "formatC" => format_c(&a),
@@ -1907,12 +1939,79 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = len(&a.req(0, "along.with")?) as i64;
             Ok(mk_int((1..=n).map(Some).collect()))
         }
-        "seq" => Ok(seq(&a)),
+        "seq" | "seq.int" => Ok(seq(&a)),
         "rep" => Ok(rep(&a)),
+        "rep_len" => {
+            let x = a.req(0, "x")?;
+            let n = a.get(1, "length.out").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
+            let src = len(&x).max(1);
+            let pos: Vec<Option<usize>> = (0..n).map(|i| Some(i % src)).collect();
+            Ok(take_positions(&x, &pos))
+        }
         "rev" => {
             let x = a.req(0, "x")?;
+            let nm = names_of(&x);
             let pos: Vec<Option<usize>> = (0..len(&x)).rev().map(Some).collect();
-            Ok(take_positions(&x, &pos))
+            let out = take_positions(&x, &pos);
+            // Reversing keeps the names, reversed too.
+            if !nm.is_empty() {
+                set_names(&out, nm.into_iter().rev().collect());
+            }
+            Ok(out)
+        }
+        "unname" => {
+            let out = copy_of(&a.req(0, "obj")?);
+            with_host(|h| {
+                let nl = h.null();
+                h.set_attr(&out, "names", nl);
+            });
+            Ok(out)
+        }
+        "all.equal" => {
+            // Numeric near-equality within R's default tolerance (~1.5e-8);
+            // returns TRUE or a short difference message. Non-numerics compare
+            // with `identical`.
+            let x = a.req(0, "target")?;
+            let y = a.req(1, "current")?;
+            let (xs, ys) = (as_dbl(&x), as_dbl(&y));
+            let numeric = matches!(data(&x), RData::Dbl(_) | RData::Int(_))
+                && matches!(data(&y), RData::Dbl(_) | RData::Int(_));
+            if numeric && xs.len() == ys.len() {
+                let tol = 1.5e-8;
+                let mut sum_abs_diff = 0.0;
+                let mut sum_abs_tgt = 0.0;
+                for (a, b) in xs.iter().zip(ys.iter()) {
+                    match (a, b) {
+                        // R's default `countEQ = FALSE` scales only over the
+                        // elements that actually differ.
+                        (Some(a), Some(b)) if a != b => {
+                            sum_abs_diff += (a - b).abs();
+                            sum_abs_tgt += a.abs();
+                        }
+                        (Some(_), Some(_)) => {}
+                        _ => return Ok(scalar_str("'is.NA' value mismatch")),
+                    }
+                }
+                let rel = if sum_abs_tgt > tol {
+                    sum_abs_diff / sum_abs_tgt
+                } else {
+                    sum_abs_diff
+                };
+                if rel <= tol {
+                    Ok(scalar_lgl(true))
+                } else {
+                    Ok(scalar_str(format!(
+                        "Mean relative difference: {}",
+                        crate::host::format_dbl(rel)
+                    )))
+                }
+            } else {
+                Ok(if identical(&x, &y) {
+                    scalar_lgl(true)
+                } else {
+                    scalar_str("objects differ")
+                })
+            }
         }
         "head" | "tail" => {
             let x = a.req(0, "x")?;
@@ -4475,14 +4574,14 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                     }
                     None => pad("NA", width, ""),
                 },
-                'x' | 'X' => {
+                'x' | 'X' | 'o' => {
                     let v = as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0);
-                    let mag = if conv == 'x' {
-                        format!("{v:x}")
-                    } else {
-                        format!("{v:X}")
+                    let mag = match conv {
+                        'x' => format!("{v:x}"),
+                        'X' => format!("{v:X}"),
+                        _ => format!("{v:o}"),
                     };
-                    // Hex takes the `0` flag but no sign flag in R's usage here.
+                    // Radix conversions take the `0` flag but no sign flag here.
                     num_field(false, mag, width, &flags.replace(['+', ' '], ""))
                 }
                 _ => {
