@@ -1009,6 +1009,50 @@ fn gen_strx3(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_regexflags(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = format!("{}{}", ww(r), ww(r));
+    let pats = ["[A-C]+", "O+", "[AEIOU]", "L+", "[A-Z]{2}"];
+    let p = r.pick(&pats);
+    one(match r.below(6) {
+        0 => format!("grepl(\"{p}\", \"{s}\", ignore.case = TRUE)"),
+        1 => format!("gsub(\"{p}\", \"X\", \"{s}\", ignore.case = TRUE)"),
+        2 => format!("sub(\"{p}\", \"X\", \"{s}\", ignore.case = TRUE)"),
+        3 => format!("grepl(\"{}\", \"{s}\", fixed = TRUE)", &s[..1.min(s.len())]),
+        4 => format!("grep(\"{p}\", c(\"{s}\", \"{}\"), ignore.case = TRUE)", ww(r)),
+        _ => format!("gsub(\"[aeiou]\", \"_\", \"{s}\", ignore.case = TRUE)"),
+    })
+}
+
+fn gen_factorx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = vec_str(r);
+    one(match r.below(8) {
+        0 => format!("as.integer(cut(1:{}, c(0, 2, 4, 6, 8)))", r.range(3, 8)),
+        1 => format!("nlevels(cut(1:{}, c(0, 5, 10)))", r.range(2, 10)),
+        2 => format!("cut(c({}, {}, {}), c(0, 3, 6, 9))", r.range(1, 8), r.range(1, 8), r.range(1, 8)),
+        3 => format!("levels(cut(1:9, c(0, 3, 6, 9)))"),
+        4 => format!("as.integer(droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\"))))"),
+        5 => format!("droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\", \"e\")))"),
+        6 => format!("factor({s}, levels = c(\"a\", \"b\", \"c\"), ordered = TRUE)"),
+        _ => format!("nlevels(droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\"))))"),
+    })
+}
+
+fn gen_deparsex(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(8) {
+        0 => format!("deparse({}:{})", r.range(1, 3), r.range(4, 9)),
+        1 => format!("deparse(c({}, {}, {}))", ff(r), ff(r), ff(r)),
+        2 => format!("deparse(c(\"{}\", \"{}\"))", ww(r), ww(r)),
+        3 => format!("deparse({}L)", si(r)),
+        4 => format!("deparse(c(TRUE, FALSE, NA))"),
+        5 => format!("deparse({})", si(r)),
+        6 => format!("diff(c({}, {}, {}, {}), differences = 2)", si(r), si(r), si(r), si(r)),
+        _ => format!("diff(1:{}, lag = {})", r.range(5, 10), r.range(1, 3)),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1050,6 +1094,9 @@ enum Mode {
     Replace,
     Switch,
     Strx3,
+    Regexflags,
+    Factorx,
+    Deparsex,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1088,6 +1135,9 @@ const ALL_MODES: &[Mode] = &[
     Mode::Replace,
     Mode::Switch,
     Mode::Strx3,
+    Mode::Regexflags,
+    Mode::Factorx,
+    Mode::Deparsex,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1127,6 +1177,9 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Replace => gen_replace(seed),
         Mode::Switch => gen_switch(seed),
         Mode::Strx3 => gen_strx3(seed),
+        Mode::Regexflags => gen_regexflags(seed),
+        Mode::Factorx => gen_factorx(seed),
+        Mode::Deparsex => gen_deparsex(seed),
     }
 }
 
@@ -1167,6 +1220,9 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Replace => "replace",
         Mode::Switch => "switch",
         Mode::Strx3 => "strx3",
+        Mode::Regexflags => "regexflags",
+        Mode::Factorx => "factorx",
+        Mode::Deparsex => "deparsex",
     }
 }
 

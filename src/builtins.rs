@@ -1548,6 +1548,8 @@ pub const PRIMITIVES: &[&str] = &[
     "factor",
     "levels",
     "nlevels",
+    "droplevels",
+    "cut",
     "table",
     "typeof",
     "mode",
@@ -1561,6 +1563,7 @@ pub const PRIMITIVES: &[&str] = &[
     "Recall",
     "Negate",
     "toString",
+    "deparse",
     "rownames",
     "colnames",
     // Inline-Rust FFI bridge (src/ffi.rs): register a `rust {}` block, then call
@@ -1829,6 +1832,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect();
             Ok(scalar_str(parts.join(", ")))
         }
+        "deparse" => Ok(scalar_str(deparse_value(&a.req(0, "expr")?))),
         "format" => {
             let x = a.req(0, "x")?;
             let nsmall = a.named("nsmall").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
@@ -1841,16 +1845,25 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `digits` sets the minimum significant digits: the decimals shown
             // are `digits - 1 - floor(log10|v|)`, so the whole integer part
             // always survives (`format(123.456, digits = 2)` is "123").
-            let base: Vec<Option<String>> = if let (true, Some(d)) = (numeric, digits) {
+            // `nsmall` sets the minimum decimal places, rendered from the true
+            // value (not padded onto the 7-sig repr), so `format(x, nsmall = 5)`
+            // shows five accurate decimals.
+            let base: Vec<Option<String>> = if numeric && (digits.is_some() || nsmall > 0) {
                 as_dbl(&x)
                     .into_iter()
                     .map(|e| {
                         e.map(|v| {
-                            if v == 0.0 || !v.is_finite() {
+                            if !v.is_finite() {
                                 return render_fixed(v, 0);
                             }
-                            let dec = (d - 1 - v.abs().log10().floor() as i32).max(0) as usize;
-                            render_fixed(v, dec)
+                            let sig_dec = match digits {
+                                Some(d) if v != 0.0 => {
+                                    (d - 1 - v.abs().log10().floor() as i32).max(0) as usize
+                                }
+                                Some(_) => 0,
+                                None => crate::host::fixed_decimals(v),
+                            };
+                            render_fixed(v, sig_dec.max(nsmall))
                         })
                     })
                     .collect()
@@ -1861,9 +1874,6 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .into_iter()
                 .map(|s| {
                     let mut s = s.unwrap_or_else(|| "NA".into());
-                    if numeric && nsmall > 0 {
-                        s = pad_nsmall(&s, nsmall);
-                    }
                     if numeric && !big.is_empty() {
                         s = insert_big_mark(&s, &big);
                     }
@@ -2126,7 +2136,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "mean" => {
             let xs = numeric_arg(&a, 0, "x")?;
             Ok(if xs.is_empty() {
-                mk_dbl(vec![None])
+                // Mean of nothing is NaN (0/0), not NA.
+                scalar_dbl(f64::NAN)
             } else {
                 scalar_dbl(xs.iter().sum::<f64>() / xs.len() as f64)
             })
@@ -2247,15 +2258,31 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
         }
         "diff" => {
-            let xs = as_dbl(&a.req(0, "x")?);
-            let out = xs
-                .windows(2)
-                .map(|w| match (w[0], w[1]) {
-                    (Some(p), Some(q)) => Some(q - p),
-                    _ => None,
-                })
-                .collect();
-            Ok(mk_dbl(out))
+            let x = a.req(0, "x")?;
+            let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
+            let lag = a.get(1, "lag").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
+            let differences =
+                a.get(2, "differences").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
+            // Apply the lag-`lag` difference `differences` times.
+            let mut cur = as_dbl(&x);
+            for _ in 0..differences {
+                if cur.len() <= lag {
+                    cur = Vec::new();
+                    break;
+                }
+                cur = (lag..cur.len())
+                    .map(|i| match (cur[i - lag], cur[i]) {
+                        (Some(p), Some(q)) => Some(q - p),
+                        _ => None,
+                    })
+                    .collect();
+            }
+            // `diff` of an integer vector stays integer.
+            if is_int {
+                Ok(mk_int(cur.into_iter().map(|e| e.map(|v| v as i64)).collect()))
+            } else {
+                Ok(mk_dbl(cur))
+            }
         }
 
         // ── elementwise math ────────────────────────────────────────────
@@ -2922,7 +2949,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "lapply" | "sapply" => {
             let x = a.req(0, "X")?;
             let f = a.req(1, "FUN")?;
-            let extra = a.rest(2);
+            // `simplify`/`USE.NAMES` are sapply's own controls — not `...` args
+            // to forward to FUN.
+            let extra: Vec<(Option<String>, Value)> = a
+                .rest(2)
+                .into_iter()
+                .filter(|(t, _)| !matches!(t.as_deref(), Some("simplify") | Some("USE.NAMES")))
+                .collect();
             let items = elements(&x);
             let mut out = Vec::with_capacity(items.len());
             for it in items {
@@ -3426,9 +3459,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .map(|p| p as i64 + 1)
                 })
                 .collect();
+            let ordered = a.named("ordered").and_then(|v| lgl1(&v)).unwrap_or(false);
             let out = mk_int(codes);
             let lv = mk_str(levels.into_iter().map(Some).collect());
-            let cls = scalar_str("factor");
+            // An ordered factor carries `c("ordered", "factor")`.
+            let cls = if ordered {
+                mk_str(vec![Some("ordered".into()), Some("factor".into())])
+            } else {
+                scalar_str("factor")
+            };
             with_host(|h| {
                 h.set_attr(&out, "levels", lv);
                 h.set_attr(&out, "class", cls);
@@ -3446,6 +3485,39 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .unwrap_or(0);
             Ok(scalar_int(n as i64))
         }
+        "droplevels" => {
+            // Drop levels that no longer occur, renumbering the codes.
+            let x = a.req(0, "x")?;
+            let old_levels: Vec<String> = with_host(|h| h.attr(&x, "levels"))
+                .map(|l| as_str(&l).into_iter().flatten().collect())
+                .unwrap_or_default();
+            let codes = as_int(&x);
+            let mut kept: Vec<usize> = Vec::new();
+            for c in codes.iter().flatten() {
+                let idx = (*c - 1) as usize;
+                if idx < old_levels.len() && !kept.contains(&idx) {
+                    kept.push(idx);
+                }
+            }
+            kept.sort_unstable();
+            let new_levels: Vec<String> = kept.iter().map(|&i| old_levels[i].clone()).collect();
+            let new_codes: Vec<Option<i64>> = codes
+                .iter()
+                .map(|c| {
+                    c.and_then(|c| kept.iter().position(|&i| i == (c - 1) as usize))
+                        .map(|p| p as i64 + 1)
+                })
+                .collect();
+            let out = mk_int(new_codes);
+            let lv = mk_str(new_levels.into_iter().map(Some).collect());
+            let cls = with_host(|h| h.attr(&x, "class")).unwrap_or_else(|| scalar_str("factor"));
+            with_host(|h| {
+                h.set_attr(&out, "levels", lv);
+                h.set_attr(&out, "class", cls);
+            });
+            Ok(out)
+        }
+        "cut" => cut(&a),
         "table" => {
             let x = a.req(0, "x")?;
             let is_factor = class_of(&x).iter().any(|c| c == "factor");
@@ -4138,6 +4210,116 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
     res
 }
 
+/// R's `deparse` for a value (not a language object): the source text that would
+/// recreate it — `1:3`, `c(1.5, 2.5)`, `"a"`, `c("a", NA)`, `TRUE`, `NULL`.
+fn deparse_value(v: &Value) -> String {
+    let wrap = |parts: Vec<String>| {
+        if parts.len() == 1 {
+            parts.into_iter().next().unwrap()
+        } else {
+            format!("c({})", parts.join(", "))
+        }
+    };
+    match data(v) {
+        RData::Null => "NULL".into(),
+        RData::Int(xs) => {
+            if let Some(seq) = int_colon(&xs) {
+                return seq;
+            }
+            wrap(
+                xs.iter()
+                    .map(|e| e.map(|i| format!("{i}L")).unwrap_or_else(|| "NA".into()))
+                    .collect(),
+            )
+        }
+        RData::Str(xs) => wrap(
+            xs.iter()
+                .map(|e| {
+                    e.as_ref()
+                        .map(|s| format!("\"{}\"", encode_string(s)))
+                        .unwrap_or_else(|| "NA".into())
+                })
+                .collect(),
+        ),
+        _ => wrap(
+            as_str(v)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect(),
+        ),
+    }
+}
+
+/// If `xs` is a fully-defined run of consecutive integers (ascending or
+/// descending, length ≥ 2), its `a:b` form; otherwise `None`.
+fn int_colon(xs: &[Option<i64>]) -> Option<String> {
+    if xs.len() < 2 || xs.iter().any(|e| e.is_none()) {
+        return None;
+    }
+    let v: Vec<i64> = xs.iter().flatten().copied().collect();
+    let step = v[1] - v[0];
+    if (step == 1 || step == -1) && v.windows(2).all(|w| w[1] - w[0] == step) {
+        Some(format!("{}:{}", v[0], v[v.len() - 1]))
+    } else {
+        None
+    }
+}
+
+/// `cut(x, breaks, labels)` — bin numeric `x` into a factor of half-open
+/// intervals `(a, b]`. A single-number `breaks` means that many equal-width
+/// intervals over the (slightly widened) range, exactly as R computes them.
+fn cut(a: &Args) -> Result<Value, String> {
+    let x = as_dbl(&a.req(0, "x")?);
+    let breaks_arg = a.req(1, "breaks")?;
+    let breaks: Vec<f64> = if len(&breaks_arg) == 1 {
+        let nb = num1(&breaks_arg).unwrap_or(1.0) as usize;
+        let vals: Vec<f64> = x.iter().flatten().copied().collect();
+        let mn = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let mx = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let dx = mx - mn;
+        let (lo, hi) = if dx == 0.0 {
+            (mn - mn.abs() * 0.001 - 0.001, mx + mx.abs() * 0.001 + 0.001)
+        } else {
+            (mn - dx / 1000.0, mx + dx / 1000.0)
+        };
+        (0..=nb)
+            .map(|i| lo + (hi - lo) * i as f64 / nb as f64)
+            .collect()
+    } else {
+        as_dbl(&breaks_arg).into_iter().flatten().collect()
+    };
+    let labels: Vec<String> = match a.named("labels") {
+        Some(l) if matches!(data(&l), RData::Str(_)) => as_str(&l).into_iter().flatten().collect(),
+        _ => (0..breaks.len().saturating_sub(1))
+            .map(|i| format!("({},{}]", fmt_break(breaks[i]), fmt_break(breaks[i + 1])))
+            .collect(),
+    };
+    // Right-closed intervals `(a, b]`.
+    let codes: Vec<Option<i64>> = x
+        .iter()
+        .map(|e| {
+            e.and_then(|v| {
+                (0..breaks.len().saturating_sub(1))
+                    .find(|&i| v > breaks[i] && v <= breaks[i + 1])
+                    .map(|i| i as i64 + 1)
+            })
+        })
+        .collect();
+    let out = mk_int(codes);
+    let lv = mk_str(labels.into_iter().map(Some).collect());
+    let cls = scalar_str("factor");
+    with_host(|h| {
+        h.set_attr(&out, "levels", lv);
+        h.set_attr(&out, "class", cls);
+    });
+    Ok(out)
+}
+
+/// Format an interval endpoint for a `cut` label — R's `dig.lab = 3`.
+fn fmt_break(v: f64) -> String {
+    crate::host::format_dbl(signif(v, 3))
+}
+
 /// `signif(x, digits)` — round to `digits` significant figures, half-to-even
 /// like R. `signif(123.456, 2)` is `120`, `signif(0.0034219, 3)` is `0.00342`.
 fn signif(v: f64, digits: i32) -> f64 {
@@ -4149,22 +4331,34 @@ fn signif(v: f64, digits: i32) -> f64 {
     round_half_even(v * factor) / factor
 }
 
+/// Compile an R pattern to a `regex::Regex`, honoring `fixed` (literal) and
+/// `ignore.case` (the `(?i)` inline flag).
+fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<regex::Regex, String> {
+    let body = if fixed {
+        regex::escape(pattern)
+    } else {
+        pattern.to_string()
+    };
+    let full = if ignore_case {
+        format!("(?i){body}")
+    } else {
+        body
+    };
+    regex::Regex::new(&full).map_err(|e| format!("invalid regular expression '{pattern}': {e}"))
+}
+
 /// `sub`, `gsub`, `grepl`, `grep` over R's default (POSIX-flavored) regex.
 fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
     let pattern = str1(&a.req(0, "pattern")?).unwrap_or_default();
     let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
+    let ignore_case = a.named("ignore.case").and_then(|v| lgl1(&v)).unwrap_or(false);
     let (subject_idx, subject_name) = if name == "sub" || name == "gsub" {
         (2, "x")
     } else {
         (1, "x")
     };
     let x = as_str(&a.req(subject_idx, subject_name)?);
-    let re = if fixed {
-        regex::Regex::new(&regex::escape(&pattern))
-    } else {
-        regex::Regex::new(&pattern)
-    }
-    .map_err(|e| format!("invalid regular expression '{pattern}': {e}"))?;
+    let re = compile_re(&pattern, fixed, ignore_case)?;
 
     match name {
         "grepl" => Ok(mk_lgl(
@@ -4369,18 +4563,6 @@ fn insert_big_mark(s: &str, mark: &str) -> String {
     }
 }
 
-/// Pad a formatted number to at least `nsmall` fractional digits (R's
-/// `format(x, nsmall=)`): `"1.5"` with `nsmall = 3` → `"1.500"`, `"2"` → `"2.000"`.
-fn pad_nsmall(s: &str, nsmall: usize) -> String {
-    if !s.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '.')) {
-        return s.to_string();
-    }
-    match s.split_once('.') {
-        Some((_, f)) if f.len() >= nsmall => s.to_string(),
-        Some((i, f)) => format!("{i}.{f}{}", "0".repeat(nsmall - f.len())),
-        None => format!("{s}.{}", "0".repeat(nsmall)),
-    }
-}
 
 /// Character offset of byte position `byte` within `s` (R indexes by character,
 /// not byte).
@@ -4765,7 +4947,13 @@ fn format_factor(v: &Value) -> Vec<String> {
     } else {
         layout_indexed(&labels, true)
     };
-    out.push(format!("Levels: {}", levels.join(" ")));
+    // An ordered factor separates its levels with `<`.
+    let sep = if class_of(v).iter().any(|c| c == "ordered") {
+        " < "
+    } else {
+        " "
+    };
+    out.push(format!("Levels: {}", levels.join(sep)));
     out
 }
 
