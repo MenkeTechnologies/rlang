@@ -29,6 +29,18 @@ Speak the Debug Adapter Protocol over stdio.
 .B \-\-build " " \fIFILE\fR
 Ahead-of-time compile the script's bytecode into the on-disk cache.
 .TP
+.B \-\-aot " " \fIFILE\fR
+Ahead-of-time compile the script to a standalone native
+.I .fvm
+executable, linked against the rlang runtime.
+.TP
+.B \-o ", " \-\-output " " \fIOUT\fR
+Output path for
+.BR \-\-aot
+(default: the script's name with a
+.I .fvm
+extension).
+.TP
 .B \-\-dump\-tokens " " \fIFILE\fR
 Print the lexer token stream and exit.
 .TP

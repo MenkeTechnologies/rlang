@@ -65,6 +65,15 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
   implicit classes for the builtin types.
 - **AOP intercepts** — a glob-matched before/after/around call-intercept
   registry, the same design as zshrs's function intercepts.
+- **Native executables** — `Rscript --aot FILE` lowers the script to a fusevm
+  object and links it against the rlang runtime into a standalone `.fvm` binary
+  (user closures embedded, no interpreter startup).
+- **Inline-Rust FFI** — `.rust("…Rust source…")` compiles a self-contained Rust
+  block to a cached `cdylib` on first use; `.Call(name, …)` — R's own native-call
+  verb — invokes its exports, marshalling length-1 vectors to `i64`/`f64`/string
+  and back.
+- **Runs on wasm** — the same crate builds for `wasm32-unknown-unknown` (pure
+  interpreter, no Cranelift) and exports `rlang_eval` for a web-worker host.
 - **Editor-ready** — an LSP server and a DAP adapter over stdio, introspection
   dumps (`--dump-tokens`, `--dump-ast`, `--disasm`), and a REPL on a persistent
   host where a function defined at one prompt completes at the next.
@@ -87,8 +96,17 @@ cargo build
 ```
 
 `rlang` is a standalone Rust crate (an explicit empty `[workspace]` keeps it
-independent of the meta repo). `fusevm` is pulled from crates.io with the `jit`,
-`jit-disk-cache`, and `aot` features. Run the tests with `cargo test`.
+independent of the meta repo). On native targets `fusevm` is pulled from
+crates.io with the `jit`, `jit-disk-cache`, `aot`, and `ffi` features; the
+wasm build uses the bare interpreter. Run the tests with `cargo test`.
+
+```sh
+# AOT-compile to a standalone native executable
+./target/debug/Rscript --aot script.R && ./script.fvm
+
+# build the wasm engine (web-worker host; exports rlang_eval / rlang_alloc / rlang_free)
+cargo rustc --lib --crate-type cdylib --target wasm32-unknown-unknown
+```
 
 #### Zsh tab completion
 
@@ -175,6 +193,8 @@ Implemented and checked against the reference `Rscript`:
 | `--lsp` | Language Server Protocol over stdio. |
 | `--dap` | Debug Adapter Protocol over stdio (handshake + run to completion). |
 | `--build FILE` | AOT-compile the script's bytecode into the on-disk cache. |
+| `--aot FILE` | AOT-compile the script to a standalone native `.fvm` executable (override the path with `-o OUT`). |
+| `-o OUT` | Output path for `--aot` (default: the script's name with a `.fvm` extension). |
 | `--dump-tokens FILE` | Print the lexer token stream. |
 | `--dump-ast FILE` | Print the parsed AST. |
 | `--disasm FILE` | Disassemble the lowered fusevm chunk. |
@@ -221,10 +241,12 @@ clean exit and stdout matching the frozen reference output
 
 ## [0x07] STATUS & ROADMAP
 
-The standalone `Rscript` binary, the REPL, the rkyv bytecode cache, the AOP
-call-intercept registry, the LSP server, and the DAP adapter (handshake plus
-run-to-completion; stepping is a later wave) are all in the tree. The parity
-corpus and every example match the reference R byte-for-byte.
+The standalone `Rscript` binary, the REPL, the rkyv bytecode cache, the `--aot`
+native-executable emitter, the inline-Rust FFI bridge (`.rust` / `.Call`), the
+`wasm32` build, the AOP call-intercept registry, the LSP server, and the DAP
+adapter (handshake plus run-to-completion; stepping is a later wave) are all in
+the tree. The parity corpus and every example match the reference R
+byte-for-byte.
 
 Arguments are evaluated eagerly rather than as promises, so `substitute()` /
 `quote()` / non-standard evaluation are not available; `tryCatch` and the

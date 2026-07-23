@@ -6,20 +6,39 @@
 //! operation. There is no bespoke VM or JIT here — execution and codegen live in
 //! fusevm.
 
-pub mod aot;
+// Cross-target: the R front-end (lex → parse → lower) and the vector heap run
+// identically on native and on `wasm32-unknown-unknown`.
 pub mod ast;
-pub mod banner;
 pub mod builtins;
-pub mod cache;
-pub mod cli;
 pub mod compiler;
-pub mod dap;
+pub mod ffi;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
-pub mod lsp;
 pub mod parser;
+
+// Native-only: Cranelift AOT, the on-disk cache, and the LSP/DAP/REPL/CLI
+// frontends all need a real OS and are excluded from the wasm build.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod aot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod aot_runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod banner;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dap;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lsp;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod repl;
+
+// wasm-only: the `rlang_eval` C-ABI export for the web-worker host.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 pub use fusevm::Value;
 
@@ -81,4 +100,21 @@ pub fn disasm(prog: &compiler::Program) -> String {
 pub fn eval_to_string(src: &str) -> Result<String, String> {
     let v = eval_quiet(src)?;
     Ok(builtins::format_value(&v).join("\n").trim_end().to_string())
+}
+
+/// Evaluate `src` with top-level echo on, capturing everything R would write to
+/// stdout (autoprint, `print`, `cat`) into a returned string instead of the
+/// process stdout. This is the entry point the wasm build hands to its JS host
+/// (`src/wasm.rs`) — wasm has no real stdout — and it is unit-testable on native
+/// targets. A compile or run error is appended as a trailing `Error:` line so a
+/// single call always yields a complete transcript.
+pub fn eval_capture(src: &str) -> String {
+    host::reset_host();
+    host::start_capture();
+    let result = compile(src).and_then(run_compiled);
+    let mut out = host::take_capture();
+    if let Err(e) = result {
+        out.push_str(&format!("Error: {e}\n"));
+    }
+    out
 }

@@ -209,6 +209,37 @@ pub struct RHost {
 
 thread_local! {
     static HOST: RefCell<RHost> = RefCell::new(RHost::new());
+    /// When `Some`, R's stdout output (`print`/`cat`/autoprint) is appended here
+    /// instead of written to the process stdout. `wasm32` has no real stdout, so
+    /// the wasm entry point (`crate::eval_capture`) drains this buffer; native
+    /// callers leave it `None` and print straight through.
+    static CAPTURE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Write R program output. Appended to the capture buffer when one is active
+/// (see [`start_capture`]), otherwise written to the process stdout. Every
+/// R-visible stdout write (`print`, `cat`, top-level autoprint) goes through
+/// here so a single switch redirects them all.
+pub fn emit(s: &str) {
+    CAPTURE.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            buf.push_str(s);
+        } else {
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(s.as_bytes());
+        }
+    });
+}
+
+/// Begin capturing R stdout into an in-memory buffer, replacing any prior one.
+pub fn start_capture() {
+    CAPTURE.with(|c| *c.borrow_mut() = Some(String::new()));
+}
+
+/// Stop capturing and return everything written since [`start_capture`].
+pub fn take_capture() -> String {
+    CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 /// Run `f` with mutable access to the thread-local host.
@@ -746,6 +777,9 @@ pub fn format_dbl(x: f64) -> String {
 pub fn run_chunk(chunk: Chunk) -> Result<Value, String> {
     let mut vm = VM::new(chunk);
     crate::builtins::install(&mut vm);
+    // The tracing JIT is a native-only fusevm feature; the wasm build runs the
+    // same chunk on the interpreter.
+    #[cfg(not(target_arch = "wasm32"))]
     vm.enable_tracing_jit();
     let outcome = vm.run();
     if let Some(e) = with_host(|h| h.take_error()) {

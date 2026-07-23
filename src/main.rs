@@ -52,6 +52,21 @@ fn run() -> ExitCode {
                 Err(e) => fail(&e),
             };
         }
+        if cli.aot {
+            let out = cli
+                .output
+                .clone()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::Path::new(&file).with_extension("fvm"));
+            return match rlang::aot::compile_executable(&file, &out) {
+                // The output path is explicit user-requested output.
+                Ok(p) => {
+                    println!("{}", p.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&e),
+            };
+        }
         if cli.build {
             return match rlang::aot::build(&file) {
                 // A build report is explicit user-requested output.

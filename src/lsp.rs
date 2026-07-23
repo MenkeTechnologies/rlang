@@ -25,6 +25,14 @@ use lsp_types::{
 /// `builtins::PRIMITIVES` is still completed, just without a blurb.
 const DOCS: &[(&str, &str)] = &[
     (
+        ".rust",
+        ".rust(code) — compile a self-contained inline Rust block (its `pub extern \"C\"` exports) to a cached cdylib via fusevm's FFI bridge.",
+    ),
+    (
+        ".Call",
+        ".Call(name, ...) — invoke a `.rust()`-registered native routine, marshalling length-1 vectors to i64/f64/string and back.",
+    ),
+    (
         "c",
         "c(...) — combine values into a vector, promoting to the widest type.",
     ),

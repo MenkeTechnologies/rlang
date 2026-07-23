@@ -30,6 +30,16 @@ pub struct Cli {
     #[arg(long = "build")]
     pub build: bool,
 
+    /// Ahead-of-time compile the script to a standalone native `.fvm`
+    /// executable (defaults to the script's name with a `.fvm` extension;
+    /// override the path with `-o`).
+    #[arg(long = "aot")]
+    pub aot: bool,
+
+    /// Output path for `--aot` (default: the script's name with `.fvm`).
+    #[arg(short = 'o', long = "output", value_name = "OUT")]
+    pub output: Option<String>,
+
     /// Print the lexer token stream for the script and exit.
     #[arg(long = "dump-tokens")]
     pub dump_tokens: bool,

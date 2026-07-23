@@ -137,6 +137,39 @@ fn set_names(v: &Value, names: Vec<Option<String>>) {
     with_host(|h| h.set_attr(v, "names", nv));
 }
 
+/// Marshal a length-1 R vector to a fusevm scalar for a `.Call` FFI invocation.
+/// fusevm's v1 FFI ABI takes `i64` / `f64` / string scalars, so integer and
+/// logical vectors map to `Int`, doubles to `Float`, and character to `Str`.
+fn r_to_fusevm(v: &Value) -> Result<Value, String> {
+    match data(v) {
+        RData::Str(_) => str1(v)
+            .map(Value::str)
+            .ok_or_else(|| "`.Call`: NA string argument".to_string()),
+        RData::Int(_) | RData::Lgl(_) => as_int(v)
+            .first()
+            .copied()
+            .flatten()
+            .map(Value::Int)
+            .ok_or_else(|| "`.Call`: NA integer argument".to_string()),
+        RData::Dbl(_) => num1(v)
+            .map(Value::Float)
+            .ok_or_else(|| "`.Call`: NA numeric argument".to_string()),
+        _ => Err("`.Call` arguments must be length-1 numeric, integer, or character".to_string()),
+    }
+}
+
+/// Convert the fusevm scalar an FFI export returned back into a length-1 R
+/// vector (the inverse of [`r_to_fusevm`]).
+fn fusevm_to_r(v: Value) -> Value {
+    match v {
+        Value::Int(n) => scalar_int(n),
+        Value::Float(f) => scalar_dbl(f),
+        Value::Bool(b) => scalar_lgl(b),
+        Value::Str(s) => scalar_str(s.to_string()),
+        _ => null(),
+    }
+}
+
 /// The string payload of a compiler-emitted constant.
 fn name_of(v: &Value) -> String {
     match v {
@@ -1287,6 +1320,10 @@ pub const PRIMITIVES: &[&str] = &[
     "toString",
     "rownames",
     "colnames",
+    // Inline-Rust FFI bridge (src/ffi.rs): register a `rust {}` block, then call
+    // its exports through R's own native-call verb.
+    ".rust",
+    ".Call",
 ];
 
 /// Call a primitive by name with evaluated arguments.
@@ -1422,6 +1459,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "rownames" | "colnames" => Ok(null()),
 
         // ── output ──────────────────────────────────────────────────────
+        // ── inline-Rust FFI ──────────────────────────────────────────────
+        ".rust" => {
+            let code = a.req(0, "code")?;
+            let src = str1(&code)
+                .ok_or_else(|| "`.rust` expects a character string of Rust source".to_string())?;
+            crate::ffi::register(&src)?;
+            with_host(|h| h.visible = false);
+            Ok(null())
+        }
+        ".Call" => {
+            let name_v = a.req(0, ".NAME")?;
+            let routine = str1(&name_v).ok_or_else(|| {
+                "`.Call` expects a routine name as its first argument".to_string()
+            })?;
+            let mut fargs: Vec<Value> = Vec::new();
+            for v in a.values().iter().skip(1) {
+                fargs.push(r_to_fusevm(v)?);
+            }
+            let out = crate::ffi::call(&routine, &fargs)?;
+            Ok(fusevm_to_r(out))
+        }
+
         "print" => {
             let x = a.req(0, "x")?;
             print_value(&x);
@@ -1446,7 +1505,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // contains one — `cat(c("a", "b"), sep = "\n")` prints three lines'
             // worth of output, not two.
             let tail = if sep.contains('\n') { "\n" } else { "" };
-            print!("{}{tail}", parts.join(&sep));
+            crate::host::emit(&format!("{}{tail}", parts.join(&sep)));
             with_host(|h| h.visible = false);
             Ok(null())
         }
@@ -2825,7 +2884,7 @@ fn use_method(a: &Args) -> Result<Value, String> {
 /// Print a value the way R's default `print` does.
 pub fn print_value(v: &Value) {
     for line in format_value(v) {
-        println!("{line}");
+        crate::host::emit(&format!("{line}\n"));
     }
 }
 

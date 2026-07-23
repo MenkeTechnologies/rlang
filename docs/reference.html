@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. The 131 primitive functions available in the current rlang build, generated from the language-server corpus. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. The 133 primitive functions available in the current rlang build, generated from the language-server corpus. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -67,7 +67,7 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-val">131</div>
+            <div class="stat-val">133</div>
             <div class="stat-label">Primitives</div>
           </div>
           <div class="stat-card">
@@ -210,6 +210,8 @@
         <tr><td><code>toString</code></td><td>R primitive.</td></tr>
         <tr><td><code>rownames</code></td><td>R primitive.</td></tr>
         <tr><td><code>colnames</code></td><td>R primitive.</td></tr>
+        <tr><td><code>.rust</code></td><td>.rust(code) — compile a self-contained inline Rust block (its `pub extern "C"` exports) to a cached cdylib via fusevm's FFI bridge.</td></tr>
+        <tr><td><code>.Call</code></td><td>.Call(name, ...) — invoke a `.rust()`-registered native routine, marshalling length-1 vectors to i64/f64/string and back.</td></tr>
           </tbody>
         </table>
       </section>
