@@ -1,0 +1,160 @@
+.\" Rscriptall(1) — comprehensive all-in-one man page for rlang.
+.\" Modeled after zshall(1): every section of the reference in one document.
+.\" Render with:  man -l man/Rscriptall.1
+.\" Install:      cp man/Rscriptall.1 /usr/local/share/man/man1/
+.TH RSCRIPTALL 1 "2026-07-23" "rlang 0.1.0" "User Commands"
+.SH NAME
+Rscriptall \- the rlang comprehensive reference (invocation, language, architecture,
+bytecode VM + Cranelift JIT, LSP, DAP, inline-Rust FFI)
+.SH OVERVIEW
+This is the all\-in\-one
+.B rlang
+manual, modeled on
+.BR zshall (1).
+It concatenates the major sections of the rlang reference into a single page so
+you can grep with `/`:
+.RS 2
+.PP
+.B 1.  INVOCATION
+.RB "\(em " "flags, files, exit status"
+.br
+.B 2.  LANGUAGE
+.RB "\(em " "the R the runtime parses and runs"
+.br
+.B 3.  ARCHITECTURE
+.RB "\(em " "lex \[->] parse \[->] lower \[->] fusevm VM + JIT"
+.br
+.B 4.  TOOLING
+.RB "\(em " "\-\-lsp, \-\-dap, inline-Rust FFI, AOT, wasm"
+.br
+.B 5.  DIAGNOSTICS
+.RB "\(em " "error format and common messages"
+.RE
+.SH 1. INVOCATION
+.B Rscript
+[\fIOPTIONS\fR] \fIFILE\fR runs an R script.
+.B \-e "\fISRC\fR" / \-\-eval
+executes a one\-liner instead of a file, and
+.B \-\-repl
+starts the interactive REPL on a persistent host.
+.B \-\-lsp
+and
+.B \-\-dap
+speak their protocols over stdio and take no file.
+.B \-\-build \fIFILE\fR
+ahead\-of\-time compiles the script's bytecode into the on\-disk cache.
+See
+.BR Rscript (1)
+for the per\-flag table.
+.SH 2. LANGUAGE
+rlang implements R on the vector value model \(em there are no scalars; every value
+is a vector with attributes.
+.SS Values and attributes
+Atomic vectors of
+.BR logical ", " integer ", " double ", " complex ", and " character ,
+plus generic
+.BR list ,
+each carrying
+.B NA
+for every type. Attributes
+.RB ( names ", " dim ", " class ", \[u2026])"
+ride with the value; recycling extends the shorter operand, and
+.B NA
+propagates through arithmetic and R's three\-valued logic.
+.SS Indexing and assignment
+All four index forms
+.RB ( "x[i]" ", positive/negative/logical/character subscripts)"
+plus
+.BR "[[" ", " $ ", and matrix " "m[i, j]" .
+Assignment is copy\-on\-modify, including nested targets and replacement functions
+.RB ( "names(x) <- v" ", " "x[i] <- v" ).
+.SS Functions and dispatch
+Closures with default arguments,
+.BR "..." ,
+and R's argument matching; lexical scope with the superassignment operator
+.BR "<<-" ;
+S3 method dispatch through
+.BR UseMethod .
+The full
+.B ?Syntax
+operator ladder is supported, including user\-defined
+.B %op%
+infix operators and the native pipe. 131 primitives are implemented, with R's
+printing rules for each type.
+.SH 3. ARCHITECTURE
+.EX
+R source \[->] lexer \[->] parser (AST) \[->] lower to fusevm bytecode \[->] fusevm VM + Cranelift JIT
+.EE
+.PP
+rlang carries no local
+.I vm.rs
+or
+.IR jit.rs .
+for/while/repeat/if and
+.BR && / ||
+lower to native fusevm jumps with native integer loop counters, so the tracing
+JIT sees ordinary loops; R's vector, attribute, and S3 semantics are served by an
+.B RHost
+vector heap reached through fusevm's extension handler. The same fusevm engine
+hosts zshrs, stryke, awkrs, elisp, and ruby, so JIT and VM improvements benefit all
+of them at once. Behaviour is checked byte\-for\-byte against reference
+.B Rscript
+by a 48\-snippet differential parity corpus plus 8 runnable examples, both identical
+to GNU R 4.6.1.
+.SH 4. TOOLING
+.SS Language server (\-\-lsp)
+.B Rscript \-\-lsp
+speaks LSP over stdio: completion and hover from the symbol corpus (the same table
+that generates
+.IR docs/reference.html ),
+and diagnostics from the runtime's own parser. It is read\-only; no output reaches
+the terminal.
+.SS Debugger (\-\-dap)
+.B Rscript \-\-dap
+speaks the Debug Adapter Protocol over stdio: line breakpoints, single\-stepping,
+a stack trace, and inspection of a frame's locals. Program output is captured and
+forwarded as
+.B output
+events so it never corrupts the protocol channel.
+.SS Inline-Rust FFI (.rust / .Call)
+R has no
+.B "rust { }"
+block syntax, so rlang surfaces fusevm's inline\-Rust FFI through two R\-idiomatic
+builtins.
+.B .rust(\fIcode\fR)
+compiles a self\-contained Rust block \(em its
+.B pub extern "C"
+exports \(em to a
+.B cdylib
+on first use, caches it under
+.IR ~/.cache/fusevm/ffi ,
+and
+.BR dlopen s
+it.
+.B .Call(\fIname\fR, \fI...\fR)
+\(em R's own native\-call verb \(em invokes a registered export, marshalling
+length\-1 R vectors to fusevm scalars and the scalar result back to a length\-1 R
+vector. Both need
+.B rustc
+on
+.B PATH
+plus
+.BR dlopen ,
+so they run only on native targets.
+.SS Deployment
+.B \-\-build
+ahead\-of\-time compiles to the on\-disk bytecode cache for a native
+.B .fvm
+run, and the same crate builds for
+.B wasm32
+to run R in a web worker.
+.SH 5. DIAGNOSTICS
+Errors are written to standard error in R's own message form, for example a parse
+error, an object\-not\-found error, or a subscript\-out\-of\-bounds condition. The
+process exits non\-zero on an unhandled error and 0 on success.
+.SH SEE ALSO
+.BR Rscript (1)
+The focused invocation page. Source and issue tracker:
+https://github.com/MenkeTechnologies/rlang
+.SH AUTHOR
+Part of the fusevm language family.
