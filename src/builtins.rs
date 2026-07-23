@@ -8,7 +8,7 @@
 //! on a nested VM while the outer builtin is still on the stack.
 
 use crate::host::{
-    call_value, fixed_decimals, format_dbl, ops, render_fixed, render_sci, sci_decimals, with_host,
+    call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
     RData, Signal,
 };
 use fusevm::{Value, VM};
@@ -210,6 +210,11 @@ fn propagate(vm: &mut VM, v: Value) -> Value {
 
 fn b_getvar(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
+    // Evaluating a symbol makes its value visible (R sets `R_Visible = TRUE`).
+    // Without this a function whose body is a bare symbol stayed invisible after
+    // a default-argument prologue ran `p <- <default>` (an invisible assignment),
+    // so `function(x = 3) x` printed nothing.
+    with_host(|h| h.visible = true);
     match with_host(|h| h.lookup(&name)) {
         Some(v) => v,
         None => match primitive_value(&name) {
@@ -232,7 +237,45 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
 
 /// A primitive as a first-class value, so `sapply(x, sqrt)` works.
 fn primitive_value(name: &str) -> Option<Value> {
+    if let Some(v) = base_constant(name) {
+        return Some(v);
+    }
     is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
+}
+
+/// R's built-in constants, bound in the base environment: `pi`, the letter and
+/// month name vectors. `T`/`F` are handled as literals by the lexer.
+fn base_constant(name: &str) -> Option<Value> {
+    let letters = |upper: bool| {
+        mk_str(
+            (b'a'..=b'z')
+                .map(|c| Some(((if upper { c - 32 } else { c }) as char).to_string()))
+                .collect(),
+        )
+    };
+    match name {
+        "pi" => Some(scalar_dbl(std::f64::consts::PI)),
+        "LETTERS" => Some(letters(true)),
+        "letters" => Some(letters(false)),
+        "month.name" => Some(mk_str(
+            [
+                "January", "February", "March", "April", "May", "June", "July", "August",
+                "September", "October", "November", "December",
+            ]
+            .into_iter()
+            .map(|m| Some(m.to_string()))
+            .collect(),
+        )),
+        "month.abb" => Some(mk_str(
+            [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ]
+            .into_iter()
+            .map(|m| Some(m.to_string()))
+            .collect(),
+        )),
+        _ => None,
+    }
 }
 
 fn b_setvar(vm: &mut VM, _: u8) -> Value {
@@ -399,7 +442,7 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
             // A user-defined infix operator is an ordinary function named
             // `%other%`.
             let fname = format!("%{other}%");
-            match with_host(|h| h.lookup_function(&fname)) {
+            match with_host(|h| h.lookup_function(&fname)).or_else(|| primitive_value(&fname)) {
                 Some(f) => call_value(&f, vec![(None, lhs), (None, rhs)], Some(fname)),
                 None => Err(format!("could not find function \"{fname}\"")),
             }
@@ -472,10 +515,12 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
                 "*" => x * y,
                 "/" => x / y,
                 "^" => x.powf(y),
-                // R's %% and %/% follow the sign of the divisor (floored),
-                // unlike C's truncated remainder.
-                "%%" => x - y * (x / y).floor(),
-                _ => (x / y).floor(),
+                // R's `%%` is C `fmod` (an *exact* remainder against the stored
+                // divisor) re-signed to follow the divisor, not the dividend.
+                // The old `x - y*floor(x/y)` rounded the quotient first, so
+                // `10 %% 0.04` collapsed to 0 instead of R's 0.04.
+                "%%" => r_mod(x, y),
+                _ => r_idiv(x, y),
             }),
             _ => None,
         });
@@ -1191,6 +1236,7 @@ pub const OPERATORS: &[&str] = &[
 pub const PRIMITIVES: &[&str] = &[
     "c",
     "length",
+    "lengths",
     "names",
     "attr",
     "attributes",
@@ -1203,6 +1249,8 @@ pub const PRIMITIVES: &[&str] = &[
     "paste",
     "paste0",
     "format",
+    "formatC",
+    "prettyNum",
     "sprintf",
     "message",
     "warning",
@@ -1220,8 +1268,13 @@ pub const PRIMITIVES: &[&str] = &[
     "which",
     "which.max",
     "which.min",
+    "match",
+    "is.element",
+    "duplicated",
+    "rank",
     "any",
     "all",
+    "xor",
     "sum",
     "prod",
     "mean",
@@ -1240,6 +1293,7 @@ pub const PRIMITIVES: &[&str] = &[
     "floor",
     "ceiling",
     "round",
+    "signif",
     "trunc",
     "sign",
     "cumsum",
@@ -1266,6 +1320,7 @@ pub const PRIMITIVES: &[&str] = &[
     "sapply",
     "vapply",
     "Map",
+    "mapply",
     "Reduce",
     "Filter",
     "do.call",
@@ -1279,6 +1334,9 @@ pub const PRIMITIVES: &[&str] = &[
     "gsub",
     "grepl",
     "grep",
+    "regexpr",
+    "gregexpr",
+    "regmatches",
     "trimws",
     "startsWith",
     "endsWith",
@@ -1287,6 +1345,13 @@ pub const PRIMITIVES: &[&str] = &[
     "nrow",
     "ncol",
     "t",
+    "rowSums",
+    "colSums",
+    "rowMeans",
+    "colMeans",
+    "apply",
+    "diag",
+    "%*%",
     "head",
     "tail",
     "append",
@@ -1312,9 +1377,19 @@ pub const PRIMITIVES: &[&str] = &[
     "missing",
     "return",
     "UseMethod",
+    "factor",
+    "levels",
     "nlevels",
+    "table",
     "typeof",
     "mode",
+    "storage.mode",
+    "bitwAnd",
+    "bitwOr",
+    "bitwXor",
+    "bitwNot",
+    "bitwShiftL",
+    "bitwShiftR",
     "Recall",
     "Negate",
     "toString",
@@ -1357,9 +1432,35 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "logical" => Ok(mk_lgl(vec![Some(false); a.n(0, 0.0) as usize])),
         "as.numeric" | "as.double" => Ok(mk_dbl(as_dbl(&a.req(0, "x")?))),
         "as.integer" => Ok(mk_int(as_int(&a.req(0, "x")?))),
-        "as.character" => Ok(mk_str(as_str(&a.req(0, "x")?))),
+        "as.character" => {
+            let x = a.req(0, "x")?;
+            // `as.character(factor)` yields the level labels, not the codes.
+            if class_of(&x).iter().any(|c| c == "factor") {
+                let levels = with_host(|h| h.attr(&x, "levels"))
+                    .map(|l| as_str(&l))
+                    .unwrap_or_default();
+                return Ok(mk_str(
+                    as_int(&x)
+                        .iter()
+                        .map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned().flatten()))
+                        .collect(),
+                ));
+            }
+            Ok(mk_str(as_str(&x)))
+        }
         "as.logical" => Ok(mk_lgl(as_lgl(&a.req(0, "x")?))),
-        "as.vector" => Ok(a.req(0, "x")?),
+        "as.vector" => {
+            // `as.vector` drops attributes (names, dim, class, levels), so a
+            // `table` collapses to its plain integer counts.
+            let out = copy_of(&a.req(0, "x")?);
+            with_host(|h| {
+                let nl = h.null();
+                for attr in ["names", "dim", "class", "levels", "dimnames"] {
+                    h.set_attr(&out, attr, nl.clone());
+                }
+            });
+            Ok(out)
+        }
         "as.list" => {
             let x = a.req(0, "x")?;
             let out = mk_list(elements(&x));
@@ -1373,6 +1474,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         // ── attributes and metadata ─────────────────────────────────────
         "length" => Ok(scalar_int(len(&a.req(0, "x")?) as i64)),
+        "lengths" => {
+            let x = a.req(0, "x")?;
+            let nm = names_of(&x);
+            let out = mk_int(elements(&x).iter().map(|e| Some(len(e) as i64)).collect());
+            if !nm.is_empty() {
+                set_names(&out, nm);
+            }
+            Ok(out)
+        }
         "names" => {
             let x = a.req(0, "x")?;
             let nm = names_of(&x);
@@ -1440,6 +1550,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 "closure" | "builtin" => "function",
                 other => other,
             }))
+        }
+        "storage.mode" => {
+            let x = a.req(0, "x")?;
+            Ok(scalar_str(with_host(|h| h.type_of(&x))))
         }
         "dim" => {
             let x = a.req(0, "x")?;
@@ -1547,12 +1661,43 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect();
             Ok(scalar_str(parts.join(", ")))
         }
-        "format" => Ok(mk_str(
-            as_str(&a.req(0, "x")?)
+        "format" => {
+            let x = a.req(0, "x")?;
+            let nsmall = a.named("nsmall").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
+            let big = a
+                .named("big.mark")
+                .and_then(|v| str1(&v))
+                .unwrap_or_default();
+            let numeric = matches!(data(&x), RData::Dbl(_) | RData::Int(_));
+            let out: Vec<Option<String>> = as_str(&x)
                 .into_iter()
-                .map(|s| s.or_else(|| Some("NA".into())))
-                .collect(),
-        )),
+                .map(|s| {
+                    let mut s = s.unwrap_or_else(|| "NA".into());
+                    if numeric && nsmall > 0 {
+                        s = pad_nsmall(&s, nsmall);
+                    }
+                    if numeric && !big.is_empty() {
+                        s = insert_big_mark(&s, &big);
+                    }
+                    Some(s)
+                })
+                .collect();
+            Ok(mk_str(out))
+        }
+        "formatC" => format_c(&a),
+        "prettyNum" => {
+            let x = a.req(0, "x")?;
+            let big = a
+                .named("big.mark")
+                .and_then(|v| str1(&v))
+                .unwrap_or_default();
+            Ok(mk_str(
+                as_str(&x)
+                    .into_iter()
+                    .map(|s| s.map(|s| insert_big_mark(&s, &big)))
+                    .collect(),
+            ))
+        }
         "sprintf" => sprintf(&a),
 
         // ── sequences ───────────────────────────────────────────────────
@@ -1650,6 +1795,65 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             let tail = take_positions(&y, &ypos);
             Ok(concat(&Args::new(vec![(None, head), (None, tail)])))
+        }
+        "match" => {
+            // First position (1-based) of each `x` in `table`, else NA. String
+            // coercion gives a type-agnostic equality that matches R here.
+            let xs = as_str(&a.req(0, "x")?);
+            let table = as_str(&a.req(1, "table")?);
+            Ok(mk_int(
+                xs.iter()
+                    .map(|k| table.iter().position(|t| t == k).map(|p| p as i64 + 1))
+                    .collect(),
+            ))
+        }
+        "is.element" => {
+            let el = as_str(&a.req(0, "el")?);
+            let table = as_str(&a.req(1, "table")?);
+            Ok(mk_lgl(el.iter().map(|k| Some(table.contains(k))).collect()))
+        }
+        "duplicated" => {
+            let keys = as_str(&a.req(0, "x")?);
+            let mut seen: Vec<Option<String>> = Vec::new();
+            Ok(mk_lgl(
+                keys.iter()
+                    .map(|k| {
+                        let dup = seen.contains(k);
+                        if !dup {
+                            seen.push(k.clone());
+                        }
+                        Some(dup)
+                    })
+                    .collect(),
+            ))
+        }
+        "rank" => {
+            // Average ranks with ties, like R's default `ties.method="average"`.
+            let xs = as_dbl(&a.req(0, "x")?);
+            let n = xs.len();
+            let mut idx: Vec<usize> = (0..n).collect();
+            idx.sort_by(|&i, &j| {
+                xs[i]
+                    .partial_cmp(&xs[j])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut ranks = vec![0.0; n];
+            let mut i = 0;
+            while i < n {
+                let mut j = i + 1;
+                while j < n && xs[idx[j]] == xs[idx[i]] {
+                    j += 1;
+                }
+                // positions i..j are tied; their shared rank is the average of
+                // the 1-based slots i+1..=j.
+                let avg = ((i + 1 + j) as f64) / 2.0;
+                for &k in &idx[i..j] {
+                    ranks[k] = avg;
+                }
+                i = j;
+            }
+            // Integer ranks (no ties) print as a double vector in R anyway.
+            Ok(mk_dbl(ranks.into_iter().map(Some).collect()))
         }
         "which" => {
             let x = a.req(0, "x")?;
@@ -1756,9 +1960,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if xs.len() < 2 {
                 return Ok(mk_dbl(vec![None]));
             }
-            let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-            // The sample variance (n-1 denominator), which is R's default.
-            let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (xs.len() - 1) as f64;
+            let n = xs.len() as f64;
+            let mean = xs.iter().sum::<f64>() / n;
+            // R's two-pass variance (src/library/stats cov.c): the `t*t/n`
+            // term cancels the rounding error left in `mean`, so the last
+            // printed digit matches R rather than drifting by one ulp.
+            let mut s = 0.0;
+            let mut t = 0.0;
+            for x in &xs {
+                let d = x - mean;
+                s += d * d;
+                t += d;
+            }
+            let var = (s - t * t / n) / (n - 1.0);
             Ok(scalar_dbl(if name == "sd" { var.sqrt() } else { var }))
         }
         "min" | "max" | "range" => {
@@ -1876,14 +2090,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "round" => {
             let x = a.req(0, "x")?;
-            let digits = a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(0.0);
-            let scale = 10f64.powf(digits);
+            let digits = a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(0.0) as i32;
             Ok(mk_dbl(
-                as_dbl(&x)
-                    .iter()
-                    // R rounds half to even ("banker's rounding").
-                    .map(|e| e.map(|v| round_half_even(v * scale) / scale))
-                    .collect(),
+                as_dbl(&x).iter().map(|e| e.map(|v| r_round(v, digits))).collect(),
+            ))
+        }
+        "signif" => {
+            let x = a.req(0, "x")?;
+            let digits = (a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(6.0) as i32).max(1);
+            Ok(mk_dbl(
+                as_dbl(&x).iter().map(|e| e.map(|v| signif(v, digits))).collect(),
             ))
         }
 
@@ -1953,6 +2169,44 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             as_lgl(&a.req(0, "x")?).as_slice(),
             [Some(false)]
         ))),
+        "xor" => {
+            let x = as_lgl(&a.req(0, "x")?);
+            let y = as_lgl(&a.req(1, "y")?);
+            let n = x.len().max(y.len());
+            Ok(mk_lgl(
+                (0..n)
+                    .map(|i| {
+                        match (x[i % x.len().max(1)], y[i % y.len().max(1)]) {
+                            (Some(a), Some(b)) => Some(a != b),
+                            _ => None,
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+        "bitwAnd" | "bitwOr" | "bitwXor" | "bitwShiftL" | "bitwShiftR" => {
+            let x = as_int(&a.req(0, "a")?);
+            let y = as_int(&a.req(1, "b")?);
+            let n = x.len().max(y.len());
+            Ok(mk_int(
+                (0..n)
+                    .map(|i| {
+                        let a = x[i % x.len().max(1)]?;
+                        let b = y[i % y.len().max(1)]?;
+                        Some(match name {
+                            "bitwAnd" => a & b,
+                            "bitwOr" => a | b,
+                            "bitwXor" => a ^ b,
+                            "bitwShiftL" => a << b,
+                            _ => a >> b,
+                        })
+                    })
+                    .collect(),
+            ))
+        }
+        "bitwNot" => Ok(mk_int(
+            as_int(&a.req(0, "a")?).iter().map(|e| e.map(|v| !v)).collect(),
+        )),
         "identical" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "y")?;
@@ -2047,14 +2301,30 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "strsplit" => {
             let x = as_str(&a.req(0, "x")?);
             let sep = str1(&a.req(1, "split")?).unwrap_or_default();
+            let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
+            // R's `split` is a regular expression by default (POSIX ERE);
+            // `fixed = TRUE` or an empty pattern falls back to character/literal
+            // splitting. A blank pattern still means "every character".
+            let re = if sep.is_empty() {
+                None
+            } else {
+                let pat = if fixed {
+                    regex::escape(&sep)
+                } else {
+                    sep.clone()
+                };
+                Some(
+                    regex::Regex::new(&pat)
+                        .map_err(|e| format!("invalid regular expression '{sep}': {e}"))?,
+                )
+            };
             let parts: Vec<Value> = x
                 .iter()
                 .map(|s| match s {
                     Some(s) => {
-                        let pieces: Vec<Option<String>> = if sep.is_empty() {
-                            s.chars().map(|c| Some(c.to_string())).collect()
-                        } else {
-                            s.split(sep.as_str()).map(|p| Some(p.to_string())).collect()
+                        let pieces: Vec<Option<String>> = match &re {
+                            None => s.chars().map(|c| Some(c.to_string())).collect(),
+                            Some(re) => r_strsplit(s, re),
                         };
                         mk_str(pieces)
                     }
@@ -2064,6 +2334,114 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(mk_list(parts))
         }
         "sub" | "gsub" | "grepl" | "grep" => regex_op(name, &a),
+        "regexpr" | "gregexpr" => {
+            let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
+            let re = regex::Regex::new(&pat)
+                .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
+            let x = as_str(&a.req(1, "text")?);
+            if name == "regexpr" {
+                // First match per element: a 1-based char position (or -1), with
+                // the match width carried on the `match.length` attribute so
+                // `regmatches` can slice it back out.
+                let (mut starts, mut lens) = (Vec::new(), Vec::new());
+                for s in &x {
+                    match s.as_ref().and_then(|s| re.find(s).map(|m| (s, m))) {
+                        Some((s, m)) => {
+                            starts.push(Some(char_pos(s, m.start()) as i64 + 1));
+                            lens.push(Some(s[m.start()..m.end()].chars().count() as i64));
+                        }
+                        None => {
+                            starts.push(Some(-1));
+                            lens.push(Some(-1));
+                        }
+                    }
+                }
+                let out = mk_int(starts);
+                let ml = mk_int(lens);
+                with_host(|h| h.set_attr(&out, "match.length", ml));
+                Ok(out)
+            } else {
+                // All matches per element, as a list of position vectors each
+                // carrying its own `match.length`.
+                let per: Vec<Value> = x
+                    .iter()
+                    .map(|s| {
+                        let (mut starts, mut lens) = (Vec::new(), Vec::new());
+                        if let Some(s) = s {
+                            for m in re.find_iter(s) {
+                                starts.push(Some(char_pos(s, m.start()) as i64 + 1));
+                                lens.push(Some(s[m.start()..m.end()].chars().count() as i64));
+                            }
+                        }
+                        if starts.is_empty() {
+                            starts.push(Some(-1));
+                            lens.push(Some(-1));
+                        }
+                        let v = mk_int(starts);
+                        let ml = mk_int(lens);
+                        with_host(|h| h.set_attr(&v, "match.length", ml));
+                        v
+                    })
+                    .collect();
+                Ok(mk_list(per))
+            }
+        }
+        "regmatches" => {
+            let x = as_str(&a.req(0, "x")?);
+            let m = a.req(1, "m")?;
+            let extract = |s: &str, start: i64, len: i64| -> String {
+                s.chars()
+                    .skip((start - 1).max(0) as usize)
+                    .take(len.max(0) as usize)
+                    .collect()
+            };
+            match data(&m) {
+                // `gregexpr` result: one character vector of all matches per
+                // element, returned as a list.
+                RData::List(items) => {
+                    let out: Vec<Value> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, mi)| {
+                            let starts = as_int(mi);
+                            let lens = with_host(|h| h.attr(mi, "match.length"))
+                                .map(|v| as_int(&v))
+                                .unwrap_or_default();
+                            let s = x.get(i).cloned().flatten().unwrap_or_default();
+                            let hits: Vec<Option<String>> = starts
+                                .iter()
+                                .zip(lens.iter())
+                                .filter_map(|(st, ln)| {
+                                    let st = (*st)?;
+                                    (st >= 1).then(|| Some(extract(&s, st, ln.unwrap_or(0))))
+                                })
+                                .collect();
+                            mk_str(hits)
+                        })
+                        .collect();
+                    Ok(mk_list(out))
+                }
+                // `regexpr` result: drop the non-matches (start == -1).
+                _ => {
+                    let starts = as_int(&m);
+                    let lens = with_host(|h| h.attr(&m, "match.length"))
+                        .map(|v| as_int(&v))
+                        .unwrap_or_default();
+                    let mut out = Vec::new();
+                    for (i, s) in x.iter().enumerate() {
+                        let st = starts.get(i).and_then(|e| *e).unwrap_or(-1);
+                        if st < 1 {
+                            continue;
+                        }
+                        let ln = lens.get(i).and_then(|e| *e).unwrap_or(0);
+                        if let Some(s) = s {
+                            out.push(Some(extract(s, st, ln)));
+                        }
+                    }
+                    Ok(mk_str(out))
+                }
+            }
+        }
 
         // ── apply family ────────────────────────────────────────────────
         "lapply" | "sapply" => {
@@ -2112,6 +2490,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(mk_list(out))
         }
+        "mapply" => {
+            // Like `Map` but simplified to an atomic vector when every result
+            // is a scalar, matching R's default `SIMPLIFY = TRUE`.
+            let f = a.req(0, "FUN")?;
+            let lists: Vec<Vec<Value>> = a.rest(1).iter().map(|(_, v)| elements(v)).collect();
+            let n = lists.iter().map(|l| l.len()).max().unwrap_or(0);
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let call_args: Vec<(Option<String>, Value)> = lists
+                    .iter()
+                    .map(|l| (None, l[i % l.len().max(1)].clone()))
+                    .collect();
+                out.push(call_value(&f, call_args, None)?);
+            }
+            Ok(simplify(&mk_list(out)))
+        }
         "Filter" => {
             let f = a.req(0, "f")?;
             let x = a.req(1, "x")?;
@@ -2138,6 +2532,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "Reduce" => {
             let f = a.req(0, "f")?;
             let x = a.req(1, "x")?;
+            let accumulate = a
+                .named("accumulate")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(false);
             let mut items = elements(&x).into_iter();
             let mut acc = match a.get(2, "init") {
                 Some(v) => v,
@@ -2146,10 +2544,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     None => return Ok(null()),
                 },
             };
+            let mut steps = vec![acc.clone()];
             for it in items {
                 acc = call_value(&f, vec![(None, acc), (None, it)], None)?;
+                steps.push(acc.clone());
             }
-            Ok(acc)
+            // `accumulate = TRUE` returns every intermediate fold, simplified to
+            // an atomic vector when the results are scalars.
+            if accumulate {
+                Ok(simplify(&mk_list(steps)))
+            } else {
+                Ok(acc)
+            }
         }
         "do.call" => {
             let f = a.req(0, "what")?;
@@ -2189,7 +2595,21 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 (None, None) => (n, 1),
             };
             let total = nr * nc;
-            let pos: Vec<Option<usize>> = (0..total).map(|i| Some(i % n)).collect();
+            let byrow = a.named("byrow").and_then(|v| lgl1(&v)).unwrap_or(false);
+            // R stores matrices column-major. With `byrow = TRUE` the data fills
+            // rows first, so column-major slot `c*nr + r` draws from row-major
+            // source index `r*nc + c`.
+            let pos: Vec<Option<usize>> = if byrow {
+                let mut p = vec![Some(0usize); total];
+                for r in 0..nr {
+                    for c in 0..nc {
+                        p[c * nr + r] = Some((r * nc + c) % n);
+                    }
+                }
+                p
+            } else {
+                (0..total).map(|i| Some(i % n)).collect()
+            };
             let out = take_positions(&x, &pos);
             let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
@@ -2214,6 +2634,92 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let dim = mk_int(vec![Some(nc as i64), Some(nr as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
             Ok(out)
+        }
+        "rowSums" | "colSums" | "rowMeans" | "colMeans" => {
+            let x = a.req(0, "x")?;
+            let (nr, nc) = mat_dim(&x);
+            let data = as_dbl(&x);
+            let by_row = name.starts_with("row");
+            let mean = name.ends_with("Means");
+            let outer = if by_row { nr } else { nc };
+            let inner = if by_row { nc } else { nr };
+            let out: Vec<Option<f64>> = (0..outer)
+                .map(|o| {
+                    let mut acc = 0.0;
+                    for i in 0..inner {
+                        // column-major index (r, c) = c*nr + r
+                        let (r, c) = if by_row { (o, i) } else { (i, o) };
+                        acc += data.get(c * nr + r).and_then(|e| *e).unwrap_or(f64::NAN);
+                    }
+                    Some(if mean { acc / inner as f64 } else { acc })
+                })
+                .collect();
+            Ok(mk_dbl(out))
+        }
+        "apply" => {
+            let x = a.req(0, "X")?;
+            let margin = a.get(1, "MARGIN").and_then(|v| num1(&v)).unwrap_or(1.0) as i64;
+            let f = a.req(2, "FUN")?;
+            let (nr, nc) = mat_dim(&x);
+            let by_row = margin == 1;
+            let outer = if by_row { nr } else { nc };
+            let inner = if by_row { nc } else { nr };
+            let mut results = Vec::with_capacity(outer);
+            for o in 0..outer {
+                // Gather this row/column (R passes it in the natural order).
+                let idx: Vec<Option<usize>> = (0..inner)
+                    .map(|i| {
+                        let (r, c) = if by_row { (o, i) } else { (i, o) };
+                        Some(c * nr + r)
+                    })
+                    .collect();
+                let slice = take_positions(&x, &idx);
+                results.push(call_value(&f, vec![(None, slice)], None)?);
+            }
+            Ok(simplify(&mk_list(results)))
+        }
+        "diag" => {
+            let x = a.req(0, "x")?;
+            let d = with_host(|h| h.attr(&x, "dim"));
+            match d {
+                // `diag(matrix)` extracts the main diagonal.
+                Some(_) => {
+                    let (nr, nc) = mat_dim(&x);
+                    let k = nr.min(nc);
+                    let pos: Vec<Option<usize>> = (0..k).map(|i| Some(i * nr + i)).collect();
+                    Ok(take_positions(&x, &pos))
+                }
+                // `diag(n)` for a length-1 numeric builds the n×n identity.
+                None if matches!(data(&x), RData::Int(_) | RData::Dbl(_)) && len(&x) == 1 => {
+                    let n = num1(&x).unwrap_or(0.0) as usize;
+                    let mut vals = vec![Some(0.0); n * n];
+                    for i in 0..n {
+                        vals[i * n + i] = Some(1.0);
+                    }
+                    let out = mk_dbl(vals);
+                    let dim = mk_int(vec![Some(n as i64), Some(n as i64)]);
+                    with_host(|h| h.set_attr(&out, "dim", dim));
+                    Ok(out)
+                }
+                // `diag(vector)` builds a diagonal matrix from the values.
+                None => {
+                    let v = as_dbl(&x);
+                    let n = v.len();
+                    let mut vals = vec![Some(0.0); n * n];
+                    for (i, e) in v.iter().enumerate() {
+                        vals[i * n + i] = *e;
+                    }
+                    let out = mk_dbl(vals);
+                    let dim = mk_int(vec![Some(n as i64), Some(n as i64)]);
+                    with_host(|h| h.set_attr(&out, "dim", dim));
+                    Ok(out)
+                }
+            }
+        }
+        "%*%" => {
+            let x = a.req(0, "x")?;
+            let y = a.req(1, "y")?;
+            Ok(mat_mul(&x, &y))
         }
 
         // ── environments and dispatch ───────────────────────────────────
@@ -2260,7 +2766,72 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "UseMethod" => use_method(&a),
         "Recall" => Err("Recall() is not implemented yet".into()),
-        "nlevels" => Ok(scalar_int(0)),
+        "factor" => {
+            let x = a.req(0, "x")?;
+            let levels: Vec<String> = match a.named("levels") {
+                Some(l) => as_str(&l).into_iter().flatten().collect(),
+                None => factor_levels(&x),
+            };
+            // Each value's code is the 1-based index of its label in `levels`
+            // (NA when the value is not among the levels).
+            let codes: Vec<Option<i64>> = as_str(&x)
+                .iter()
+                .map(|c| {
+                    c.as_ref()
+                        .and_then(|c| levels.iter().position(|l| l == c))
+                        .map(|p| p as i64 + 1)
+                })
+                .collect();
+            let out = mk_int(codes);
+            let lv = mk_str(levels.into_iter().map(Some).collect());
+            let cls = scalar_str("factor");
+            with_host(|h| {
+                h.set_attr(&out, "levels", lv);
+                h.set_attr(&out, "class", cls);
+            });
+            Ok(out)
+        }
+        "levels" => {
+            let x = a.req(0, "x")?;
+            Ok(with_host(|h| h.attr(&x, "levels")).unwrap_or_else(null))
+        }
+        "nlevels" => {
+            let x = a.req(0, "x")?;
+            let n = with_host(|h| h.attr(&x, "levels"))
+                .map(|l| len(&l))
+                .unwrap_or(0);
+            Ok(scalar_int(n as i64))
+        }
+        "table" => {
+            let x = a.req(0, "x")?;
+            let is_factor = class_of(&x).iter().any(|c| c == "factor");
+            let levels: Vec<String> = if is_factor {
+                with_host(|h| h.attr(&x, "levels"))
+                    .map(|l| as_str(&l).into_iter().flatten().collect())
+                    .unwrap_or_default()
+            } else {
+                factor_levels(&x)
+            };
+            // The observed labels, dropping NA the way R's `table` does.
+            let obs: Vec<String> = if is_factor {
+                let codes = as_int(&x);
+                codes
+                    .iter()
+                    .filter_map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned()))
+                    .collect()
+            } else {
+                as_str(&x).into_iter().flatten().collect()
+            };
+            let counts: Vec<Option<i64>> = levels
+                .iter()
+                .map(|l| Some(obs.iter().filter(|o| *o == l).count() as i64))
+                .collect();
+            let out = mk_int(counts);
+            set_names(&out, levels.into_iter().map(Some).collect());
+            let cls = scalar_str("table");
+            with_host(|h| h.set_attr(&out, "class", cls));
+            Ok(out)
+        }
 
         other => Err(format!("could not find function \"{other}\"")),
     }
@@ -2522,7 +3093,10 @@ fn paste(a: &Args, zero: bool) -> Value {
 fn seq(a: &Args) -> Value {
     let from = a.get(0, "from").and_then(|v| num1(&v)).unwrap_or(1.0);
     let to = a.get(1, "to").and_then(|v| num1(&v));
-    let by = a.named("by").and_then(|v| num1(&v));
+    // R's signature is `seq(from, to, by, length.out, ...)`, so a third
+    // positional argument is `by` — `seq(0, 1, 0.25)` must see by = 0.25, not
+    // fall through to the default step of 1.
+    let by = a.get(2, "by").and_then(|v| num1(&v));
     let length_out = a.named("length.out").and_then(|v| num1(&v));
     // `seq(n)` with one argument means `seq_len(n)`.
     let Some(to) = to else {
@@ -2650,6 +3224,61 @@ fn identical(x: &Value, y: &Value) -> bool {
 }
 
 /// Round half to even, matching R's `round`.
+/// `round(x, digits)` at R 4.x semantics: round half to even on the *true*
+/// decimal value, not on `x * 10^digits` (whose multiplication error made
+/// `round(0.15, 1)` come out `0.2` instead of `0.1`). Rust's float formatting
+/// already rounds ties to even on the true value, so for non-negative digits we
+/// format and parse back; negative digits round to tens/hundreds by scaling.
+fn r_round(v: f64, digits: i32) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    if digits >= 0 {
+        format!("{:.*}", digits as usize, v).parse().unwrap_or(v)
+    } else {
+        let scale = 10f64.powi(-digits);
+        round_half_even(v / scale) * scale
+    }
+}
+
+/// R's `%%` (`myfmod`): the exact `fmod` remainder — computed against the
+/// stored divisor, so it never rounds the quotient — re-signed to follow the
+/// divisor. `10 %% 0.04` is `0.04`, `-7 %% 3` is `2`, `7 %% -3` is `-2`. A zero
+/// result is normalized to `+0` (R never yields `-0`, which would flip the sign
+/// of a later `x / (a %% b)`).
+fn r_mod(x: f64, y: f64) -> f64 {
+    if y == 0.0 {
+        return f64::NAN;
+    }
+    let r = x % y;
+    let r = if r != 0.0 && (r < 0.0) != (y < 0.0) {
+        r + y
+    } else {
+        r
+    };
+    if r == 0.0 {
+        0.0
+    } else {
+        r
+    }
+}
+
+/// R's `%/%`, kept consistent with `%%` via `(x - (x %% y)) / y`. A zero divisor
+/// or a non-finite dividend yields R's `x / y` directly (`49 %/% 0` and
+/// `Inf %/% 3` are both `Inf`, not `NaN`), and a zero quotient normalizes to
+/// `+0` for the same reason as `r_mod`.
+fn r_idiv(x: f64, y: f64) -> f64 {
+    if y == 0.0 || !x.is_finite() {
+        return x / y;
+    }
+    let q = ((x - r_mod(x, y)) / y).round();
+    if q == 0.0 {
+        0.0
+    } else {
+        q
+    }
+}
+
 fn round_half_even(x: f64) -> f64 {
     let r = x.round();
     if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
@@ -2657,6 +3286,86 @@ fn round_half_even(x: f64) -> f64 {
     } else {
         r
     }
+}
+
+/// The sorted, de-duplicated labels R uses as factor/table levels: numeric
+/// input sorts by value (so `10` follows `2`, not precedes it), character input
+/// sorts lexically.
+fn factor_levels(x: &Value) -> Vec<String> {
+    if matches!(data(x), RData::Int(_) | RData::Dbl(_) | RData::Lgl(_)) {
+        let mut u: Vec<f64> = Vec::new();
+        for v in as_dbl(x).into_iter().flatten() {
+            if !u.contains(&v) {
+                u.push(v);
+            }
+        }
+        u.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        as_str(&mk_dbl(u.into_iter().map(Some).collect()))
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        let mut u: Vec<String> = Vec::new();
+        for v in as_str(x).into_iter().flatten() {
+            if !u.contains(&v) {
+                u.push(v);
+            }
+        }
+        u.sort();
+        u
+    }
+}
+
+/// The `(nrow, ncol)` of a value's `dim`, treating a bare vector as a single
+/// column (`n × 1`) the way R's matrix ops coerce one.
+fn mat_dim(x: &Value) -> (usize, usize) {
+    let d = with_host(|h| h.attr(x, "dim"))
+        .map(|d| as_int(&d))
+        .unwrap_or_default();
+    match d.as_slice() {
+        [Some(r), Some(c)] => (*r as usize, *c as usize),
+        _ => (len(x), 1),
+    }
+}
+
+/// Matrix product `A %*% B`, column-major, at R's `%*%` semantics: a bare
+/// vector on the left is a row, on the right a column, so it conforms.
+fn mat_mul(x: &Value, y: &Value) -> Value {
+    let has_dim = |v: &Value| with_host(|h| h.attr(v, "dim")).is_some();
+    let (ar, ac) = if has_dim(x) { mat_dim(x) } else { (1, len(x)) };
+    let (br, bc) = if has_dim(y) { mat_dim(y) } else { (len(y), 1) };
+    let a = as_dbl(x);
+    let b = as_dbl(y);
+    if ac != br {
+        return mk_dbl(vec![None]);
+    }
+    let mut out = vec![Some(0.0); ar * bc];
+    for i in 0..ar {
+        for j in 0..bc {
+            let mut acc = 0.0;
+            for k in 0..ac {
+                let av = a.get(k * ar + i).and_then(|e| *e).unwrap_or(0.0);
+                let bv = b.get(j * br + k).and_then(|e| *e).unwrap_or(0.0);
+                acc += av * bv;
+            }
+            out[j * ar + i] = Some(acc);
+        }
+    }
+    let res = mk_dbl(out);
+    let dim = mk_int(vec![Some(ar as i64), Some(bc as i64)]);
+    with_host(|h| h.set_attr(&res, "dim", dim));
+    res
+}
+
+/// `signif(x, digits)` — round to `digits` significant figures, half-to-even
+/// like R. `signif(123.456, 2)` is `120`, `signif(0.0034219, 3)` is `0.00342`.
+fn signif(v: f64, digits: i32) -> f64 {
+    if v == 0.0 || !v.is_finite() {
+        return v;
+    }
+    let power = digits as f64 - 1.0 - v.abs().log10().floor();
+    let factor = 10f64.powf(power);
+    round_half_even(v * factor) / factor
 }
 
 /// `sub`, `gsub`, `grepl`, `grep` over R's default (POSIX-flavored) regex.
@@ -2771,45 +3480,161 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 return Err("too few arguments for sprintf format".into());
             };
             let k = i % len(&arg).max(1);
-            let text = match conv {
-                'd' | 'i' => as_int(&arg)
-                    .get(k)
-                    .and_then(|e| *e)
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "NA".into()),
-                'f' | 'e' | 'g' => {
-                    let v = as_dbl(&arg).get(k).and_then(|e| *e);
-                    match v {
-                        Some(v) => {
-                            let p = precision.unwrap_or(6);
-                            match conv {
-                                'f' => format!("{v:.p$}"),
-                                'e' => format!("{v:.p$e}"),
-                                _ => format_dbl(v),
-                            }
-                        }
-                        None => "NA".into(),
+            // Integer/float conversions split into sign + magnitude so the `+`/
+            // space sign flag and `0` zero-padding compose the C way (zeros go
+            // *after* the sign: `%05d` of -5 is `-0005`, not `000-5`).
+            let field = match conv {
+                'd' | 'i' => match as_int(&arg).get(k).and_then(|e| *e) {
+                    Some(v) => num_field(v < 0, v.unsigned_abs().to_string(), width, &flags),
+                    None => pad("NA", width, ""),
+                },
+                'f' | 'e' | 'E' | 'g' | 'G' => match as_dbl(&arg).get(k).and_then(|e| *e) {
+                    Some(v) => {
+                        let p = precision.unwrap_or(6);
+                        let mag = match conv {
+                            'f' => format!("{:.p$}", v.abs()),
+                            'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
+                            _ => fmt_g(v.abs(), p, conv == 'G'),
+                        };
+                        num_field(v < 0.0, mag, width, &flags)
                     }
+                    None => pad("NA", width, ""),
+                },
+                'x' | 'X' => {
+                    let v = as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0);
+                    let mag = if conv == 'x' {
+                        format!("{v:x}")
+                    } else {
+                        format!("{v:X}")
+                    };
+                    // Hex takes the `0` flag but no sign flag in R's usage here.
+                    num_field(false, mag, width, &flags.replace(['+', ' '], ""))
                 }
-                'x' => format!("{:x}", as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0)),
-                'X' => format!("{:X}", as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0)),
                 _ => {
                     let v = as_str(&arg)
                         .get(k)
                         .cloned()
                         .flatten()
                         .unwrap_or_else(|| "NA".into());
-                    match precision {
+                    let text: String = match precision {
                         Some(p) => v.chars().take(p).collect(),
                         None => v,
-                    }
+                    };
+                    // Strings ignore the `0` flag (they pad with spaces).
+                    pad(&text, width, &flags.replace('0', ""))
                 }
             };
-            s.push_str(&pad(&text, width, &flags));
+            s.push_str(&field);
         }
         out.push(Some(s));
     }
     Ok(mk_str(out))
+}
+
+/// `formatC(x, width, digits, format, flag)` — build the equivalent printf spec
+/// and route it through `sprintf`, so the numeric-field rules (sign, zero-pad,
+/// exponent) are shared. Integers default to `"d"`, reals to `"g"`.
+fn format_c(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let width = a.named("width").and_then(|v| num1(&v));
+    let digits = a.named("digits").and_then(|v| num1(&v));
+    let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
+    let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
+    let format = a
+        .named("format")
+        .and_then(|v| str1(&v))
+        .unwrap_or_else(|| if is_int { "d".into() } else { "g".into() });
+    let mut spec = String::from("%");
+    spec.push_str(&flag);
+    if let Some(w) = width {
+        spec.push_str(&(w as i64).to_string());
+    }
+    if let Some(d) = digits {
+        spec.push('.');
+        spec.push_str(&(d as i64).to_string());
+    }
+    spec.push_str(&format);
+    sprintf(&Args::new(vec![(None, scalar_str(spec)), (None, x)]))
+}
+
+/// Insert `mark` between every third digit of the integer part of a formatted
+/// number, preserving any sign and fractional part: `1234567` → `1,234,567`.
+fn insert_big_mark(s: &str, mark: &str) -> String {
+    if mark.is_empty() {
+        return s.to_string();
+    }
+    let (sign, body) = match s.strip_prefix('-') {
+        Some(r) => ("-", r),
+        None => ("", s),
+    };
+    let (int_part, frac) = match body.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (body, None),
+    };
+    if !int_part.chars().all(|c| c.is_ascii_digit()) {
+        return s.to_string();
+    }
+    let digits: Vec<char> = int_part.chars().collect();
+    let mut grouped = String::new();
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push_str(mark);
+        }
+        grouped.push(*c);
+    }
+    match frac {
+        Some(f) => format!("{sign}{grouped}.{f}"),
+        None => format!("{sign}{grouped}"),
+    }
+}
+
+/// Pad a formatted number to at least `nsmall` fractional digits (R's
+/// `format(x, nsmall=)`): `"1.5"` with `nsmall = 3` → `"1.500"`, `"2"` → `"2.000"`.
+fn pad_nsmall(s: &str, nsmall: usize) -> String {
+    if !s.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '.')) {
+        return s.to_string();
+    }
+    match s.split_once('.') {
+        Some((_, f)) if f.len() >= nsmall => s.to_string(),
+        Some((i, f)) => format!("{i}.{f}{}", "0".repeat(nsmall - f.len())),
+        None => format!("{s}.{}", "0".repeat(nsmall)),
+    }
+}
+
+/// Character offset of byte position `byte` within `s` (R indexes by character,
+/// not byte).
+fn char_pos(s: &str, byte: usize) -> usize {
+    s[..byte].chars().count()
+}
+
+/// R's `strsplit` regex algorithm: emit the text before each match, advance
+/// past it (`^` re-anchors because each search runs on the remaining slice), and
+/// drop a trailing empty piece — but keep a leading one. A zero-width match
+/// emits one character and steps forward one, so an empty-capable pattern
+/// degenerates to a character split.
+fn r_strsplit(s: &str, re: &regex::Regex) -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while !rest.is_empty() {
+        match re.find(rest) {
+            Some(m) if m.start() != m.end() => {
+                out.push(Some(rest[..m.start()].to_string()));
+                rest = &rest[m.end()..];
+            }
+            Some(_) => {
+                let mut it = rest.char_indices();
+                let (_, c) = it.next().unwrap();
+                out.push(Some(c.to_string()));
+                let next = it.next().map(|(i, _)| i).unwrap_or(rest.len());
+                rest = &rest[next..];
+            }
+            None => {
+                out.push(Some(rest.to_string()));
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Split a `%` conversion spec into flags, width, and precision.
@@ -2846,6 +3671,89 @@ fn pad(text: &str, width: Option<usize>, flags: &str) -> String {
     } else {
         format!("{}{text}", " ".repeat(fill))
     }
+}
+
+/// Assemble a printf numeric field from a sign and an already-formatted
+/// magnitude, then apply width padding. The `0` flag zero-fills *between* the
+/// sign and the magnitude (`-0005`), the `-` flag left-justifies with spaces,
+/// and a positive value takes `+` or a leading space when those flags are set.
+fn num_field(neg: bool, mag: String, width: Option<usize>, flags: &str) -> String {
+    let sign = if neg {
+        "-"
+    } else if flags.contains('+') {
+        "+"
+    } else if flags.contains(' ') {
+        " "
+    } else {
+        ""
+    };
+    let core = sign.len() + mag.chars().count();
+    match width {
+        Some(w) if w > core => {
+            let fill = w - core;
+            if flags.contains('-') {
+                format!("{sign}{mag}{}", " ".repeat(fill))
+            } else if flags.contains('0') {
+                format!("{sign}{}{mag}", "0".repeat(fill))
+            } else {
+                format!("{}{sign}{mag}", " ".repeat(fill))
+            }
+        }
+        _ => format!("{sign}{mag}"),
+    }
+}
+
+/// C's `%e`: a mantissa with `p` fractional digits and an exponent that always
+/// carries a sign and at least two digits (`1.500000e+00`), unlike Rust's
+/// `{:e}` which prints `1.5e0`. `v` is the non-negative magnitude.
+fn fmt_exp(v: f64, p: usize, upper: bool) -> String {
+    let s = format!("{:.*e}", p, v);
+    let e = if upper { 'E' } else { 'e' };
+    match s.split_once('e') {
+        Some((mant, exp)) => {
+            let (esign, digits) = match exp.strip_prefix('-') {
+                Some(d) => ('-', d),
+                None => ('+', exp),
+            };
+            format!("{mant}{e}{esign}{digits:0>2}")
+        }
+        None => s,
+    }
+}
+
+/// C's `%g`: pick `%e` when the decimal exponent is `< -4` or `>= p`, else
+/// `%f`, with `p` significant digits (min 1), then strip trailing zeros (and a
+/// trailing `.`). `v` is the non-negative magnitude.
+fn fmt_g(v: f64, p: usize, upper: bool) -> String {
+    let p = p.max(1);
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let exp = v.log10().floor() as i32;
+    if exp < -4 || exp >= p as i32 {
+        let s = fmt_exp(v, p - 1, upper);
+        let (mant, rest) = s.split_once(['e', 'E']).unwrap_or((&s, ""));
+        let mant = strip_g_zeros(mant);
+        let e = if upper { 'E' } else { 'e' };
+        if rest.is_empty() {
+            mant
+        } else {
+            format!("{mant}{e}{rest}")
+        }
+    } else {
+        let prec = (p as i32 - 1 - exp).max(0) as usize;
+        strip_g_zeros(&format!("{v:.prec$}"))
+    }
+}
+
+/// Drop the trailing zeros (and a now-dangling decimal point) that C's `%g`
+/// suppresses: `1.230` → `1.23`, `100.0` → `100`.
+fn strip_g_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let t = s.trim_end_matches('0');
+    t.trim_end_matches('.').to_string()
 }
 
 /// `UseMethod("generic")` — S3 dispatch on the class vector of the first
@@ -2890,6 +3798,18 @@ pub fn print_value(v: &Value) {
 
 /// Render a value into the lines `print` would emit.
 pub fn format_value(v: &Value) -> Vec<String> {
+    // Class-based print methods that override the default vector layout.
+    let classes = class_of(v);
+    if classes.iter().any(|c| c == "factor") {
+        return format_factor(v);
+    }
+    if classes.iter().any(|c| c == "table") {
+        // R heads a 1-D table with a blank line (the empty dimname), then the
+        // named-vector body.
+        let mut out = vec![String::new()];
+        out.extend(format_vector(v));
+        return out;
+    }
     match data(v) {
         RData::Null => vec!["NULL".into()],
         RData::Closure { .. } | RData::Builtin(_) => vec![format_function(v)],
@@ -2999,6 +3919,56 @@ fn format_elements(v: &Value) -> Vec<String> {
             .collect();
     }
     (0..n).map(|i| print_element(v, i)).collect()
+}
+
+/// Print a factor: the level labels (unquoted, `[i]`-indexed like a character
+/// vector) followed by a `Levels:` line.
+fn format_factor(v: &Value) -> Vec<String> {
+    let levels: Vec<String> = with_host(|h| h.attr(v, "levels"))
+        .map(|l| as_str(&l).into_iter().flatten().collect())
+        .unwrap_or_default();
+    let labels: Vec<String> = as_int(v)
+        .iter()
+        .map(|c| {
+            c.and_then(|i| levels.get((i - 1) as usize).cloned())
+                .unwrap_or_else(|| "<NA>".into())
+        })
+        .collect();
+    let mut out = if labels.is_empty() {
+        vec!["factor(0)".to_string()]
+    } else {
+        layout_indexed(&labels, true)
+    };
+    out.push(format!("Levels: {}", levels.join(" ")));
+    out
+}
+
+/// The `[i]`-prefixed, width-wrapped cell layout R uses for an unnamed vector.
+/// `left_align` left-justifies each cell (character-style) rather than
+/// right-justifying (numeric-style).
+fn layout_indexed(cells: &[String], left_align: bool) -> Vec<String> {
+    let n = cells.len();
+    const WIDTH: usize = 80;
+    let cell_w = cells.iter().map(|c| c.chars().count()).max().unwrap_or(1);
+    let idx_w = format!("[{n}]").len();
+    let per_line = ((WIDTH - idx_w) / (cell_w + 1)).max(1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let take = per_line.min(n - i);
+        let cells_row: Vec<String> = (i..i + take)
+            .map(|k| {
+                if left_align {
+                    format!("{:<cell_w$}", cells[k])
+                } else {
+                    format!("{:>cell_w$}", cells[k])
+                }
+            })
+            .collect();
+        out.push(format!("{:>idx_w$} {}", format!("[{}]", i + 1), cells_row.join(" ")));
+        i += take;
+    }
+    out
 }
 
 fn format_vector(v: &Value) -> Vec<String> {

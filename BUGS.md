@@ -5,8 +5,9 @@ working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
 `cargo run --bin parity-fuzz` on thousands of generated snippets across 21
-surfaces. The gap classes the fuzzer currently finds are frozen in
-`tests/data/parity_fuzz_baseline.txt`; every one is listed below.
+surfaces. The fuzzer currently reports **zero** divergences across those
+surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
+remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## Evaluation model
 
@@ -29,26 +30,30 @@ surfaces. The gap classes the fuzzer currently finds are frozen in
 
 - **No data frames**, and therefore none of `data.frame`, `subset`, `merge`,
   `aggregate`, `read.csv`, `write.csv`.
-- **No factors** (`factor`, `levels`, `table`), no complex numbers, no raw
-  vectors, no `Date`/`POSIXct`.
+- **No complex numbers, no raw vectors, no `Date`/`POSIXct`.** Factors are
+  supported (`factor`, `levels`, `nlevels`, `table`, and their printing), but
+  only the default `sort`-ordered levels — no ordered factors.
 - **No arrays past 2 dimensions.** `dim` of length 2 prints and indexes as a
   matrix; longer `dim` vectors are carried but not honored by indexing or print.
-- **No `apply` over matrix margins**, `outer`, `%*%`, `solve`, `crossprod`, or
-  any of the linear-algebra surface. `cbind`/`rbind` are not implemented.
+- **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
+  `rowSums`/`colSums`/`rowMeans`/`colMeans` work; `outer`, `solve`, `crossprod`,
+  `cbind`/`rbind`, and `det` are not implemented.
 - **Integer overflow wraps to a double** rather than producing `NA` with a
   warning, because arithmetic is computed in `f64` and narrowed back.
+- **`%%`/`%/%` and `var` differ from R by ULPs at the edge of f64 precision.**
+  R accumulates them in C `long double`; Rust has no equivalent, so a modulus of
+  a value past `2^53` (where R warns of "complete loss of accuracy") or a
+  variance landing on a 7th-significant-digit rounding tie can differ in the last
+  place.
 
 ## Printing and formatting
 
 - **`options(digits=, scipen=)` is not implemented.** The 7-significant-digit
   default and the `scipen = 0` fixed-vs-scientific rule are, and are checked
   against R by the parity corpus, but neither is configurable.
-- **`format()` is a thin `as.character`** — no `nsmall`, `width`, `justify`,
-  `big.mark`, or scientific control. `formatC` and `prettyNum` are absent.
-- **`sprintf` misses two C flags.** The `+`/space sign flag is dropped
-  (`sprintf("%+d", 5)` yields `"5"`, not `"+5"`), and `%e`/`%g` exponents print
-  a single digit (`"1.5e0"`) instead of C's minimum two (`"1.500000e+00"`).
-  Width, precision, `%d`/`%f`/`%x`/`%o`/`%s` and left-justify are correct.
+- **`format()` handles `nsmall` and `big.mark`** (and `formatC`/`prettyNum`
+  exist), but not `width`, `justify`, or per-call scientific control, and it does
+  not right-justify a vector to a common width the way R's `format()` does.
 - **No `str()`, `summary()`, or `dput()`.**
 
 ## Syntax

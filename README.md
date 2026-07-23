@@ -77,8 +77,9 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
 - **Editor-ready** — an LSP server and a DAP adapter over stdio, introspection
   dumps (`--dump-tokens`, `--dump-ast`, `--disasm`), and a REPL on a persistent
   host where a function defined at one prompt completes at the next.
-- **Differential parity** — a 48-snippet corpus diffed live against the reference
-  `Rscript`, frozen and replayed in CI with no R installed.
+- **Differential parity** — a hand-authored snippet corpus plus a grammar-driven
+  fuzzer, both diffed live against the reference `Rscript`; the corpus is frozen
+  and replayed in CI with no R installed.
 
 ---
 
@@ -258,12 +259,12 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The known gap classes it currently finds are frozen in
-`tests/data/parity_fuzz_baseline.txt` (each entry mirrors a gap already listed in
-[`BUGS.md`](BUGS.md)); with `--baseline` the run exits non-zero only when a *new*
-divergence class appears — a regression, or a surface that just started
-diverging. Like `parity`, the fuzzer needs R on `PATH` (or `RLANG_FUZZ_RSCRIPT`),
-so it is a development tool, not a CI gate.
+The fuzzer currently reports **zero** divergences across its 21 surfaces over
+repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
+with `--baseline` the run exits non-zero the moment any *new* divergence class
+appears — a regression, or a surface that just started diverging. Like `parity`,
+it needs R on `PATH` (or `RLANG_FUZZ_RSCRIPT`), so it is a development tool, not
+a CI gate.
 
 ---
 
@@ -278,9 +279,10 @@ byte-for-byte.
 
 Arguments are evaluated eagerly rather than as promises, so `substitute()` /
 `quote()` / non-standard evaluation are not available; `tryCatch` and the
-condition system, data frames, factors, complex numbers, and `apply` over matrix
-margins are not implemented yet. See [`BUGS.md`](BUGS.md) for the full
-known-gaps list.
+condition system, data frames, complex numbers, and most of the linear-algebra
+surface (`outer`, `solve`, `crossprod`, `cbind`/`rbind`) are not implemented yet.
+Factors, `table`, `%*%`, and `apply` over matrix margins now work. See
+[`BUGS.md`](BUGS.md) for the full known-gaps list.
 
 ---
 

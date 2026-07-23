@@ -689,7 +689,11 @@ pub fn fixed_decimals(x: f64) -> usize {
         return 0;
     }
     let mag = x.abs().log10().floor() as i32;
-    let d = (6 - mag).clamp(0, 15) as usize;
+    // Enough places to keep 7 significant digits even for tiny magnitudes: a
+    // 15-place cap rounded values like `1e-17` down to `0`, so `format_dbl`
+    // then judged fixed "0" narrower than scientific and printed the wrong,
+    // lossy form. The double exponent range bounds the real need.
+    let d = (6 - mag).clamp(0, 340) as usize;
     let s = format!("{x:.d$}");
     let trimmed = s.trim_end_matches('0');
     match trimmed.split_once('.') {
@@ -723,6 +727,9 @@ pub fn render_fixed(x: f64, decimals: usize) -> String {
     if x.is_infinite() {
         return if x > 0.0 { "Inf" } else { "-Inf" }.into();
     }
+    // R never prints a negative zero: `0 * -2` is `0`, not `-0`. `-0.0 == 0.0`,
+    // so this collapses the sign without touching any nonzero value.
+    let x = if x == 0.0 { 0.0 } else { x };
     format!("{x:.decimals$}")
 }
 

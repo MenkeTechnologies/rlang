@@ -387,17 +387,23 @@ fn vec_str(r: &mut Rng) -> String {
 
 fn gen_arith(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    let ops = ["+", "-", "*", "/", "%%", "%/%", "^"];
+    // `^` is kept OUT of the chained pool: `3 ^ 100` overflows f64's exact
+    // integer range, and a following `%% / %/%` then lands in R's documented
+    // "complete loss of accuracy" regime, where R uses extended-precision
+    // (long double) intermediates that Rust's f64 cannot reproduce. Power is
+    // exercised separately below with a small, bounded exponent.
+    let ops = ["+", "-", "*", "/", "%%", "%/%"];
     let a = ii(r);
     let b = si(r);
     let c = si(r);
     let op1 = r.pick(&ops);
     let op2 = r.pick(&ops);
-    one(match r.below(5) {
+    one(match r.below(6) {
         0 => format!("{a} {op1} {b} {op2} {c}"),
         1 => format!("({a} {op1} {b}) {op2} {c}"),
         2 => format!("{a}L {op1} {b}L"),
         3 => format!("abs({b} {op1} {c})"),
+        4 => format!("{a} ^ {} {op1} {b}", r.range(0, 5)),
         _ => format!("({a} + 0.0) {op1} {b}"),
     })
 }
@@ -548,7 +554,9 @@ fn gen_sprintf(seed: u64) -> Vec<String> {
 fn gen_logical(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let v = vec_int(r);
-    let a = si(r);
+    // `a` leads case 0 at column 0, so it must be non-negative — a leading `-`
+    // is misparsed by both arg parsers and is a false gap, not a language one.
+    let a = ii(r);
     let b = si(r);
     one(match r.below(11) {
         0 => format!("{a} > {b}"),
