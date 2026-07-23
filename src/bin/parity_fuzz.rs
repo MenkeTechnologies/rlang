@@ -971,6 +971,44 @@ fn gen_replace(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_switch(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let key = *r.pick(&["a", "b", "c", "z"]);
+    let n = r.range(1, 4);
+    one(match r.below(8) {
+        0 => format!("switch(\"{key}\", a = 1, b = 2, c = 3)"),
+        1 => format!("switch(\"{key}\", a = 1, b = 2, 99)"),
+        2 => format!("switch({n}, \"x\", \"y\", \"z\")"),
+        3 => format!("switch(\"{key}\", a = , b = 2, c = 3)"),
+        4 => format!(
+            "f <- function(t) switch(t, a = \"A\", b = \"B\", \"?\"); f(\"{key}\")"
+        ),
+        5 => format!("x <- switch(\"{key}\", a = 10); is.null(x)"),
+        6 => format!("sapply(c(\"a\", \"b\"), function(x) switch(x, a = 1, b = 2))"),
+        _ => format!("switch({n} + 1, {}, {}, {})", si(r), si(r), si(r)),
+    })
+}
+
+fn gen_strx3(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    one(match r.below(7) {
+        0 => format!("casefold(\"{}\")", w.to_uppercase()),
+        1 => format!("casefold(\"{w}\", upper = TRUE)"),
+        2 => format!("chartr(\"a-e\", \"A-E\", \"{w}\")"),
+        3 => format!("chartr(\"a-z\", \"A-Z\", \"{w}{w}\")"),
+        4 => format!(
+            "f <- function(n) if (n <= 1) 1 else n * Recall(n - 1); f({})",
+            r.range(1, 8)
+        ),
+        5 => format!(
+            "fib <- function(n) if (n < 2) n else Recall(n - 1) + Recall(n - 2); fib({})",
+            r.range(2, 12)
+        ),
+        _ => format!("casefold(chartr(\"a-c\", \"A-C\", \"{w}\"))"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1010,6 +1048,8 @@ enum Mode {
     Listx2,
     Indexing,
     Replace,
+    Switch,
+    Strx3,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1046,6 +1086,8 @@ const ALL_MODES: &[Mode] = &[
     Mode::Listx2,
     Mode::Indexing,
     Mode::Replace,
+    Mode::Switch,
+    Mode::Strx3,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1083,6 +1125,8 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Listx2 => gen_listx2(seed),
         Mode::Indexing => gen_indexing(seed),
         Mode::Replace => gen_replace(seed),
+        Mode::Switch => gen_switch(seed),
+        Mode::Strx3 => gen_strx3(seed),
     }
 }
 
@@ -1121,6 +1165,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Listx2 => "listx2",
         Mode::Indexing => "indexing",
         Mode::Replace => "replace",
+        Mode::Switch => "switch",
+        Mode::Strx3 => "strx3",
     }
 }
 

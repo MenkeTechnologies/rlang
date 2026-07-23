@@ -168,7 +168,8 @@ Implemented and checked against the reference `Rscript`:
   R's exact/partial/positional argument matching, lexical closures, `return()`,
   and function-position lookup that skips non-function bindings.
 - **Control flow** — `if`/`else` as an expression, `for`, `while`, `repeat`,
-  `break`, `next`, and short-circuiting `&&` / `||`.
+  `break`, `next`, short-circuiting `&&` / `||`, and lazy `switch` (only the
+  selected branch is evaluated, with fall-through and numeric selection).
 - **Operators** — the full precedence ladder from `?Syntax`, `%%`/`%/%` with the
   sign of the divisor, `%in%`, user-defined `%op%`, and the native pipe `|>`.
 - **S3** — `class()`, `inherits()`, `structure()`, `UseMethod` dispatch with
@@ -240,7 +241,7 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 33 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across 35 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, set/bit ops, trig, gamma/`choose`,
 `pmax`/`pmin`, string translation, …) and runs each through the
 reference `Rscript --vanilla -e` and rlang's own `Rscript -e`, reporting every
@@ -260,7 +261,7 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 33 surfaces over
+The fuzzer currently reports **zero** divergences across its 35 surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,

@@ -97,6 +97,12 @@ pub mod ops {
     /// `[]` → NULL, marked invisible. The value of a loop and of an `if` with no
     /// `else`, neither of which R echoes at top level.
     pub const NULL_INVISIBLE: u16 = 50;
+
+    /// `switch` branch selection: pops the `EXPR` value plus the branch names and
+    /// pushes the raw integer index of the branch to run (or -1 for none), which
+    /// the compiled jump table then dispatches on. Keeps `switch` lazy — only the
+    /// selected branch's code is ever executed.
+    pub const SWITCH_INDEX: u16 = 51;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -184,6 +190,9 @@ pub struct Frame {
     pub args: Vec<(Option<String>, Value)>,
     /// The name the function was called by, when known.
     pub fun_name: Option<String>,
+    /// The closure value being executed, so `Recall` can re-invoke it (works
+    /// even for an anonymous function).
+    pub fun: Value,
     /// Set by `UseMethod` so `NextMethod` can continue down the class vector.
     pub dispatch: Option<(String, Vec<String>)>,
 }
@@ -269,6 +278,7 @@ impl RHost {
                 env: global,
                 args: Vec::new(),
                 fun_name: None,
+                fun: Value::Undef,
                 dispatch: None,
             }],
             closures: Vec::new(),
@@ -838,6 +848,12 @@ pub fn call_closure(
     if with_host(|h| h.frames.len()) >= MAX_DEPTH {
         return Err("evaluation nested too deeply: infinite recursion?".into());
     }
+    let fun = with_host(|h| {
+        h.alloc(RData::Closure {
+            id,
+            env: env.clone(),
+        })
+    });
     let frame_env = new_env(Some(env));
     let bindings = match_args(&def.params, &args)?;
     {
@@ -851,6 +867,7 @@ pub fn call_closure(
             env: frame_env,
             args: args.clone(),
             fun_name,
+            fun,
             dispatch: None,
         })
     });

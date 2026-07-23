@@ -49,6 +49,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::IS_TRUE, b_is_true);
     vm.register_builtin(ops::MISSING, b_missing);
     vm.register_builtin(ops::NULL_INVISIBLE, b_null_invisible);
+    vm.register_builtin(ops::SWITCH_INDEX, b_switch_index);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -401,6 +402,42 @@ fn b_const_null(_: &mut VM, _: u8) -> Value {
 fn b_null_invisible(_: &mut VM, _: u8) -> Value {
     with_host(|h| h.visible = false);
     null()
+}
+
+/// `switch` dispatch: the stack holds `EXPR` then each branch name (as string
+/// constants). Returns the 0-based index of the branch to run, or -1. A
+/// character `EXPR` matches a branch name, else falls to the first unnamed
+/// (default) branch; a numeric `EXPR` selects by 1-based position. Fall-through
+/// for empty branches is resolved by the compiled jump table, not here.
+fn b_switch_index(vm: &mut VM, argc: u8) -> Value {
+    let all = pop_n(vm, argc as usize);
+    let expr = all.first().cloned().unwrap_or(Value::Undef);
+    let names: Vec<String> = all.iter().skip(1).map(name_of).collect();
+    let expr_v = expr; // already an R value
+    let idx = if matches!(data(&expr_v), RData::Str(_)) {
+        match str1(&expr_v) {
+            Some(s) => names
+                .iter()
+                .position(|n| *n == s)
+                .or_else(|| names.iter().position(|n| n.is_empty()))
+                .map(|p| p as i64)
+                .unwrap_or(-1),
+            None => -1,
+        }
+    } else {
+        match num1(&expr_v) {
+            Some(n) => {
+                let n = n as i64;
+                if n >= 1 && n <= names.len() as i64 {
+                    n - 1
+                } else {
+                    -1
+                }
+            }
+            None => -1,
+        }
+    };
+    Value::Int(idx)
 }
 
 fn b_const_na(vm: &mut VM, _: u8) -> Value {
@@ -1449,6 +1486,7 @@ pub const PRIMITIVES: &[&str] = &[
     "substring",
     "toupper",
     "tolower",
+    "casefold",
     "chartr",
     "strtoi",
     "strrep",
@@ -2597,8 +2635,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .map(|s| s.as_ref().map(|s| s.chars().count() as i64))
                 .collect(),
         )),
-        "toupper" | "tolower" => {
-            let f: fn(&str) -> String = if name == "toupper" {
+        "toupper" | "tolower" | "casefold" => {
+            // `casefold(x, upper = FALSE)` is `tolower`/`toupper` behind a flag.
+            let upper = if name == "casefold" {
+                a.named("upper").and_then(|v| lgl1(&v)).unwrap_or(false)
+            } else {
+                name == "toupper"
+            };
+            let f: fn(&str) -> String = if upper {
                 |s| s.to_uppercase()
             } else {
                 |s| s.to_lowercase()
@@ -2730,8 +2774,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "sub" | "gsub" | "grepl" | "grep" => regex_op(name, &a),
         "chartr" => {
-            let old: Vec<char> = str1(&a.req(0, "old")?).unwrap_or_default().chars().collect();
-            let new: Vec<char> = str1(&a.req(1, "new")?).unwrap_or_default().chars().collect();
+            // R expands `a-c` ranges in both `old` and `new`.
+            let old = expand_char_ranges(&str1(&a.req(0, "old")?).unwrap_or_default());
+            let new = expand_char_ranges(&str1(&a.req(1, "new")?).unwrap_or_default());
             // R errors only when `old` outruns `new`; extra `new` characters are
             // simply ignored (the `zip` below stops at the shorter).
             if old.len() > new.len() {
@@ -3355,7 +3400,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(v)
         }
         "UseMethod" => use_method(&a),
-        "Recall" => Err("Recall() is not implemented yet".into()),
+        "Recall" => {
+            // Re-invoke the closure that is currently executing, one frame down
+            // (the top frame is Recall's own primitive call is not pushed, so the
+            // last closure frame is the caller).
+            let fun = with_host(|h| h.frames.last().map(|f| f.fun.clone()));
+            match fun {
+                Some(f) if !matches!(f, Value::Undef) => call_value(&f, a.all.clone(), None),
+                _ => Err("Recall called from outside a closure".into()),
+            }
+        }
         "factor" => {
             let x = a.req(0, "x")?;
             let levels: Vec<String> = match a.named("levels") {
@@ -4339,6 +4393,27 @@ fn char_pos(s: &str, byte: usize) -> usize {
 fn substr_of(s: &str, start: usize, stop: usize) -> String {
     let skip = start.saturating_sub(1);
     s.chars().skip(skip).take(stop.saturating_sub(skip)).collect()
+}
+
+/// Expand `a-c`-style character ranges the way `chartr` does: `"a-cx"` becomes
+/// `['a','b','c','x']`. A dash that is not between two ascending characters is
+/// kept literal.
+fn expand_char_ranges(s: &str) -> Vec<char> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 2 < chars.len() && chars[i + 1] == '-' && chars[i] <= chars[i + 2] {
+            for c in chars[i]..=chars[i + 2] {
+                out.push(c);
+            }
+            i += 3;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// R's `encodeString`: render the C escapes for the control/quote characters so

@@ -185,6 +185,13 @@ impl Compiler {
             }
             Expr::Block(body) => self.seq(b, body)?,
             Expr::Call { fun, args } => {
+                // `switch` is a lazy special form (only the selected branch may
+                // run), so it compiles to a jump table rather than an eager call.
+                if let Expr::Ident(name) = fun.as_ref() {
+                    if name == "switch" && !args.is_empty() {
+                        return self.switch_expr(b, args);
+                    }
+                }
                 // A named callee resolves in function position, skipping
                 // non-function bindings (`c <- 1; c(1, 2)` still concatenates).
                 match fun.as_ref() {
@@ -438,6 +445,73 @@ impl Compiler {
         let argc = u8::try_from(args.len() * 2)
             .map_err(|_| "too many arguments in one call (limit 127)".to_string())?;
         b.emit(Op::CallBuiltin(ops::MKARGS, argc), 0);
+        Ok(())
+    }
+
+    /// Compile `switch(EXPR, name = value, …, default)` as a lazy jump table:
+    /// evaluate `EXPR` once, ask `SWITCH_INDEX` which branch to run, then jump
+    /// straight to that branch's code — no other branch is evaluated. An empty
+    /// branch (`a =`) falls through to the next branch's value.
+    fn switch_expr(&mut self, b: &mut ChunkBuilder, args: &[Arg]) -> Result<(), String> {
+        let expr = args[0]
+            .value
+            .as_ref()
+            .ok_or("switch: missing EXPR argument")?;
+        let branches = &args[1..];
+        let m = branches.len();
+        self.expr(b, expr)?;
+        for br in branches {
+            self.kstr(b, br.name.as_deref().unwrap_or(""));
+        }
+        let argc = u8::try_from(1 + m).map_err(|_| "switch: too many branches".to_string())?;
+        b.emit(Op::CallBuiltin(ops::SWITCH_INDEX, argc), 0);
+
+        // Dispatch: the index `i` stays on the stack; for each branch `k`,
+        // `Dup; LoadInt k; Eq; JumpIfTrue body_k`.
+        let mut jt = Vec::with_capacity(m);
+        for k in 0..m {
+            b.emit(Op::Dup, 0);
+            b.emit(Op::LoadInt(k as i64), 0);
+            b.emit(Op::NumEq, 0);
+            jt.push(b.emit(Op::JumpIfTrue(0), 0));
+        }
+        // No branch matched: drop `i`, yield invisible NULL.
+        b.emit(Op::Pop, 0);
+        b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
+        let mut end_jumps = vec![b.emit(Op::Jump(0), 0)];
+
+        // Bodies. `value_start[k]` is the point after `k`'s `Pop`, where a
+        // fall-through from an earlier empty branch lands.
+        let mut value_start = vec![0usize; m];
+        let mut fallthrough: Vec<(usize, usize)> = Vec::new();
+        for k in 0..m {
+            let body_start = b.current_pos();
+            b.patch_jump(jt[k], body_start);
+            b.emit(Op::Pop, 0); // drop `i`
+            value_start[k] = b.current_pos();
+            match branches[k].value.as_ref() {
+                Some(v) => {
+                    self.expr(b, v)?;
+                    end_jumps.push(b.emit(Op::Jump(0), 0));
+                }
+                None => {
+                    if k + 1 < m {
+                        // Empty branch: run the next branch's value instead.
+                        fallthrough.push((k, b.emit(Op::Jump(0), 0)));
+                    } else {
+                        b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
+                        end_jumps.push(b.emit(Op::Jump(0), 0));
+                    }
+                }
+            }
+        }
+        for (k, j) in fallthrough {
+            b.patch_jump(j, value_start[k + 1]);
+        }
+        let end = b.current_pos();
+        for j in end_jumps {
+            b.patch_jump(j, end);
+        }
         Ok(())
     }
 
