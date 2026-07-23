@@ -160,7 +160,7 @@ Implemented and checked against the reference `Rscript`:
 - **Attributes** — `names`, `dim`, `class`, and arbitrary `attr()`, preserved
   through arithmetic and subsetting.
 - **All four index forms** — positive, negative (exclusion), logical (recycled),
-  and character (by name), plus `[[`, `$`, and 2-D matrix indexing `m[i, j]`.
+  and character (by name), plus `[[`, `$`, and N-D array indexing `a[i, j, k]`.
 - **Assignment** — `<-`, `=`, `->`, `<<-`, growing assignment past the end,
   index/`$`/`[[` targets, nested targets, and replacement functions
   (`names(x) <-`, `dim(x) <-`, `class(x) <-`, user-defined `` `f<-` ``).
@@ -241,7 +241,7 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 41 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across 42 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, set/bit ops, trig, gamma/`choose`,
 `pmax`/`pmin`, string translation, …) and runs each through the
 reference `Rscript --vanilla -e` and rlang's own `Rscript -e`, reporting every
@@ -261,7 +261,7 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 41 surfaces over
+The fuzzer currently reports **zero** divergences across its 42 surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,

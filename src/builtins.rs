@@ -857,13 +857,13 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
         .filter(|(_, v)| !matches!(v, Value::Undef))
         .map(|(_, v)| v)
         .collect();
-    // Matrix indexing `m[i, j]`.
-    if args.len() == 2 {
+    // N-dimensional indexing `a[i, j, …]` when the subscript count matches the
+    // array's `dim` rank (covers 2-D matrices and 3-D+ arrays alike).
+    if args.len() >= 2 {
         if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
-            let d = as_int(&dim);
-            if d.len() == 2 {
-                let (nr, nc) = (d[0].unwrap_or(0) as usize, d[1].unwrap_or(0) as usize);
-                return matrix_index(x, args, nr, nc);
+            let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
+            if d.len() == args.len() {
+                return array_index(x, args, &d);
             }
         }
     }
@@ -916,32 +916,55 @@ fn take_positions(x: &Value, pos: &[Option<usize>]) -> Value {
     }
 }
 
-/// `m[i, j]` over a 2-D `dim` attribute; an empty index selects the whole
-/// margin, and a single remaining row/column drops to a plain vector.
-fn matrix_index(
-    x: &Value,
+/// The column-major linear positions an N-D subscript `a[i, j, …]` selects, plus
+/// the shape of the selection (per-dimension counts). An empty subscript takes
+/// the whole margin. Shared by array read and array assignment.
+fn array_positions(
     args: &[(Option<String>, Value)],
-    nr: usize,
-    nc: usize,
-) -> Result<Value, String> {
-    let rows: Vec<usize> = match &args[0].1 {
-        Value::Undef => (0..nr).collect(),
-        v => resolve_index(v, nr, &[])?.into_iter().flatten().collect(),
-    };
-    let cols: Vec<usize> = match &args[1].1 {
-        Value::Undef => (0..nc).collect(),
-        v => resolve_index(v, nc, &[])?.into_iter().flatten().collect(),
-    };
-    // Column-major storage, like R.
-    let mut pos = Vec::with_capacity(rows.len() * cols.len());
-    for c in &cols {
-        for r in &rows {
-            pos.push(Some(c * nr + r));
+    dims: &[usize],
+) -> Result<(Vec<Option<usize>>, Vec<usize>), String> {
+    let k = dims.len();
+    let sel: Vec<Vec<usize>> = (0..k)
+        .map(|d| match &args[d].1 {
+            Value::Undef => Ok((0..dims[d]).collect()),
+            v => resolve_index(v, dims[d], &[]).map(|p| p.into_iter().flatten().collect()),
+        })
+        .collect::<Result<_, String>>()?;
+    // Column-major strides: the first subscript varies fastest.
+    let mut stride = vec![1usize; k];
+    for d in 1..k {
+        stride[d] = stride[d - 1] * dims[d - 1];
+    }
+    let shape: Vec<usize> = sel.iter().map(|s| s.len()).collect();
+    let total: usize = shape.iter().product();
+    let mut pos = Vec::with_capacity(total);
+    let mut idx = vec![0usize; k];
+    for _ in 0..total {
+        let lin: usize = (0..k).map(|d| sel[d][idx[d]] * stride[d]).sum();
+        pos.push(Some(lin));
+        for d in 0..k {
+            idx[d] += 1;
+            if idx[d] < shape[d] {
+                break;
+            }
+            idx[d] = 0;
         }
     }
+    Ok((pos, shape))
+}
+
+/// `a[i, j, …]` read over an N-D `dim`: gather the selected slice, then drop the
+/// length-1 dimensions (R's `drop = TRUE`); a rank ≥ 2 remainder keeps a `dim`.
+fn array_index(
+    x: &Value,
+    args: &[(Option<String>, Value)],
+    dims: &[usize],
+) -> Result<Value, String> {
+    let (pos, shape) = array_positions(args, dims)?;
     let out = take_positions(x, &pos);
-    if rows.len() > 1 && cols.len() > 1 {
-        let dim = mk_int(vec![Some(rows.len() as i64), Some(cols.len() as i64)]);
+    let kept: Vec<i64> = shape.iter().filter(|&&d| d != 1).map(|&d| d as i64).collect();
+    if kept.len() >= 2 {
+        let dim = mk_int(kept.into_iter().map(Some).collect());
         with_host(|h| h.set_attr(&out, "dim", dim));
     }
     Ok(out)
@@ -1024,28 +1047,15 @@ fn assign_index(
     value: &Value,
     single_slot: bool,
 ) -> Result<Value, String> {
-    // `m[i, j] <- v`: turn the row/column selection into linear column-major
+    // `a[i, j, …] <- v`: turn the N-D selection into linear column-major
     // positions and reuse the 1-D path (which promotes type and preserves the
-    // `dim` attribute through `copy_of`). Mirrors `matrix_index` for reads.
-    if args.len() == 2 {
+    // `dim` attribute through `copy_of`). Mirrors `array_index` for reads.
+    if args.len() >= 2 {
         if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
-            let d = as_int(&dim);
-            if d.len() == 2 {
-                let (nr, nc) = (d[0].unwrap_or(0) as usize, d[1].unwrap_or(0) as usize);
-                let rows: Vec<usize> = match &args[0].1 {
-                    Value::Undef => (0..nr).collect(),
-                    v => resolve_index(v, nr, &[])?.into_iter().flatten().collect(),
-                };
-                let cols: Vec<usize> = match &args[1].1 {
-                    Value::Undef => (0..nc).collect(),
-                    v => resolve_index(v, nc, &[])?.into_iter().flatten().collect(),
-                };
-                let mut lin: Vec<Option<i64>> = Vec::new();
-                for c in &cols {
-                    for r in &rows {
-                        lin.push(Some((c * nr + r) as i64 + 1));
-                    }
-                }
+            let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
+            if d.len() == args.len() {
+                let (pos, _) = array_positions(args, &d)?;
+                let lin: Vec<Option<i64>> = pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
                 return assign_index(x, &[(None, mk_int(lin))], value, false);
             }
         }
@@ -1507,6 +1517,8 @@ pub const PRIMITIVES: &[&str] = &[
     "startsWith",
     "endsWith",
     "matrix",
+    "array",
+    "aperm",
     "dim",
     "nrow",
     "ncol",
@@ -2877,17 +2889,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect(),
         )),
         "startsWith" | "endsWith" => {
+            // Both `x` and the prefix/suffix recycle to the longer length.
             let x = as_str(&a.req(0, "x")?);
-            let p = str1(&a.req(1, "prefix")?).unwrap_or_default();
+            let p = as_str(&a.req(1, "prefix")?);
+            let n = x.len().max(p.len());
             Ok(mk_lgl(
-                x.iter()
-                    .map(|s| {
-                        s.as_ref().map(|s| {
-                            if name == "startsWith" {
-                                s.starts_with(&p)
-                            } else {
-                                s.ends_with(&p)
-                            }
+                (0..n)
+                    .map(|i| {
+                        let s = x.get(i % x.len().max(1)).cloned().flatten()?;
+                        let pre = p.get(i % p.len().max(1)).cloned().flatten()?;
+                        Some(if name == "startsWith" {
+                            s.starts_with(&pre)
+                        } else {
+                            s.ends_with(&pre)
                         })
                     })
                     .collect(),
@@ -3401,6 +3415,55 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             with_host(|h| h.set_attr(&out, "dim", dim));
             Ok(out)
         }
+        "array" => {
+            let data = a.get(0, "data").unwrap_or_else(|| mk_lgl(vec![None]));
+            let dims: Vec<usize> = match a.get(1, "dim") {
+                Some(d) => as_int(&d).into_iter().map(|e| e.unwrap_or(0) as usize).collect(),
+                None => vec![len(&data)],
+            };
+            let total: usize = dims.iter().product();
+            let n = len(&data).max(1);
+            let pos: Vec<Option<usize>> = (0..total).map(|i| Some(i % n)).collect();
+            let out = take_positions(&data, &pos);
+            let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            Ok(out)
+        }
+        "aperm" => {
+            // Permute an array's dimensions (default: reverse — a transpose).
+            let x = a.req(0, "a")?;
+            let dims = dims_of(&x);
+            let k = dims.len();
+            let perm: Vec<usize> = match a.get(1, "perm") {
+                Some(p) => as_int(&p).into_iter().flatten().map(|m| (m - 1) as usize).collect(),
+                None => (0..k).rev().collect(),
+            };
+            let mut stride = vec![1usize; k];
+            for d in 1..k {
+                stride[d] = stride[d - 1] * dims[d - 1];
+            }
+            let new_dims: Vec<usize> = perm.iter().map(|&p| dims[p]).collect();
+            let total: usize = dims.iter().product();
+            let mut pos = Vec::with_capacity(total);
+            // Walk the OUTPUT in column-major order, mapping each cell back to the
+            // source linear index via the permuted strides.
+            let mut idx = vec![0usize; k];
+            for _ in 0..total {
+                let lin: usize = (0..k).map(|d| idx[d] * stride[perm[d]]).sum();
+                pos.push(Some(lin));
+                for d in 0..k {
+                    idx[d] += 1;
+                    if idx[d] < new_dims[d] {
+                        break;
+                    }
+                    idx[d] = 0;
+                }
+            }
+            let out = take_positions(&x, &pos);
+            let dim = mk_int(new_dims.iter().map(|&n| Some(n as i64)).collect());
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            Ok(out)
+        }
         "rowSums" | "colSums" | "rowMeans" | "colMeans" => {
             let x = a.req(0, "x")?;
             let (nr, nc) = mat_dim(&x);
@@ -3424,25 +3487,62 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "apply" => {
             let x = a.req(0, "X")?;
-            let margin = a.get(1, "MARGIN").and_then(|v| num1(&v)).unwrap_or(1.0) as i64;
+            let dims = dims_of(&x);
+            let margins: Vec<usize> = as_int(&a.req(1, "MARGIN")?)
+                .into_iter()
+                .flatten()
+                .map(|m| (m - 1) as usize)
+                .collect();
             let f = a.req(2, "FUN")?;
-            let (nr, nc) = mat_dim(&x);
-            let by_row = margin == 1;
-            let outer = if by_row { nr } else { nc };
-            let inner = if by_row { nc } else { nr };
-            let mut results = Vec::with_capacity(outer);
-            for o in 0..outer {
-                // Gather this row/column (R passes it in the natural order).
-                let idx: Vec<Option<usize>> = (0..inner)
-                    .map(|i| {
-                        let (r, c) = if by_row { (o, i) } else { (i, o) };
-                        Some(c * nr + r)
-                    })
-                    .collect();
-                let slice = take_positions(&x, &idx);
-                results.push(call_value(&f, vec![(None, slice)], None)?);
+            let others: Vec<usize> = (0..dims.len()).filter(|d| !margins.contains(d)).collect();
+            let mut stride = vec![1usize; dims.len()];
+            for d in 1..dims.len() {
+                stride[d] = stride[d - 1] * dims[d - 1];
             }
-            Ok(simplify(&mk_list(results)))
+            let margin_shape: Vec<usize> = margins.iter().map(|&d| dims[d]).collect();
+            let other_shape: Vec<usize> = others.iter().map(|&d| dims[d]).collect();
+            let mtotal: usize = margin_shape.iter().product::<usize>().max(1);
+            let ototal: usize = other_shape.iter().product::<usize>().max(1);
+            let mut results = Vec::with_capacity(mtotal);
+            let mut midx = vec![0usize; margins.len()];
+            for _ in 0..mtotal {
+                let base: usize = margins.iter().enumerate().map(|(k, &d)| midx[k] * stride[d]).sum();
+                let mut slice_pos = Vec::with_capacity(ototal);
+                let mut oidx = vec![0usize; others.len()];
+                for _ in 0..ototal {
+                    let off: usize =
+                        others.iter().enumerate().map(|(k, &d)| oidx[k] * stride[d]).sum();
+                    slice_pos.push(Some(base + off));
+                    for k in 0..others.len() {
+                        oidx[k] += 1;
+                        if oidx[k] < other_shape[k] {
+                            break;
+                        }
+                        oidx[k] = 0;
+                    }
+                }
+                let slice = take_positions(&x, &slice_pos);
+                // A rank ≥ 2 sub-array keeps its `dim` so FUN sees a matrix.
+                if other_shape.len() >= 2 {
+                    let d = mk_int(other_shape.iter().map(|&n| Some(n as i64)).collect());
+                    with_host(|h| h.set_attr(&slice, "dim", d));
+                }
+                results.push(call_value(&f, vec![(None, slice)], None)?);
+                for k in 0..margins.len() {
+                    midx[k] += 1;
+                    if midx[k] < margin_shape[k] {
+                        break;
+                    }
+                    midx[k] = 0;
+                }
+            }
+            let out = simplify(&mk_list(results));
+            // Several margins with scalar results reshape to an array.
+            if margins.len() >= 2 && with_host(|h| h.attr(&out, "dim")).is_none() {
+                let d = mk_int(margin_shape.iter().map(|&n| Some(n as i64)).collect());
+                with_host(|h| h.set_attr(&out, "dim", d));
+            }
+            Ok(out)
         }
         "diag" => {
             let x = a.req(0, "x")?;
@@ -4312,6 +4412,13 @@ fn factor_levels(x: &Value) -> Vec<String> {
     }
 }
 
+/// A value's `dim` as a `Vec<usize>`, or `[length]` for a plain vector.
+fn dims_of(x: &Value) -> Vec<usize> {
+    with_host(|h| h.attr(x, "dim"))
+        .map(|d| as_int(&d).into_iter().map(|e| e.unwrap_or(0) as usize).collect())
+        .unwrap_or_else(|| vec![len(x)])
+}
+
 /// The `(nrow, ncol)` of a value's `dim`, treating a bare vector as a single
 /// column (`n × 1`) the way R's matrix ops coerce one.
 fn mat_dim(x: &Value) -> (usize, usize) {
@@ -4971,18 +5078,49 @@ pub fn format_value(v: &Value) -> Vec<String> {
         RData::List(_) => format_list(v),
         _ => {
             if let Some(dim) = with_host(|h| h.attr(v, "dim")) {
-                let d = as_int(&dim);
+                let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
                 if d.len() == 2 {
-                    return format_matrix(
-                        v,
-                        d[0].unwrap_or(0) as usize,
-                        d[1].unwrap_or(0) as usize,
-                    );
+                    return format_matrix(v, d[0], d[1]);
+                }
+                if d.len() >= 3 {
+                    return format_array(v, &d);
                 }
             }
             format_vector(v)
         }
     }
+}
+
+/// Print a 3-D+ array as a sequence of 2-D slices headed `, , k` (`, , k, l` for
+/// higher ranks), each slice being the first two dimensions at the fixed outer
+/// indices — R's `print.default` for arrays.
+fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
+    let (nr, nc) = (dims[0], dims[1]);
+    let plane = nr * nc;
+    let outer: Vec<usize> = dims[2..].to_vec();
+    let n_planes: usize = outer.iter().product::<usize>().max(1);
+    let mut out = Vec::new();
+    let mut oidx = vec![0usize; outer.len()];
+    for p in 0..n_planes {
+        let labels: Vec<String> = oidx.iter().map(|i| (i + 1).to_string()).collect();
+        out.push(format!(", , {}", labels.join(", ")));
+        out.push(String::new());
+        // Extract this plane (contiguous in column-major order) and print it as
+        // a matrix.
+        let base = p * plane;
+        let pos: Vec<Option<usize>> = (0..plane).map(|i| Some(base + i)).collect();
+        let slice = take_positions(v, &pos);
+        out.extend(format_matrix(&slice, nr, nc));
+        out.push(String::new());
+        for k in 0..outer.len() {
+            oidx[k] += 1;
+            if oidx[k] < outer[k] {
+                break;
+            }
+            oidx[k] = 0;
+        }
+    }
+    out
 }
 
 fn format_function(v: &Value) -> String {

@@ -34,8 +34,9 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **No complex numbers, no raw vectors, no `Date`/`POSIXct`.** Factors are
   supported (`factor`, `levels`, `nlevels`, `table`, and their printing), but
   only the default `sort`-ordered levels — no ordered factors.
-- **No arrays past 2 dimensions.** `dim` of length 2 prints and indexes as a
-  matrix; longer `dim` vectors are carried but not honored by indexing or print.
+- **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
+  printing, `aperm`, `apply` over any margin) work; `dimnames`, named-margin
+  `apply`, and array-specific helpers (`slice.index`, `arrayInd`) do not.
 - **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
   `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not

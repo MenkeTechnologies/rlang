@@ -8,7 +8,7 @@
 # A run exits 0 while every divergence is in this list; a NEW gap-class (a
 # regression, or a newly reached surface) exits 1 so CI/you can triage it.
 #
-# This list is EMPTY: every gap class the fuzzer once found across its 41
+# This list is EMPTY: every gap class the fuzzer once found across its 42
 # surfaces has been fixed, and repeated multi-seed sweeps now report zero
 # divergences. A non-empty run is therefore a real regression to investigate.
 #

@@ -1097,6 +1097,24 @@ fn gen_combinator(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_arrays(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Dimensions that multiply to <= 24 so the data 1:N fills exactly.
+    let (d0, d1, d2) = (r.range(2, 3), r.range(2, 3), r.range(2, 4));
+    let n = d0 * d1 * d2;
+    one(match r.below(9) {
+        0 => format!("array(1:{n}, c({d0}, {d1}, {d2}))[{}, {}, {}]", r.range(1, d0), r.range(1, d1), r.range(1, d2)),
+        1 => format!("dim(array(1:{n}, c({d0}, {d1}, {d2})))"),
+        2 => format!("apply(array(1:{n}, c({d0}, {d1}, {d2})), 3, sum)"),
+        3 => format!("apply(array(1:{n}, c({d0}, {d1}, {d2})), 1, max)"),
+        4 => format!("a <- array(1:{n}, c({d0}, {d1}, {d2})); a[, , {}]", r.range(1, d2)),
+        5 => format!("a <- array(1:{n}, c({d0}, {d1}, {d2})); a[{}, , ]", r.range(1, d0)),
+        6 => format!("array(1:{n}, c({d0}, {d1}, {d2}))"),
+        7 => format!("aperm(matrix(1:{}, {d0}))", d0 * d1),
+        _ => format!("length(array(0, c({d0}, {d1}, {d2})))"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1144,6 +1162,7 @@ enum Mode {
     Fmtx,
     Seqx2,
     Combinator,
+    Arrays,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1188,6 +1207,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Fmtx,
     Mode::Seqx2,
     Mode::Combinator,
+    Mode::Arrays,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1233,6 +1253,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Fmtx => gen_fmtx(seed),
         Mode::Seqx2 => gen_seqx2(seed),
         Mode::Combinator => gen_combinator(seed),
+        Mode::Arrays => gen_arrays(seed),
     }
 }
 
@@ -1279,6 +1300,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Fmtx => "fmtx",
         Mode::Seqx2 => "seqx2",
         Mode::Combinator => "combinator",
+        Mode::Arrays => "arrays",
     }
 }
 
