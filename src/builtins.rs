@@ -1296,9 +1296,34 @@ pub const PRIMITIVES: &[&str] = &[
     "signif",
     "trunc",
     "sign",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sinh",
+    "cosh",
+    "tanh",
+    "expm1",
+    "log1p",
+    "gamma",
+    "lgamma",
+    "factorial",
+    "lfactorial",
+    "choose",
+    "beta",
+    "lbeta",
     "cumsum",
     "cumprod",
+    "cummax",
+    "cummin",
     "diff",
+    "pmax",
+    "pmin",
+    "tabulate",
+    "findInterval",
     "is.null",
     "is.na",
     "is.numeric",
@@ -1323,12 +1348,16 @@ pub const PRIMITIVES: &[&str] = &[
     "mapply",
     "Reduce",
     "Filter",
+    "Find",
+    "Position",
     "do.call",
     "nchar",
     "substr",
     "substring",
     "toupper",
     "tolower",
+    "chartr",
+    "strtoi",
     "strsplit",
     "sub",
     "gsub",
@@ -1352,6 +1381,12 @@ pub const PRIMITIVES: &[&str] = &[
     "apply",
     "diag",
     "%*%",
+    "%o%",
+    "outer",
+    "crossprod",
+    "tcrossprod",
+    "cbind",
+    "rbind",
     "head",
     "tail",
     "append",
@@ -2050,7 +2085,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
 
         // ── elementwise math ────────────────────────────────────────────
-        "abs" | "sqrt" | "exp" | "log2" | "log10" | "floor" | "ceiling" | "trunc" | "sign" => {
+        "abs" | "sqrt" | "exp" | "log2" | "log10" | "floor" | "ceiling" | "trunc" | "sign"
+        | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh"
+        | "expm1" | "log1p" | "gamma" | "lgamma" | "factorial" | "lfactorial" => {
             let x = a.req(0, "x")?;
             let f: fn(f64) -> f64 = match name {
                 "abs" => f64::abs,
@@ -2061,7 +2098,24 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 "floor" => f64::floor,
                 "ceiling" => f64::ceil,
                 "trunc" => f64::trunc,
-                _ => f64::signum,
+                "sin" => f64::sin,
+                "cos" => f64::cos,
+                "tan" => f64::tan,
+                "asin" => f64::asin,
+                "acos" => f64::acos,
+                "atan" => f64::atan,
+                "sinh" => f64::sinh,
+                "cosh" => f64::cosh,
+                "tanh" => f64::tanh,
+                "expm1" => f64::exp_m1,
+                "log1p" => f64::ln_1p,
+                // `gamma`/`lgamma`/`factorial` route through the system libm
+                // (the same one R links), so the printed result matches.
+                "gamma" => r_tgamma,
+                "lgamma" => r_lgamma,
+                "factorial" => |v| r_tgamma(v + 1.0),
+                "lfactorial" => |v| r_lgamma(v + 1.0),
+                _ => r_sign,
             };
             // `abs` on an integer vector stays integer, like R.
             if name == "abs" {
@@ -2084,6 +2138,129 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                             Some(b) => v.log(b),
                             None => v.ln(),
                         })
+                    })
+                    .collect(),
+            ))
+        }
+        "atan2" => {
+            let y = as_dbl(&a.req(0, "y")?);
+            let x = as_dbl(&a.req(1, "x")?);
+            let n = y.len().max(x.len());
+            Ok(mk_dbl(
+                (0..n)
+                    .map(|i| match (y[i % y.len().max(1)], x[i % x.len().max(1)]) {
+                        (Some(a), Some(b)) => Some(a.atan2(b)),
+                        _ => None,
+                    })
+                    .collect(),
+            ))
+        }
+        "choose" => {
+            let ns = as_dbl(&a.req(0, "n")?);
+            let ks = as_dbl(&a.req(1, "k")?);
+            let n = ns.len().max(ks.len());
+            Ok(mk_dbl(
+                (0..n)
+                    .map(|i| match (ns[i % ns.len().max(1)], ks[i % ks.len().max(1)]) {
+                        (Some(nn), Some(kk)) => Some(choose(nn, kk)),
+                        _ => None,
+                    })
+                    .collect(),
+            ))
+        }
+        "beta" | "lbeta" => {
+            let av = as_dbl(&a.req(0, "a")?);
+            let bv = as_dbl(&a.req(1, "b")?);
+            let n = av.len().max(bv.len());
+            Ok(mk_dbl(
+                (0..n)
+                    .map(|i| match (av[i % av.len().max(1)], bv[i % bv.len().max(1)]) {
+                        (Some(x), Some(y)) => Some({
+                            // beta(a,b) = Γ(a)Γ(b)/Γ(a+b); via lgamma to stay finite.
+                            let lb = r_lgamma(x) + r_lgamma(y) - r_lgamma(x + y);
+                            if name == "lbeta" {
+                                lb
+                            } else {
+                                lb.exp()
+                            }
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
+            ))
+        }
+        "pmax" | "pmin" => {
+            let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let cols: Vec<Vec<Option<f64>>> = a
+                .all
+                .iter()
+                .filter(|(t, _)| t.as_deref() != Some("na.rm"))
+                .map(|(_, v)| as_dbl(v))
+                .collect();
+            let n = cols.iter().map(|c| c.len()).max().unwrap_or(0);
+            Ok(mk_dbl(
+                (0..n)
+                    .map(|i| {
+                        let mut best: Option<f64> = None;
+                        for c in &cols {
+                            match c[i % c.len().max(1)] {
+                                Some(v) => {
+                                    best = Some(match best {
+                                        None => v,
+                                        Some(b) if name == "pmax" => b.max(v),
+                                        Some(b) => b.min(v),
+                                    })
+                                }
+                                None if !narm => return None,
+                                None => {}
+                            }
+                        }
+                        best
+                    })
+                    .collect(),
+            ))
+        }
+        "cummax" | "cummin" => {
+            let xs = as_dbl(&a.req(0, "x")?);
+            let mut acc: Option<f64> = None;
+            Ok(mk_dbl(
+                xs.iter()
+                    .map(|e| {
+                        let v = (*e)?;
+                        acc = Some(match acc {
+                            None => v,
+                            Some(a) if name == "cummax" => a.max(v),
+                            Some(a) => a.min(v),
+                        });
+                        acc
+                    })
+                    .collect(),
+            ))
+        }
+        "tabulate" => {
+            let bins = as_int(&a.req(0, "bin")?);
+            let nbins = a
+                .get(1, "nbins")
+                .and_then(|v| num1(&v))
+                .map(|v| v as usize)
+                .unwrap_or_else(|| {
+                    bins.iter().flatten().copied().max().unwrap_or(0).max(0) as usize
+                });
+            let mut counts = vec![0i64; nbins];
+            for b in bins.into_iter().flatten() {
+                if b >= 1 && (b as usize) <= nbins {
+                    counts[b as usize - 1] += 1;
+                }
+            }
+            Ok(mk_int(counts.into_iter().map(Some).collect()))
+        }
+        "findInterval" => {
+            let x = as_dbl(&a.req(0, "x")?);
+            let vec = as_dbl(&a.req(1, "vec")?);
+            Ok(mk_int(
+                x.iter()
+                    .map(|e| {
+                        e.map(|v| vec.iter().flatten().filter(|&&b| b <= v).count() as i64)
                     })
                     .collect(),
             ))
@@ -2334,6 +2511,41 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(mk_list(parts))
         }
         "sub" | "gsub" | "grepl" | "grep" => regex_op(name, &a),
+        "chartr" => {
+            let old: Vec<char> = str1(&a.req(0, "old")?).unwrap_or_default().chars().collect();
+            let new: Vec<char> = str1(&a.req(1, "new")?).unwrap_or_default().chars().collect();
+            // R errors only when `old` outruns `new`; extra `new` characters are
+            // simply ignored (the `zip` below stops at the shorter).
+            if old.len() > new.len() {
+                return Err("'old' is longer than 'new'".into());
+            }
+            // A char repeated in `old` takes its LAST mapping, as R does; a
+            // HashMap built in order overwrites earlier entries.
+            let map: std::collections::HashMap<char, char> =
+                old.iter().copied().zip(new.iter().copied()).collect();
+            let x = as_str(&a.req(2, "x")?);
+            Ok(mk_str(
+                x.iter()
+                    .map(|s| {
+                        s.as_ref().map(|s| {
+                            s.chars().map(|c| *map.get(&c).unwrap_or(&c)).collect()
+                        })
+                    })
+                    .collect(),
+            ))
+        }
+        "strtoi" => {
+            let x = as_str(&a.req(0, "x")?);
+            let base = a.get(1, "base").and_then(|v| num1(&v)).unwrap_or(10.0) as u32;
+            Ok(mk_int(
+                x.iter()
+                    .map(|s| {
+                        s.as_ref()
+                            .and_then(|s| i64::from_str_radix(s.trim(), base).ok())
+                    })
+                    .collect(),
+            ))
+        }
         "regexpr" | "gregexpr" => {
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
             let re = regex::Regex::new(&pat)
@@ -2529,6 +2741,26 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
+        "Position" | "Find" => {
+            let f = a.req(0, "f")?;
+            let x = a.req(1, "x")?;
+            for (i, it) in elements(&x).into_iter().enumerate() {
+                let r = call_value(&f, vec![(None, it.clone())], None)?;
+                if as_lgl(&r).first() == Some(&Some(true)) {
+                    return Ok(if name == "Position" {
+                        scalar_int(i as i64 + 1)
+                    } else {
+                        it
+                    });
+                }
+            }
+            // No match: `Position` yields integer NA, `Find` yields NULL.
+            Ok(if name == "Position" {
+                mk_int(vec![None])
+            } else {
+                null()
+            })
+        }
         "Reduce" => {
             let f = a.req(0, "f")?;
             let x = a.req(1, "x")?;
@@ -2721,6 +2953,51 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let y = a.req(1, "y")?;
             Ok(mat_mul(&x, &y))
         }
+        "crossprod" | "tcrossprod" => {
+            // crossprod(x, y) = t(x) %*% y ; tcrossprod(x, y) = x %*% t(y).
+            let x = a.req(0, "x")?;
+            let y = a.get(1, "y").unwrap_or_else(|| x.clone());
+            let out = if name == "crossprod" {
+                mat_mul(&transpose(&x), &y)
+            } else {
+                mat_mul(&x, &transpose(&y))
+            };
+            Ok(out)
+        }
+        "outer" | "%o%" => {
+            let x = as_dbl(&a.req(0, "X")?);
+            let y = as_dbl(&a.req(1, "Y")?);
+            let fname = a.get(2, "FUN").and_then(|v| str1(&v));
+            let f = a.get(2, "FUN").filter(|v| with_host(|h| h.is_function(v)));
+            // Column-major: out[(i,j)] at j*nx + i = FUN(x[i], y[j]).
+            let (nx, ny) = (x.len(), y.len());
+            let mut vals = vec![None; nx * ny];
+            for j in 0..ny {
+                for i in 0..nx {
+                    vals[j * nx + i] = match (x[i], y[j]) {
+                        (Some(xi), Some(yj)) => match (&f, fname.as_deref()) {
+                            (Some(f), _) => num1(&call_value(
+                                f,
+                                vec![(None, scalar_dbl(xi)), (None, scalar_dbl(yj))],
+                                None,
+                            )?),
+                            (None, Some("+")) => Some(xi + yj),
+                            (None, Some("-")) => Some(xi - yj),
+                            (None, Some("/")) => Some(xi / yj),
+                            (None, Some("^")) => Some(xi.powf(yj)),
+                            // default FUN is "*"
+                            _ => Some(xi * yj),
+                        },
+                        _ => None,
+                    };
+                }
+            }
+            let res = mk_dbl(vals);
+            let dim = mk_int(vec![Some(nx as i64), Some(ny as i64)]);
+            with_host(|h| h.set_attr(&res, "dim", dim));
+            Ok(res)
+        }
+        "cbind" | "rbind" => Ok(bind_matrix(&a, name == "cbind")),
 
         // ── environments and dispatch ───────────────────────────────────
         "exists" => {
@@ -3286,6 +3563,131 @@ fn round_half_even(x: f64) -> f64 {
     } else {
         r
     }
+}
+
+// libm's gamma functions aren't in the `libc` crate bindings; declare them
+// against the system libm directly — the same one R links, so `gamma`/`lgamma`
+// match R to the printed precision. `lgamma_r` is the reentrant form (no
+// `signgam` global), safe under the fuzzer's parallel workers.
+extern "C" {
+    fn tgamma(x: f64) -> f64;
+    fn lgamma_r(x: f64, sign: *mut i32) -> f64;
+}
+fn r_tgamma(x: f64) -> f64 {
+    unsafe { tgamma(x) }
+}
+fn r_lgamma(x: f64) -> f64 {
+    let mut sign = 0i32;
+    unsafe { lgamma_r(x, &mut sign) }
+}
+
+/// R's `sign`: -1 / 0 / 1, with `sign(0) == 0` (unlike `f64::signum`, which
+/// returns +1 for +0), and NaN preserved.
+fn r_sign(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::NAN
+    } else if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// The binomial coefficient `choose(n, k)` R-style: 0 for negative `k`,
+/// integer-valued for non-negative integer `n` via a product to limit rounding.
+fn choose(n: f64, k: f64) -> f64 {
+    let k = k.round();
+    if k < 0.0 {
+        return 0.0;
+    }
+    if k == 0.0 {
+        return 1.0;
+    }
+    let ki = k as i64;
+    let mut r = 1.0;
+    for i in 0..ki {
+        r *= (n - i as f64) / (ki - i) as f64;
+    }
+    // Integer inputs give an integer result; round off the accumulated error.
+    if n == n.round() {
+        r.round()
+    } else {
+        r
+    }
+}
+
+/// Transpose a matrix value (or a bare vector treated as a single row), the
+/// column-major reshuffle behind both `t()` and `crossprod`.
+fn transpose(x: &Value) -> Value {
+    let (nr, nc) = mat_dim(x);
+    let mut pos = Vec::with_capacity(nr * nc);
+    for r in 0..nr {
+        for c in 0..nc {
+            pos.push(Some(c * nr + r));
+        }
+    }
+    let out = take_positions(x, &pos);
+    let dim = mk_int(vec![Some(nc as i64), Some(nr as i64)]);
+    with_host(|h| h.set_attr(&out, "dim", dim));
+    out
+}
+
+/// `cbind`/`rbind` of vectors and matrices into a single matrix. Each argument
+/// contributes its columns (or rows); shorter inputs recycle to the common
+/// length, as R does for equal-typed atomic inputs.
+fn bind_matrix(a: &Args, by_col: bool) -> Value {
+    // Each argument becomes a list of columns (cbind) or rows (rbind).
+    let mut strips: Vec<Vec<f64>> = Vec::new();
+    let mut cross = 0usize; // the length along the binding seam
+    for (_, v) in a.all.iter() {
+        let (nr, nc) = mat_dim(v);
+        let data: Vec<f64> = as_dbl(v).into_iter().map(|e| e.unwrap_or(f64::NAN)).collect();
+        if with_host(|h| h.attr(v, "dim")).is_some() {
+            // Split a matrix into its columns/rows.
+            let (outer, inner) = if by_col { (nc, nr) } else { (nr, nc) };
+            cross = cross.max(inner);
+            for o in 0..outer {
+                let strip: Vec<f64> = (0..inner)
+                    .map(|i| {
+                        let (r, c) = if by_col { (i, o) } else { (o, i) };
+                        data[c * nr + r]
+                    })
+                    .collect();
+                strips.push(strip);
+            }
+        } else {
+            cross = cross.max(data.len());
+            strips.push(data);
+        }
+    }
+    // Recycle each strip to the common cross length.
+    for s in &mut strips {
+        if s.is_empty() {
+            s.push(f64::NAN);
+        }
+        let base = s.clone();
+        while s.len() < cross {
+            s.push(base[s.len() % base.len()]);
+        }
+    }
+    let (nr, nc) = if by_col {
+        (cross, strips.len())
+    } else {
+        (strips.len(), cross)
+    };
+    let mut vals = vec![Some(0.0); nr * nc];
+    for (o, strip) in strips.iter().enumerate() {
+        for (i, &val) in strip.iter().enumerate() {
+            let (r, c) = if by_col { (i, o) } else { (o, i) };
+            vals[c * nr + r] = Some(val);
+        }
+    }
+    let out = mk_dbl(vals);
+    let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
+    with_host(|h| h.set_attr(&out, "dim", dim));
+    out
 }
 
 /// The sorted, de-duplicated labels R uses as factor/table levels: numeric

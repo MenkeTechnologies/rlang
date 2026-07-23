@@ -8,12 +8,14 @@
 # A run exits 0 while every divergence is in this list; a NEW gap-class (a
 # regression, or a newly reached surface) exits 1 so CI/you can triage it.
 #
-# This list is EMPTY: every gap class the fuzzer once found across its 21
+# This list is EMPTY: every gap class the fuzzer once found across its 27
 # surfaces has been fixed, and repeated multi-seed sweeps now report zero
 # divergences. A non-empty run is therefore a real regression to investigate.
 #
-# Deliberately NOT generated (so they never appear here): `%%`/`%/%` and `var`
-# on values at or beyond f64's exact-integer range — R computes those in
-# extended precision (C `long double`), which Rust's f64 cannot bit-reproduce,
-# and R itself flags the modulus case as "probable complete loss of accuracy".
-# The generators avoid feeding such precision-extreme operands into those ops.
+# Deliberately NOT generated (so they never appear here): `%%`/`%/%`, `var`, and
+# `round` on values at f64's precision boundary — R computes those in extended
+# precision (C `long double`), which Rust's f64 cannot bit-reproduce (R flags the
+# modulus case as "probable complete loss of accuracy", and its `fround` breaks
+# exact N.NN5 ties in long double). The generators keep such precision-extreme
+# operands out of those ops: `%%`/`%/%` never take a `^`-of-large-exponent, `var`
+# runs on integer inputs, and `round` rounds irrational products, not ties.

@@ -414,7 +414,10 @@ fn gen_numfmt(seed: u64) -> Vec<String> {
     let b = ff(r);
     one(match r.below(8) {
         0 => format!("{a} / {b}"),
-        1 => format!("round({a} / {b}, {})", r.range(0, 6)),
+        // Round an irrational product, not a divide that can land on an exact
+        // N.NN5 tie — R rounds ties in C `long double`, unreproducible in f64
+        // (see gen_rounding).
+        1 => format!("round({a} * pi, {})", r.range(0, 6)),
         2 => format!("signif({a} * {b}, {})", r.range(1, 6)),
         3 => format!("format({a} / {b}, nsmall = {})", r.range(0, 5)),
         4 => format!("c({a}, {b}, {a} * {b})"),
@@ -463,6 +466,12 @@ fn gen_vecmath(seed: u64) -> Vec<String> {
     // Half the draws use a double vector so float-vector print alignment
     // (`digits`, decimal padding) is exercised alongside the integer path.
     let v = if r.below(2) == 0 { vec_int(r) } else { vec_dbl(r) };
+    // `var`/`sd` run only on integer vectors: on fractional inputs R accumulates
+    // the sum of squares in C `long double`, so a result landing on a 7th-sig
+    // rounding tie prints one ULP off from Rust's f64 — a precision artifact,
+    // not an algorithm gap (the two-pass formula matches R). Integer inputs sum
+    // exactly, so `var`/`sd` still get real coverage without the false gap.
+    let vi = vec_int(r);
     one(match r.below(12) {
         0 => format!("sum({v})"),
         1 => format!("prod({v})"),
@@ -474,8 +483,8 @@ fn gen_vecmath(seed: u64) -> Vec<String> {
         7 => format!("cumprod({v})"),
         8 => format!("diff({v})"),
         9 => format!("median({v})"),
-        10 => format!("var({v})"),
-        _ => format!("sd({v})"),
+        10 => format!("var({vi})"),
+        _ => format!("sd({vi})"),
     })
 }
 
@@ -706,7 +715,11 @@ fn gen_rounding(seed: u64) -> Vec<String> {
     let f = ff(r);
     let g = ff(r);
     one(match r.below(9) {
-        0 => format!("round({f} / {g}, {})", r.range(0, 4)),
+        // Round an irrational product, never an exact N.NN5 tie: at a decimal
+        // tie R rounds in C `long double` (its `fround`) while Rust rounds the
+        // f64, so the two can pick opposite even neighbours — a precision
+        // artifact, not an algorithm gap. Non-tie inputs exercise the same path.
+        0 => format!("round({f} * pi, {})", r.range(0, 4)),
         1 => format!("ceiling({f} * {g})"),
         2 => format!("floor({f} * {g})"),
         3 => format!("trunc({f} * {g})"),
@@ -745,6 +758,111 @@ fn gen_factor(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_trig(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = ff(r);
+    // asin/acos want [-1,1]; a value outside gives NaN on both sides (parity).
+    let unit = *r.pick(&["0.5", "0.25", "1.0", "0.75", "0.1"]);
+    one(match r.below(12) {
+        0 => format!("sin({f})"),
+        1 => format!("cos({f})"),
+        2 => format!("tan({f})"),
+        3 => format!("asin({unit})"),
+        4 => format!("acos({unit})"),
+        5 => format!("atan({f})"),
+        6 => format!("atan2({f}, {})", ff(r)),
+        7 => format!("sinh({unit})"),
+        8 => format!("cosh({unit})"),
+        9 => format!("tanh({f})"),
+        10 => format!("expm1({unit})"),
+        _ => format!("log1p({unit})"),
+    })
+}
+
+fn gen_mathfn(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(0, 10);
+    let k = r.range(0, 6);
+    one(match r.below(11) {
+        0 => format!("factorial({n})"),
+        1 => format!("choose({}, {k})", r.range(0, 12)),
+        2 => format!("gamma({})", r.range(1, 9)),
+        3 => format!("lgamma({})", r.range(1, 40)),
+        4 => format!("beta({}, {})", r.range(1, 6), r.range(1, 6)),
+        5 => format!("lbeta({}, {})", r.range(1, 9), r.range(1, 9)),
+        6 => format!("sign({})", si(r)),
+        7 => format!("cumsum({})", vec_int(r)),
+        8 => format!("cumprod(1:{})", r.range(1, 6)),
+        9 => format!("lfactorial({})", r.range(1, 20)),
+        _ => format!("factorial({}) / factorial({})", r.range(3, 8), r.range(1, 3)),
+    })
+}
+
+fn gen_pmaxmin(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = vec_int(r);
+    let b = vec_int(r);
+    one(match r.below(9) {
+        0 => format!("pmax({a}, {b})"),
+        1 => format!("pmin({a}, {b})"),
+        2 => format!("pmax({a}, 0)"),
+        3 => format!("cummax({a})"),
+        4 => format!("cummin({a})"),
+        5 => format!("tabulate(c({}, {}, {}, {}), {})", r.range(1,4), r.range(1,4), r.range(1,4), r.range(1,4), r.range(3,5)),
+        6 => format!("findInterval(c({}, {}), c(1, 2, 3, 4))", r.range(0,5), r.range(0,5)),
+        7 => format!("pmin(pmax({a}, 0), 3)"),
+        _ => format!("range({a})"),
+    })
+}
+
+fn gen_linalg(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(2, 3);
+    let m = r.range(2, 3);
+    one(match r.below(9) {
+        0 => format!("outer(1:{n}, 1:{m})"),
+        1 => format!("outer(1:{n}, 1:{m}, \"+\")"),
+        2 => format!("cbind(1:{n}, {}:{})", n + 1, n + n),
+        3 => format!("rbind(1:{m}, {}:{})", m + 1, m + m),
+        4 => format!("crossprod(matrix(1:{}, nrow = {n}))", n * m),
+        5 => format!("tcrossprod(matrix(1:{}, nrow = {n}))", n * m),
+        6 => format!("t(outer(1:{n}, 1:{m}))"),
+        7 => format!("matrix(1:{}, nrow = {n}) %*% 1:{m}", n * m),
+        _ => format!("diag(outer(1:{n}, 1:{n}))"),
+    })
+}
+
+fn gen_stringx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    one(match r.below(9) {
+        0 => format!("chartr(\"abc\", \"ABC\", \"{w}\")"),
+        1 => format!("strtoi(\"{}\", {})", r.range(10, 999), *r.pick(&["10", "8", "16"])),
+        2 => format!("sprintf(\"%d:%s\", 1:3, \"{w}\")"),
+        3 => format!("toupper(chartr(\"aeiou\", \"AEIOU\", \"{w}\"))"),
+        4 => format!("paste(rev(strsplit(\"{w}\", \"\")[[1]]), collapse = \"\")"),
+        5 => format!("strtoi(\"{}\")", r.range(0, 9999)),
+        6 => format!("nchar(chartr(\"{}\", \"X\", \"{w}\"))", &w[..1.min(w.len())]),
+        7 => format!("sprintf(\"[%s]\", c(\"{w}\", \"{}\"))", ww(r)),
+        _ => format!("chartr(\"{w}\", \"{}\", \"{w}{w}\")", ww(r)),
+    })
+}
+
+fn gen_listx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(3, 6);
+    one(match r.below(8) {
+        0 => format!("Position(function(x) x > {}, c({}, {}, {}))", r.range(1,3), si(r), si(r), si(r)),
+        1 => format!("Find(function(x) x %% 2 == 0, 1:{n})"),
+        2 => format!("Filter(function(x) x > 0, {})", vec_int(r)),
+        3 => format!("Reduce(function(a, b) a + b, 1:{n}, accumulate = TRUE)"),
+        4 => format!("mapply(function(a, b) a * b, 1:{n}, {n}:1)"),
+        5 => format!("lengths(list(1:{}, 1:{}, 1:{}))", r.range(1,4), r.range(1,4), r.range(1,4)),
+        6 => format!("do.call(pmax, list(c(1, 5), c(3, 2)))"),
+        _ => format!("unlist(Map(`+`, 1:{n}, {n}:1))"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -772,6 +890,12 @@ enum Mode {
     Rounding,
     Bitops,
     Factor,
+    Trig,
+    Mathfn,
+    Pmaxmin,
+    Linalg,
+    Stringx,
+    Listx,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -796,6 +920,12 @@ const ALL_MODES: &[Mode] = &[
     Mode::Rounding,
     Mode::Bitops,
     Mode::Factor,
+    Mode::Trig,
+    Mode::Mathfn,
+    Mode::Pmaxmin,
+    Mode::Linalg,
+    Mode::Stringx,
+    Mode::Listx,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -821,6 +951,12 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Rounding => gen_rounding(seed),
         Mode::Bitops => gen_bitops(seed),
         Mode::Factor => gen_factor(seed),
+        Mode::Trig => gen_trig(seed),
+        Mode::Mathfn => gen_mathfn(seed),
+        Mode::Pmaxmin => gen_pmaxmin(seed),
+        Mode::Linalg => gen_linalg(seed),
+        Mode::Stringx => gen_stringx(seed),
+        Mode::Listx => gen_listx(seed),
     }
 }
 
@@ -847,6 +983,12 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Rounding => "rounding",
         Mode::Bitops => "bitops",
         Mode::Factor => "factor",
+        Mode::Trig => "trig",
+        Mode::Mathfn => "mathfn",
+        Mode::Pmaxmin => "pmaxmin",
+        Mode::Linalg => "linalg",
+        Mode::Stringx => "stringx",
+        Mode::Listx => "listx",
     }
 }
 

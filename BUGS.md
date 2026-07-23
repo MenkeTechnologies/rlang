@@ -36,15 +36,17 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **No arrays past 2 dimensions.** `dim` of length 2 prints and indexes as a
   matrix; longer `dim` vectors are carried but not honored by indexing or print.
 - **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
-  `rowSums`/`colSums`/`rowMeans`/`colMeans` work; `outer`, `solve`, `crossprod`,
-  `cbind`/`rbind`, and `det` are not implemented.
+  `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
+  `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
+  implemented.
 - **Integer overflow wraps to a double** rather than producing `NA` with a
   warning, because arithmetic is computed in `f64` and narrowed back.
-- **`%%`/`%/%` and `var` differ from R by ULPs at the edge of f64 precision.**
-  R accumulates them in C `long double`; Rust has no equivalent, so a modulus of
-  a value past `2^53` (where R warns of "complete loss of accuracy") or a
-  variance landing on a 7th-significant-digit rounding tie can differ in the last
-  place.
+- **`%%`/`%/%`, `var`, and `round` differ from R by ULPs at the edge of f64
+  precision.** R accumulates them in C `long double`; Rust has no equivalent, so
+  a modulus of a value past `2^53` (where R warns of "complete loss of
+  accuracy"), a variance landing on a 7th-significant-digit rounding tie, or a
+  `round` of an exact `N.NN5` half (`round(0.05, 1)`) can differ in the last
+  place. The common cases — including `round(0.15, 1)`, `round(2.675, 2)` — match.
 
 ## Printing and formatting
 
