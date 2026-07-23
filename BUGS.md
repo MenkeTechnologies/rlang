@@ -2,8 +2,11 @@
 
 The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
-and the parity harness (`cargo run --bin parity`) diffs every corpus snippet
-against the reference `Rscript` rather than against a self-recorded baseline.
+and two harnesses diff against the reference `Rscript` rather than against a
+self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 21
+surfaces. The gap classes the fuzzer currently finds are frozen in
+`tests/data/parity_fuzz_baseline.txt`; every one is listed below.
 
 ## Evaluation model
 
@@ -41,7 +44,11 @@ against the reference `Rscript` rather than against a self-recorded baseline.
   default and the `scipen = 0` fixed-vs-scientific rule are, and are checked
   against R by the parity corpus, but neither is configurable.
 - **`format()` is a thin `as.character`** — no `nsmall`, `width`, `justify`,
-  `big.mark`, or scientific control.
+  `big.mark`, or scientific control. `formatC` and `prettyNum` are absent.
+- **`sprintf` misses two C flags.** The `+`/space sign flag is dropped
+  (`sprintf("%+d", 5)` yields `"5"`, not `"+5"`), and `%e`/`%g` exponents print
+  a single digit (`"1.5e0"`) instead of C's minimum two (`"1.500000e+00"`).
+  Width, precision, `%d`/`%f`/`%x`/`%o`/`%s` and left-justify are correct.
 - **No `str()`, `summary()`, or `dput()`.**
 
 ## Syntax

@@ -58,6 +58,14 @@ path = "src/bin/gen_docs.rs"
 name = "parity"
 path = "src/bin/parity.rs"
 
+# Differential parity FUZZER: generates grammar-driven R snippets and runs each
+# through the reference `Rscript` and rlang's own `Rscript`, reporting every
+# stdout/exit divergence. Development tool — needs R on PATH; CI never runs it.
+# Both binaries are resolved by absolute path so the shared name can't collide.
+[[bin]]
+name = "parity-fuzz"
+path = "src/bin/parity_fuzz.rs"
+
 # R executes on fusevm. rlang is a pure frontend: it lowers R to fusevm bytecode
 # (src/compiler.rs) and hosts the R vector heap (src/host.rs, reached from
 # fusevm's builtin dispatch). Every R value rides through the VM as a

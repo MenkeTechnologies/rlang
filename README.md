@@ -237,6 +237,34 @@ scripts embed `stopifnot` assertions that abort on any divergence from R, and
 clean exit and stdout matching the frozen reference output
 (`cargo run --bin parity -- --freeze-examples` regenerates it).
 
+Where the fixed corpus is hand-authored, the **differential fuzzer** —
+`cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
+across 21 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+matrices, `factor`/`table`, set ops, bit ops, …) and runs each through the
+reference `Rscript --vanilla -e` and rlang's own `Rscript -e`, reporting every
+case where stdout or exit code diverges. Both binaries share the name `Rscript`,
+so each is resolved by absolute path — the reference from a system path, rlang's
+from this harness's own directory — and can never be confused. Generators emit
+only deterministic-output programs (no `Sys.time`, RNG, or environment prints),
+so any divergence is a genuine gap. A finding is delta-debugged to its minimal
+reproducer and replays exactly with `--seed <N> --once`.
+
+```sh
+cargo build --bin parity-fuzz
+./target/debug/parity-fuzz --count 5000                       # sweep all modes
+./target/debug/parity-fuzz --sprintf --count 2000             # one surface
+./target/debug/parity-fuzz --seed 52 --once                   # replay one case
+./target/debug/parity-fuzz --count 5000 \
+    --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
+```
+
+The known gap classes it currently finds are frozen in
+`tests/data/parity_fuzz_baseline.txt` (each entry mirrors a gap already listed in
+[`BUGS.md`](BUGS.md)); with `--baseline` the run exits non-zero only when a *new*
+divergence class appears — a regression, or a surface that just started
+diverging. Like `parity`, the fuzzer needs R on `PATH` (or `RLANG_FUZZ_RSCRIPT`),
+so it is a development tool, not a CI gate.
+
 ---
 
 ## [0x07] STATUS & ROADMAP

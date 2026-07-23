@@ -1,0 +1,1315 @@
+//! Differential parity fuzzer: reference `Rscript -e <s>` vs rlang `Rscript -e <s>`.
+//!
+//! Generates thousands of grammar-driven, deterministic-output R snippets, runs
+//! each through both interpreters, and reports every case where stdout OR exit
+//! code diverge. Each case is produced from a per-index seed so any divergence
+//! replays exactly: `parity-fuzz --seed <N> --once`.
+//!
+//! Ported from the rubylang harness (`rubylang/src/bin/parity_fuzz.rs`), itself
+//! ported from zshrs: same RunOut / render / differs / run_with_timeout infra,
+//! same seed→deterministic Mode dispatch, same parallel workers, delta-debug
+//! `minimize`, `--verify` K-consecutive re-check, `--baseline` allowlist + gap
+//! `signature`, `--once` replay, and report file under
+//! `target/parity-fuzz/divergences.txt`. Only the generators and the invocation
+//! (R, not Ruby) differ.
+//!
+//! Both sides share the binary name `Rscript` (rlang's exe and the reference R
+//! shell), so the SUT is always resolved by ABSOLUTE path from this harness's
+//! own directory and the oracle from an absolute system path — neither can
+//! resolve to the other. See `ours_bin` / `oracle_path`.
+//!
+//! The generators are biased toward the historically weak areas of an R
+//! frontend: vector print-width/alignment, float shortest-repr and `digits`,
+//! `seq`/`rep` with fractional `by`, `sprintf`/`formatC` specs, named-vector and
+//! matrix layout, `%/%`/`%%` sign, `factor`/`table` printing, and the apply
+//! family. Pure random bytes only produce mutual syntax errors that agree on
+//! both sides and teach nothing.
+//!
+//! Determinism invariant: the generator NEVER emits a construct whose output is
+//! nondeterministic for reasons unrelated to parity — no `Sys.time`/`date`, no
+//! `runif`/`rnorm`/`sample` (RNG stream), no `tempfile`, no environment/closure
+//! prints (`<environment: 0x..>`), no `proc.time`, no `.Machine`-dependent
+//! widths. Every program prints something deterministic so an empty-vs-empty run
+//! can never hide a gap. A program NEVER begins with `-`: a leading dash is
+//! misparsed by BOTH arg parsers (R: "option '-e' requires a non-empty
+//! argument"; clap: "unexpected argument") in DIFFERENT ways, a false gap.
+//!
+//! Build:  cargo build --bin parity-fuzz
+//! Run:    ./target/debug/parity-fuzz --count 5000
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+/// Also compare stderr (normalized) when set via `--stderr`.
+static CMP_STDERR: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// PRNG — inline splitmix64, no `rand` dependency.
+// ---------------------------------------------------------------------------
+
+struct Rng(u64);
+
+impl Rng {
+    fn seed(s: u64) -> Rng {
+        // Avoid a zero state degenerating; splitmix64 tolerates any seed but a
+        // nonzero start keeps the first draw well-mixed.
+        Rng(s ^ 0x9E37_79B9_7F4A_7C15)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `0..n` (n >= 1).
+    fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+
+    /// Inclusive range `lo..=hi`.
+    fn range(&mut self, lo: i64, hi: i64) -> i64 {
+        lo + (self.next_u64() % (hi - lo + 1) as u64) as i64
+    }
+
+    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
+        &xs[self.below(xs.len())]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interpreter locations / invocation.
+// ---------------------------------------------------------------------------
+
+/// The rlang binary under test — a sibling of this harness exe. Always an
+/// absolute path so it can never be confused with the reference `Rscript` on
+/// PATH (they share the name `Rscript`).
+fn ours_bin() -> PathBuf {
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_Rscript") {
+        return PathBuf::from(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("Rscript");
+            if cand.exists() {
+                return cand;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("Rscript")
+}
+
+/// The ORACLE: the reference `Rscript` (GNU R). Every divergence is "rlang
+/// disagrees with THIS R", so which R it is, is part of the result.
+///
+/// `RLANG_FUZZ_RSCRIPT` names it explicitly; if set but unusable this is a HARD
+/// ERROR (falling back to a different R would silently answer a different
+/// question). Otherwise the first existing system path wins. Candidates are
+/// absolute system paths, never `target/`, so the oracle can never resolve to
+/// our own binary.
+fn oracle_path() -> &'static str {
+    static ORACLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ORACLE.get_or_init(|| {
+        if let Ok(p) = std::env::var("RLANG_FUZZ_RSCRIPT") {
+            if !Path::new(&p).exists() {
+                eprintln!("parity-fuzz: RLANG_FUZZ_RSCRIPT={p}: no such file");
+                std::process::exit(2);
+            }
+            return p;
+        }
+        for p in [
+            "/opt/homebrew/bin/Rscript",
+            "/usr/local/bin/Rscript",
+            "/usr/bin/Rscript",
+        ] {
+            if Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        "Rscript".to_string()
+    })
+}
+
+/// `<path> (<R --version line>)`, for the run header and the report file so a
+/// divergence record is attributable to the exact oracle that produced it.
+fn oracle_id() -> String {
+    let path = oracle_path();
+    let ver = Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        // `Rscript --version` prints to stdout on R 4.x; older builds used
+        // stderr. Try stdout first, fall back to stderr, take the first line.
+        .map(|o| {
+            let s = if o.stdout.is_empty() { &o.stderr } else { &o.stdout };
+            String::from_utf8_lossy(s)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("{path} ({ver})")
+}
+
+/// A private HOME for the SUT so its rkyv bytecode cache
+/// (`$HOME/.rlang/scripts.rkyv`) never pollutes the user's real `~/.rlang`. The
+/// cache is content+schema addressed, so a miss recompiles fresh and a benign
+/// read-modify-write race between parallel workers can only cost a recompile,
+/// never a wrong answer.
+fn ours_home() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("parity-fuzz")
+        .join("home")
+}
+
+/// Raw bytes, never `String`: R can emit output that is not valid UTF-8 (an
+/// 8-bit locale, `intToUtf8`, `rawToChar`). Comparing bytes keeps the surface
+/// honest; lossy rendering is for the human-facing report only.
+struct RunOut {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exit: i32,
+    timed_out: bool,
+}
+
+/// Render captured bytes for a report. Invalid UTF-8 is shown lossily AND
+/// followed by a hex line, so two different invalid byte strings do not both
+/// render to U+FFFD and hide a divergence.
+fn render(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_end_matches('\n');
+    if std::str::from_utf8(bytes).is_err() {
+        let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        return format!("{text}\n  (hex) {}", hex.join(" "));
+    }
+    text.to_string()
+}
+
+/// Normalize a diagnostic so wording can be compared without the interpreter
+/// name or source location. Drops R's `Error in <call> :` / `Error:` and
+/// `Execution halted` framing, rlang's `Rscript:` prefix, and any trailing
+/// `Warning message:` block, leaving the human-readable reason.
+fn norm_stderr(s: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(s);
+    let mut out: Vec<String> = Vec::new();
+    let mut skip_warning = false;
+    for line in text.split('\n') {
+        let l = line.trim_end();
+        if l == "Execution halted" || l.is_empty() {
+            continue;
+        }
+        // A `Warning message:` header and its indented continuation are R-only
+        // chatter (rlang does not emit warnings yet); drop the whole block.
+        if l.starts_with("Warning message") || l.starts_with("Warning messages") {
+            skip_warning = true;
+            continue;
+        }
+        if skip_warning {
+            if l.starts_with(' ') || l.starts_with('\t') {
+                continue;
+            }
+            skip_warning = false;
+        }
+        // Strip `Error in foo(x) : msg` / `Error: msg` down to `msg`.
+        let l = if let Some(rest) = l.strip_prefix("Error") {
+            match rest.find(':') {
+                Some(idx) => rest[idx + 1..].trim(),
+                None => rest.trim(),
+            }
+        } else {
+            l
+        };
+        let l = l.strip_prefix("Rscript: ").unwrap_or(l);
+        out.push(l.trim().to_string());
+    }
+    out.join("\n").into_bytes()
+}
+
+/// The divergence predicate. stdout + exit always; stderr only under `--stderr`.
+fn differs(a: &RunOut, b: &RunOut) -> bool {
+    if a.stdout != b.stdout || a.exit != b.exit {
+        return true;
+    }
+    if CMP_STDERR.load(Ordering::Relaxed) {
+        return norm_stderr(&a.stderr) != norm_stderr(&b.stderr);
+    }
+    false
+}
+
+/// Spawn `cmd` and wait up to `timeout`, killing it if it overruns.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> RunOut {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => {
+            return RunOut {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit: -999,
+                timed_out: false,
+            }
+        }
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut buf);
+                }
+                let mut ebuf = Vec::new();
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_end(&mut ebuf);
+                }
+                return RunOut {
+                    stdout: buf,
+                    stderr: ebuf,
+                    exit: status.code().unwrap_or(-1),
+                    timed_out: false,
+                };
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return RunOut {
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                        exit: -1,
+                        timed_out: true,
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(_) => {
+                return RunOut {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit: -998,
+                    timed_out: false,
+                }
+            }
+        }
+    }
+}
+
+/// Run the reference R with `--vanilla` so a user `~/.Rprofile`/`Renviron`
+/// cannot perturb output, matching the minimal environment rlang runs in.
+fn run_oracle(script: &str, timeout: Duration) -> RunOut {
+    let mut cmd = Command::new(oracle_path());
+    cmd.args(["--vanilla", "-e", script]);
+    run_with_timeout(cmd, timeout)
+}
+
+fn run_ours(script: &str, bin: &Path, timeout: Duration) -> RunOut {
+    let mut cmd = Command::new(bin);
+    cmd.args(["-e", script]);
+    // Redirect the bytecode cache into a private HOME so the fuzzer never
+    // pollutes the user's ~/.rlang (see `ours_home`).
+    cmd.env("HOME", ours_home());
+    run_with_timeout(cmd, timeout)
+}
+
+// ---------------------------------------------------------------------------
+// Literal pools + builders shared by the generators.
+// ---------------------------------------------------------------------------
+
+const INTS: &[&str] = &["0", "1", "2", "3", "5", "7", "10", "42", "100"];
+const NEG_INTS: &[&str] = &["-1", "-2", "-3", "-7", "-10"];
+const DBLS: &[&str] = &["0.5", "1.5", "2.25", "3.14", "10.0", "0.1", "0.333", "100.25"];
+const WORDS: &[&str] = &["foo", "bar", "baz", "hello", "world", "abc", "xyz", "quux"];
+
+/// A non-negative integer literal — safe as the first token of a program.
+fn ii<'a>(r: &mut Rng) -> &'a str {
+    r.pick(INTS)
+}
+/// A signed integer literal — only for non-leading positions.
+fn si<'a>(r: &mut Rng) -> &'a str {
+    if r.below(2) == 0 {
+        r.pick(INTS)
+    } else {
+        r.pick(NEG_INTS)
+    }
+}
+fn ff<'a>(r: &mut Rng) -> &'a str {
+    r.pick(DBLS)
+}
+fn ww<'a>(r: &mut Rng) -> &'a str {
+    r.pick(WORDS)
+}
+
+fn one(s: String) -> Vec<String> {
+    vec![s]
+}
+
+/// `c(a, b, c, …)` of 3–5 signed ints.
+fn vec_int(r: &mut Rng) -> String {
+    let n = r.range(3, 5) as usize;
+    let items: Vec<&str> = (0..n).map(|_| si(r)).collect();
+    format!("c({})", items.join(", "))
+}
+
+/// `c(a, b, c, …)` of 3–5 doubles.
+fn vec_dbl(r: &mut Rng) -> String {
+    let n = r.range(3, 5) as usize;
+    let items: Vec<&str> = (0..n).map(|_| ff(r)).collect();
+    format!("c({})", items.join(", "))
+}
+
+/// `c("w1", "w2", …)` of 3–4 words.
+fn vec_str(r: &mut Rng) -> String {
+    let n = r.range(3, 4) as usize;
+    let items: Vec<String> = (0..n).map(|_| format!("\"{}\"", ww(r))).collect();
+    format!("c({})", items.join(", "))
+}
+
+// ---------------------------------------------------------------------------
+// Generators — one per Mode. Each returns a statement list joined by newlines.
+// Every program's first token is a letter/paren/digit (never `-`).
+// ---------------------------------------------------------------------------
+
+fn gen_arith(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let ops = ["+", "-", "*", "/", "%%", "%/%", "^"];
+    let a = ii(r);
+    let b = si(r);
+    let c = si(r);
+    let op1 = r.pick(&ops);
+    let op2 = r.pick(&ops);
+    one(match r.below(5) {
+        0 => format!("{a} {op1} {b} {op2} {c}"),
+        1 => format!("({a} {op1} {b}) {op2} {c}"),
+        2 => format!("{a}L {op1} {b}L"),
+        3 => format!("abs({b} {op1} {c})"),
+        _ => format!("({a} + 0.0) {op1} {b}"),
+    })
+}
+
+fn gen_numfmt(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = ff(r);
+    let b = ff(r);
+    one(match r.below(8) {
+        0 => format!("{a} / {b}"),
+        1 => format!("round({a} / {b}, {})", r.range(0, 6)),
+        2 => format!("signif({a} * {b}, {})", r.range(1, 6)),
+        3 => format!("format({a} / {b}, nsmall = {})", r.range(0, 5)),
+        4 => format!("c({a}, {b}, {a} * {b})"),
+        5 => format!("formatC({a} / {b}, digits = {}, format = \"f\")", r.range(0, 5)),
+        6 => format!("prettyNum({}, big.mark = \",\")", r.range(1000, 9_999_999)),
+        _ => format!("sqrt({a}) + {b}"),
+    })
+}
+
+fn gen_vectors(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    let i = r.range(1, 4);
+    one(match r.below(9) {
+        0 => format!("{v}[{i}]"),
+        1 => format!("({v})[-{i}]"),
+        2 => format!("({v})[c({}, {})]", r.range(1, 3), r.range(1, 3)),
+        3 => format!("({v})[{v} > 0]"),
+        4 => format!("head({v}, {})", r.range(1, 3)),
+        5 => format!("tail({v}, {})", r.range(1, 3)),
+        6 => format!("length({v})"),
+        7 => format!("({v})[c(TRUE, FALSE)]"),
+        _ => format!("rev({v})"),
+    })
+}
+
+fn gen_seqrep(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = r.range(0, 4);
+    let b = r.range(a + 1, a + 9);
+    one(match r.below(9) {
+        0 => format!("seq({a}, {b})"),
+        1 => format!("seq({a}, {b}, by = {})", *r.pick(&["0.5", "0.25", "2", "1.5"])),
+        2 => format!("seq_len({})", r.range(0, 6)),
+        3 => format!("seq_along(c({}, {}, {}))", si(r), si(r), si(r)),
+        4 => format!("rep({}, {})", si(r), r.range(1, 5)),
+        5 => format!("rep(c({}, {}), times = {})", si(r), si(r), r.range(1, 4)),
+        6 => format!("rep(c({}, {}), each = {})", si(r), si(r), r.range(1, 4)),
+        7 => format!("seq({a}, {b}, length.out = {})", r.range(2, 6)),
+        _ => format!("{a}:{b}"),
+    })
+}
+
+fn gen_vecmath(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Half the draws use a double vector so float-vector print alignment
+    // (`digits`, decimal padding) is exercised alongside the integer path.
+    let v = if r.below(2) == 0 { vec_int(r) } else { vec_dbl(r) };
+    one(match r.below(12) {
+        0 => format!("sum({v})"),
+        1 => format!("prod({v})"),
+        2 => format!("mean({v})"),
+        3 => format!("max({v})"),
+        4 => format!("min({v})"),
+        5 => format!("range({v})"),
+        6 => format!("cumsum({v})"),
+        7 => format!("cumprod({v})"),
+        8 => format!("diff({v})"),
+        9 => format!("median({v})"),
+        10 => format!("var({v})"),
+        _ => format!("sd({v})"),
+    })
+}
+
+fn gen_sortops(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    one(match r.below(9) {
+        0 => format!("sort({v})"),
+        1 => format!("sort({v}, decreasing = TRUE)"),
+        2 => format!("order({v})"),
+        3 => format!("rank({v})"),
+        4 => format!("rev(sort({v}))"),
+        5 => format!("unique({v})"),
+        6 => format!("duplicated({v})"),
+        7 => format!("which.max({v})"),
+        _ => format!("which.min({v})"),
+    })
+}
+
+fn gen_strings(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    one(match r.below(11) {
+        0 => format!("paste(\"{w}\", \"{}\")", ww(r)),
+        1 => format!("paste0(\"{w}\", {})", r.range(1, 9)),
+        2 => format!("paste(\"{w}\", \"{}\", sep = \"-\")", ww(r)),
+        3 => format!("paste(c(\"{w}\", \"{}\"), collapse = \"+\")", ww(r)),
+        4 => format!("nchar(\"{w}\")"),
+        5 => format!("substr(\"{w}\", {}, {})", r.range(1, 3), r.range(3, 5)),
+        6 => format!("toupper(\"{w}\")"),
+        7 => format!("tolower(\"ABC{w}\")"),
+        8 => format!("substring(\"{w}\", {})", r.range(1, 4)),
+        9 => format!("trimws(\"  {w}  \")"),
+        _ => format!("rev(strsplit(\"{w}\", \"\")[[1]])"),
+    })
+}
+
+fn gen_strproc(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = format!("{}{}", ww(r), ww(r));
+    let pats = ["[a-c]+", "o+", "[aeiou]", "l+", "^.", ".$", "z", "[a-z]{2}"];
+    let p = r.pick(&pats);
+    one(match r.below(10) {
+        0 => format!("grepl(\"{p}\", \"{s}\")"),
+        1 => format!("sub(\"{p}\", \"X\", \"{s}\")"),
+        2 => format!("gsub(\"{p}\", \"X\", \"{s}\")"),
+        3 => format!("grep(\"{p}\", c(\"{s}\", \"{}\"))", ww(r)),
+        4 => format!("regmatches(\"{s}\", regexpr(\"{p}\", \"{s}\"))"),
+        5 => format!("startsWith(\"{s}\", \"{}\")", &s[..1.min(s.len())]),
+        6 => format!("endsWith(\"{s}\", \"{}\")", ww(r)),
+        7 => format!("strsplit(\"{s}\", \"{p}\")"),
+        8 => format!("nchar(gsub(\"{p}\", \"\", \"{s}\"))"),
+        _ => format!("length(gregexpr(\"{p}\", \"{s}\")[[1]])"),
+    })
+}
+
+fn gen_sprintf(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = si(r);
+    let f = ff(r);
+    let w = ww(r);
+    one(match r.below(10) {
+        0 => format!("sprintf(\"%.3f\", {f})"),
+        1 => format!("sprintf(\"%05d\", {})", r.range(0, 999)),
+        2 => format!("sprintf(\"%x\", {})", r.range(0, 999)),
+        3 => format!("sprintf(\"%e\", {f})"),
+        4 => format!("sprintf(\"%-8s|\", \"{w}\")"),
+        5 => format!("sprintf(\"%+d\", {n})"),
+        6 => format!("sprintf(\"%8.2f\", {f})"),
+        7 => format!("sprintf(\"%d-%s\", {}, \"{w}\")", r.range(0, 99)),
+        8 => format!("sprintf(\"%g\", {f} * {})", r.range(1, 1000)),
+        _ => format!("formatC({n}, width = 6, flag = \"0\")"),
+    })
+}
+
+fn gen_logical(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    let a = si(r);
+    let b = si(r);
+    one(match r.below(11) {
+        0 => format!("{a} > {b}"),
+        1 => format!("({v}) > 0"),
+        2 => format!("any(({v}) > 0)"),
+        3 => format!("all(({v}) > 0)"),
+        4 => format!("which(({v}) %% 2 == 0)"),
+        5 => format!("xor({a} > 0, {b} > 0)"),
+        6 => format!("({v}) >= {a} & ({v}) <= {b}"),
+        7 => format!("sum(({v}) > 0)"),
+        8 => format!("isTRUE({a} == {b})"),
+        9 => format!("!c(TRUE, FALSE, {})", if r.below(2) == 0 { "TRUE" } else { "NA" }),
+        _ => format!("({a} > {b}) || ({a} < {b})"),
+    })
+}
+
+fn gen_ifelse(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    let n = r.range(0, 10);
+    one(match r.below(6) {
+        0 => format!("ifelse(({v}) > 0, \"pos\", \"nonpos\")"),
+        1 => format!("if ({n} > 5) \"hi\" else \"lo\""),
+        2 => format!("ifelse(({v}) %% 2 == 0, ({v}), 0L)"),
+        3 => format!("if ({n} %% 2 == 0) \"even\" else \"odd\""),
+        4 => format!("ifelse(is.na(c(1, NA, {})), -1, 0)", si(r)),
+        _ => format!("max(0, {})", si(r)),
+    })
+}
+
+fn gen_control(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(3, 7);
+    one(match r.below(6) {
+        0 => format!("s <- 0; for (i in 1:{n}) s <- s + i; s"),
+        1 => format!("v <- c(); for (i in 1:{n}) v <- c(v, i * i); v"),
+        2 => format!("i <- 1; s <- 0; while (i <= {n}) {{ s <- s + i; i <- i + 1 }}; s"),
+        3 => format!("acc <- 1; for (i in 1:{n}) acc <- acc * i; acc"),
+        4 => format!("out <- c(); for (w in c(\"{}\", \"{}\")) out <- c(out, nchar(w)); out", ww(r), ww(r)),
+        _ => format!("i <- 0; repeat {{ i <- i + 1; if (i >= {n}) break }}; i"),
+    })
+}
+
+fn gen_funcs(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(2, 8);
+    one(match r.below(6) {
+        0 => format!("f <- function(x) x * x + 1; f({})", si(r)),
+        1 => format!("fact <- function(n) if (n <= 1) 1 else n * fact(n - 1); fact({n})"),
+        2 => format!(
+            "fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib({})",
+            r.range(2, 12)
+        ),
+        3 => format!("adder <- function(a) function(b) a + b; adder({})({})", si(r), si(r)),
+        4 => format!("f <- function(x, y = {}) x + y; f({})", si(r), si(r)),
+        _ => format!("g <- function(...) sum(...); g({}, {}, {})", si(r), si(r), si(r)),
+    })
+}
+
+fn gen_apply(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    let n = r.range(2, 5);
+    one(match r.below(9) {
+        0 => format!("sapply(1:{n}, function(x) x ^ 2)"),
+        1 => format!("vapply(1:{n}, function(x) x * 2L, integer(1))"),
+        2 => format!("unlist(lapply({v}, function(x) x + 1))"),
+        3 => format!("mapply(function(a, b) a + b, 1:{n}, {n}:1)"),
+        4 => format!("Reduce(`+`, {v})"),
+        5 => format!("Reduce(function(a, b) a * b, 1:{n}, accumulate = TRUE)"),
+        6 => format!("Filter(function(x) x > 0, {v})"),
+        7 => format!("unlist(Map(function(a, b) a - b, 1:{n}, {n}:1))"),
+        _ => format!("do.call(paste, as.list(c(\"{}\", \"{}\")))", ww(r), ww(r)),
+    })
+}
+
+fn gen_lists(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (a, b) = (si(r), si(r));
+    one(match r.below(8) {
+        0 => format!("l <- list(a = {a}, b = {b}); l$a + l$b"),
+        1 => format!("l <- list({a}, {b}, {}); l[[2]]", si(r)),
+        2 => format!("names(list(x = {a}, y = {b}))"),
+        3 => format!("unlist(list({a}, {b}, {}))", si(r)),
+        4 => format!("setNames(c({a}, {b}), c(\"{}\", \"{}\"))", ww(r), ww(r)),
+        5 => format!("l <- list(a = {a}); l$b <- {b}; unlist(l)"),
+        6 => format!("length(list({a}, {b}, list({}, {})))", si(r), si(r)),
+        _ => format!("lengths(list(1:{}, 1:{}))", r.range(1, 4), r.range(1, 4)),
+    })
+}
+
+fn gen_matrix(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (nr, nc) = (r.range(2, 3), r.range(2, 3));
+    let n = nr * nc;
+    one(match r.below(9) {
+        0 => format!("matrix(1:{n}, nrow = {nr})"),
+        1 => format!("matrix(1:{n}, nrow = {nr}, byrow = TRUE)"),
+        2 => format!("t(matrix(1:{n}, nrow = {nr}))"),
+        3 => format!("dim(matrix(1:{n}, nrow = {nr}))"),
+        4 => format!("rowSums(matrix(1:{n}, nrow = {nr}))"),
+        5 => format!("colSums(matrix(1:{n}, nrow = {nr}))"),
+        6 => format!("apply(matrix(1:{n}, nrow = {nr}), 1, sum)"),
+        7 => format!("diag(matrix(1:{}, nrow = {n2}))", n * n, n2 = n),
+        _ => format!("matrix(1:{n}, nrow = {nr}) %*% diag({nc})"),
+    })
+}
+
+fn gen_types(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = si(r);
+    let f = ff(r);
+    one(match r.below(11) {
+        0 => format!("as.integer({f})"),
+        1 => format!("as.numeric(\"{f}\")"),
+        2 => format!("as.character({n})"),
+        3 => format!("as.logical({})", *r.pick(&["0", "1", "2"])),
+        4 => format!("class({})", if r.below(2) == 0 { format!("{n}L") } else { f.to_string() }),
+        5 => format!("typeof({n}L)"),
+        6 => format!("is.na(c({n}, NA, {f}))"),
+        7 => format!("as.integer(c(\"{}\", \"{}\"))", r.range(0, 99), r.range(0, 99)),
+        8 => format!("storage.mode({n}L)"),
+        9 => format!("as.numeric(TRUE) + {f}"),
+        _ => format!("round(as.numeric(\"{f}\") * {})", r.range(1, 9)),
+    })
+}
+
+fn gen_setops(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = vec_int(r);
+    let b = vec_int(r);
+    one(match r.below(9) {
+        0 => format!("union({a}, {b})"),
+        1 => format!("intersect({a}, {b})"),
+        2 => format!("setdiff({a}, {b})"),
+        3 => format!("{a} %in% {b}"),
+        4 => format!("match({a}, {b})"),
+        5 => format!("unique(c({a}, {b}))"),
+        6 => format!("sort(unique(c({a}, {b})))"),
+        7 => format!("is.element({}, {b})", si(r)),
+        _ => format!("as.vector(table(c({a}, {b})))"),
+    })
+}
+
+fn gen_rounding(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = ff(r);
+    let g = ff(r);
+    one(match r.below(9) {
+        0 => format!("round({f} / {g}, {})", r.range(0, 4)),
+        1 => format!("ceiling({f} * {g})"),
+        2 => format!("floor({f} * {g})"),
+        3 => format!("trunc({f} * {g})"),
+        4 => format!("signif({f} * {g}, {})", r.range(1, 5)),
+        5 => format!("round(c(0.5, 1.5, 2.5, 3.5))"),
+        6 => format!("round({f} * 100) / 100"),
+        7 => format!("ceiling(sqrt({}))", r.range(1, 200)),
+        _ => format!("floor(log2({}))", r.range(1, 1000)),
+    })
+}
+
+fn gen_bitops(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = r.range(0, 255);
+    let b = r.range(0, 255);
+    one(match r.below(6) {
+        0 => format!("bitwAnd({a}L, {b}L)"),
+        1 => format!("bitwOr({a}L, {b}L)"),
+        2 => format!("bitwXor({a}L, {b}L)"),
+        3 => format!("bitwShiftL({a}L, {})", r.range(0, 4)),
+        4 => format!("bitwShiftR({a}L, {})", r.range(0, 4)),
+        _ => format!("bitwNot({a}L)"),
+    })
+}
+
+fn gen_factor(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = vec_str(r);
+    one(match r.below(6) {
+        0 => format!("as.integer(factor({s}))"),
+        1 => format!("levels(factor({s}))"),
+        2 => format!("nlevels(factor({s}))"),
+        3 => format!("as.character(factor({s}))"),
+        4 => format!("table(factor({s}))"),
+        _ => format!("as.vector(table(factor({s})))"),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Mode plumbing.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Arith,
+    Numfmt,
+    Vectors,
+    Seqrep,
+    Vecmath,
+    Sortops,
+    Strings,
+    Strproc,
+    Sprintf,
+    Logical,
+    Ifelse,
+    Control,
+    Funcs,
+    Apply,
+    Lists,
+    Matrix,
+    Types,
+    Setops,
+    Rounding,
+    Bitops,
+    Factor,
+}
+
+const ALL_MODES: &[Mode] = &[
+    Mode::Arith,
+    Mode::Numfmt,
+    Mode::Vectors,
+    Mode::Seqrep,
+    Mode::Vecmath,
+    Mode::Sortops,
+    Mode::Strings,
+    Mode::Strproc,
+    Mode::Sprintf,
+    Mode::Logical,
+    Mode::Ifelse,
+    Mode::Control,
+    Mode::Funcs,
+    Mode::Apply,
+    Mode::Lists,
+    Mode::Matrix,
+    Mode::Types,
+    Mode::Setops,
+    Mode::Rounding,
+    Mode::Bitops,
+    Mode::Factor,
+];
+
+fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
+    match mode {
+        Mode::Arith => gen_arith(seed),
+        Mode::Numfmt => gen_numfmt(seed),
+        Mode::Vectors => gen_vectors(seed),
+        Mode::Seqrep => gen_seqrep(seed),
+        Mode::Vecmath => gen_vecmath(seed),
+        Mode::Sortops => gen_sortops(seed),
+        Mode::Strings => gen_strings(seed),
+        Mode::Strproc => gen_strproc(seed),
+        Mode::Sprintf => gen_sprintf(seed),
+        Mode::Logical => gen_logical(seed),
+        Mode::Ifelse => gen_ifelse(seed),
+        Mode::Control => gen_control(seed),
+        Mode::Funcs => gen_funcs(seed),
+        Mode::Apply => gen_apply(seed),
+        Mode::Lists => gen_lists(seed),
+        Mode::Matrix => gen_matrix(seed),
+        Mode::Types => gen_types(seed),
+        Mode::Setops => gen_setops(seed),
+        Mode::Rounding => gen_rounding(seed),
+        Mode::Bitops => gen_bitops(seed),
+        Mode::Factor => gen_factor(seed),
+    }
+}
+
+fn mode_name(m: Mode) -> &'static str {
+    match m {
+        Mode::Arith => "arith",
+        Mode::Numfmt => "numfmt",
+        Mode::Vectors => "vectors",
+        Mode::Seqrep => "seqrep",
+        Mode::Vecmath => "vecmath",
+        Mode::Sortops => "sortops",
+        Mode::Strings => "strings",
+        Mode::Strproc => "strproc",
+        Mode::Sprintf => "sprintf",
+        Mode::Logical => "logical",
+        Mode::Ifelse => "ifelse",
+        Mode::Control => "control",
+        Mode::Funcs => "funcs",
+        Mode::Apply => "apply",
+        Mode::Lists => "lists",
+        Mode::Matrix => "matrix",
+        Mode::Types => "types",
+        Mode::Setops => "setops",
+        Mode::Rounding => "rounding",
+        Mode::Bitops => "bitops",
+        Mode::Factor => "factor",
+    }
+}
+
+fn mode_from_name(s: &str) -> Option<Mode> {
+    ALL_MODES.iter().copied().find(|&m| mode_name(m) == s)
+}
+
+fn build_program(stmts: &[String]) -> String {
+    stmts.join("\n")
+}
+
+/// True iff oracle and rlang disagree on stdout or exit for `script`. Infra
+/// failures (spawn/wait errors, timeouts) are NOT parity gaps.
+fn diverges(script: &str, bin: &Path, timeout: Duration) -> bool {
+    let o = run_oracle(script, timeout);
+    if o.timed_out {
+        return false;
+    }
+    let r = run_ours(script, bin, timeout);
+    if r.exit == -999 || r.exit == -998 || r.timed_out || o.exit == -999 || o.exit == -998 {
+        return false;
+    }
+    differs(&o, &r)
+}
+
+/// Delta-debug a diverging statement list to a locally-minimal one: repeatedly
+/// drop any single statement whose removal preserves the divergence, to a
+/// fixpoint.
+fn minimize(stmts: Vec<String>, bin: &Path, timeout: Duration) -> Vec<String> {
+    let mut cur = stmts;
+    loop {
+        let mut removed = false;
+        let mut i = 0;
+        while i < cur.len() {
+            let mut cand = cur.clone();
+            cand.remove(i);
+            if !cand.is_empty() && diverges(&build_program(&cand), bin, timeout) {
+                cur = cand;
+                removed = true;
+            } else {
+                i += 1;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    cur
+}
+
+/// Normalize a reproducer to a stable gap-class signature: keep the last
+/// non-empty line (the probe), mask numeric literals and quoted words so many
+/// instances of the same gap collapse to one signature.
+fn signature(program: &str) -> String {
+    let body = program
+        .lines()
+        .map(|l| l.trim())
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let mut s = body;
+    for (pat, rep) in [
+        (r"[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?", "F"),
+        (r"[0-9]+[eE][-+]?[0-9]+", "F"),
+        (r"-?[0-9]+", "N"),
+        ("\"[^\"]*\"", "W"),
+        ("'[^']*'", "W"),
+    ] {
+        s = regex_lite_replace(&s, pat, rep);
+    }
+    s
+}
+
+fn regex_lite_replace(s: &str, pat: &str, rep: &str) -> String {
+    match regex::Regex::new(pat) {
+        Ok(re) => re.replace_all(s, rep).into_owned(),
+        Err(_) => s.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI.
+// ---------------------------------------------------------------------------
+
+struct Args {
+    count: u64,
+    base_seed: u64,
+    once: bool,
+    timeout_ms: u64,
+    out_path: PathBuf,
+    max_report: usize,
+    jobs: usize,
+    mode: Option<Mode>,
+    verify: usize,
+    baseline: Option<PathBuf>,
+}
+
+fn parse_args() -> Args {
+    let mut count = 2000u64;
+    let mut base_seed = 1u64;
+    let mut once = false;
+    let mut timeout_ms = 10000u64;
+    let mut max_report = 200usize;
+    let mut mode: Option<Mode> = None;
+    let mut verify = 1usize;
+    let mut baseline: Option<PathBuf> = None;
+    let mut jobs = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let mut out_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("parity-fuzz")
+        .join("divergences.txt");
+
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--count" | "-c" => {
+                i += 1;
+                count = argv.get(i).and_then(|s| s.parse().ok()).unwrap_or(count);
+            }
+            "--seed" | "-s" => {
+                i += 1;
+                base_seed = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(base_seed);
+            }
+            "--once" => once = true,
+            "--timeout-ms" => {
+                i += 1;
+                timeout_ms = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(timeout_ms);
+            }
+            "--out" | "-o" => {
+                i += 1;
+                if let Some(p) = argv.get(i) {
+                    out_path = PathBuf::from(p);
+                }
+            }
+            "--max-report" => {
+                i += 1;
+                max_report = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(max_report);
+            }
+            "--jobs" | "-j" => {
+                i += 1;
+                jobs = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .filter(|&j| j >= 1)
+                    .unwrap_or(jobs);
+            }
+            "--mode" | "-m" => {
+                i += 1;
+                match argv.get(i).and_then(|s| mode_from_name(s)) {
+                    Some(m) => mode = Some(m),
+                    None => {
+                        eprintln!(
+                            "unknown --mode '{}'",
+                            argv.get(i).map(|s| s.as_str()).unwrap_or("")
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            }
+            a if a.starts_with("--") && mode_from_name(&a[2..]).is_some() => {
+                mode = Some(mode_from_name(&a[2..]).unwrap());
+            }
+            "--verify" => {
+                i += 1;
+                verify = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .filter(|&k| k >= 1)
+                    .unwrap_or(verify);
+            }
+            "--baseline" => {
+                i += 1;
+                baseline = argv.get(i).map(PathBuf::from);
+            }
+            "--stderr" => {
+                CMP_STDERR.store(true, Ordering::Relaxed);
+            }
+            "--help" | "-h" => {
+                let modes: Vec<&str> = ALL_MODES.iter().copied().map(mode_name).collect();
+                eprintln!(
+                    "parity-fuzz — differential R/rlang parity fuzzer\n\
+                     \n\
+                     --count N        number of cases (default 2000)\n\
+                     --seed N         base seed; case i uses seed+i (default 1)\n\
+                     --mode M         one of: {}\n\
+                     (each also accepted as a `--<mode>` shorthand; default: all\n\
+                     modes, round-robin by case index)\n\
+                     --stderr         also require the diagnostics to match\n\
+                     --once           run a single case (seed) and print both outputs\n\
+                     --timeout-ms N   per-interpreter wall-clock timeout (default 10000)\n\
+                     --out PATH       divergence corpus file\n\
+                     --max-report N   stop after N divergences (default 200)\n\
+                     --jobs N         parallel workers (default = CPU count)\n\
+                     --verify K       require K consecutive divergences to report (default 1)\n\
+                     --baseline FILE  allowlist of known-gap signatures; only a NEW\n\
+                                      divergence fails the run (exit 1)\n\
+                     \n\
+                     env  RLANG_FUZZ_RSCRIPT=PATH  the reference Rscript to compare against.\n\
+                                      The oracle is part of the result; every run prints it.",
+                    modes.join(", ")
+                );
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Args {
+        count,
+        base_seed,
+        once,
+        timeout_ms,
+        out_path,
+        max_report,
+        jobs,
+        mode,
+        verify,
+        baseline,
+    }
+}
+
+/// The mode for case `idx`: the pinned `--mode` if given, else round-robin over
+/// every mode so a default run spreads coverage across all surfaces.
+fn mode_for(idx: u64, pinned: Option<Mode>) -> Mode {
+    match pinned {
+        Some(m) => m,
+        None => ALL_MODES[(idx as usize) % ALL_MODES.len()],
+    }
+}
+
+fn main() {
+    let args = parse_args();
+    let bin = ours_bin();
+    let timeout = Duration::from_millis(args.timeout_ms);
+    let _ = std::fs::create_dir_all(ours_home());
+
+    if !bin.exists() {
+        eprintln!(
+            "rlang binary not found at {}; run `cargo build` first",
+            bin.display()
+        );
+        std::process::exit(2);
+    }
+
+    // --once: replay a single seed, minimize if it diverges, dump both sides.
+    if args.once {
+        let mode = mode_for(args.base_seed, args.mode);
+        let stmts = gen_case(args.base_seed, mode);
+        let script = build_program(&stmts);
+        let o = run_oracle(&script, timeout);
+        let r = run_ours(&script, &bin, timeout);
+        let diverged = !o.timed_out && differs(&o, &r);
+        println!("seed   : {}", args.base_seed);
+        println!("mode   : {}", mode_name(mode));
+        let (show, o, r) = if diverged && stmts.len() > 1 {
+            let m = minimize(stmts, &bin, timeout);
+            let ms = build_program(&m);
+            let mo = run_oracle(&ms, timeout);
+            let mr = run_ours(&ms, &bin, timeout);
+            (ms, mo, mr)
+        } else {
+            (script, o, r)
+        };
+        println!("program:\n  {}", show.replace('\n', "\n  "));
+        println!("--- R      exit={} timeout={} ---", o.exit, o.timed_out);
+        let _ = std::io::stdout().write_all(&o.stdout);
+        println!("--- rlang  exit={} timeout={} ---", r.exit, r.timed_out);
+        let _ = std::io::stdout().write_all(&r.stdout);
+        println!("--- {} ---", if diverged { "DIVERGE" } else { "match" });
+        std::process::exit(if diverged { 1 } else { 0 });
+    }
+
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Mutex;
+
+    let next = AtomicU64::new(0);
+    let checked = AtomicU64::new(0);
+    let timeouts = AtomicU64::new(0);
+    let stop = AtomicBool::new(false);
+    let divergences: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+    let start = Instant::now();
+
+    eprintln!(
+        "fuzzing {} cases across {} workers (mode {})…",
+        args.count,
+        args.jobs,
+        args.mode.map(mode_name).unwrap_or("all"),
+    );
+
+    std::thread::scope(|scope| {
+        for _ in 0..args.jobs {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                if idx >= args.count {
+                    break;
+                }
+                let seed = args.base_seed.wrapping_add(idx);
+                let mode = mode_for(idx, args.mode);
+                let stmts = gen_case(seed, mode);
+                let script = build_program(&stmts);
+                let o = run_oracle(&script, timeout);
+                let r = run_ours(&script, &bin, timeout);
+                let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
+                if o.timed_out || r.timed_out {
+                    timeouts.fetch_add(1, Ordering::Relaxed);
+                }
+                // oracle-side timeout ⇒ pathological case; not a parity gap.
+                if !o.timed_out && differs(&o, &r) {
+                    let minimal = minimize(stmts, &bin, timeout);
+                    let mscript = build_program(&minimal);
+                    let mo = run_oracle(&mscript, timeout);
+                    let mr = run_ours(&mscript, &bin, timeout);
+                    // Re-verify: a real gap diverges every time; a transient
+                    // won't reproduce. Require `verify` consecutive divergences.
+                    let mut confirmed = differs(&mo, &mr);
+                    for _ in 1..args.verify.max(1) {
+                        if !confirmed {
+                            break;
+                        }
+                        confirmed = diverges(&mscript, &bin, timeout);
+                    }
+                    if !confirmed {
+                        return; // continue loop iteration
+                    }
+                    let err_of = |o: &RunOut| -> String {
+                        if CMP_STDERR.load(Ordering::Relaxed) {
+                            format!(
+                                "\n  stderr: {}",
+                                render(&norm_stderr(&o.stderr)).replace('\n', "\n  ")
+                            )
+                        } else {
+                            String::new()
+                        }
+                    };
+                    let rec = format!(
+                        "==== seed {seed} (mode {}) ====\n\
+                         program:\n  {}\n\
+                         R     : exit={} timeout={}{}\n{}\n\
+                         rlang : exit={} timeout={}{}\n{}\n",
+                        mode_name(mode),
+                        mscript.replace('\n', "\n  "),
+                        mo.exit,
+                        mo.timed_out,
+                        err_of(&mo),
+                        render(&mo.stdout),
+                        mr.exit,
+                        mr.timed_out,
+                        err_of(&mr),
+                        render(&mr.stdout),
+                    );
+                    let mut d = divergences.lock().unwrap();
+                    d.push((seed, rec));
+                    if d.len() >= args.max_report {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                }
+                if done % 500 == 0 {
+                    let n = divergences.lock().unwrap().len();
+                    eprintln!(
+                        "  {done}/{} checked, {n} divergences, {:.0}/s",
+                        args.count,
+                        done as f64 / start.elapsed().as_secs_f64().max(0.001)
+                    );
+                }
+            });
+        }
+    });
+
+    let checked = checked.load(Ordering::Relaxed);
+    let timeouts = timeouts.load(Ordering::Relaxed);
+    let mut divergences: Vec<(u64, String)> = divergences.into_inner().unwrap();
+    divergences.sort_by_key(|(seed, _)| *seed);
+    let divergences: Vec<String> = divergences.into_iter().map(|(_, r)| r).collect();
+    let elapsed = start.elapsed();
+
+    let sig_of = |rec: &str| -> String {
+        let prog = rec
+            .split("program:\n")
+            .nth(1)
+            .and_then(|s| s.split("\nR     :").next())
+            .unwrap_or(rec);
+        signature(prog)
+    };
+
+    let allowed: std::collections::HashSet<String> = match &args.baseline {
+        Some(bp) => std::fs::read_to_string(bp)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    let mut new_records: Vec<&String> = Vec::new();
+    let mut new_sigs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut known = 0usize;
+    for rec in &divergences {
+        let sig = sig_of(rec);
+        if args.baseline.is_some() && allowed.contains(&sig) {
+            known += 1;
+        } else {
+            new_records.push(rec);
+            new_sigs.insert(sig);
+        }
+    }
+
+    let oracle = oracle_id();
+    println!(
+        "\nfuzzed {checked} cases in {:.1}s ({:.0}/s)\n\
+         oracle      : {}\n\
+         divergences : {} ({} known / {} new)\n\
+         timeouts    : {}",
+        elapsed.as_secs_f64(),
+        checked as f64 / elapsed.as_secs_f64().max(0.001),
+        oracle,
+        divergences.len(),
+        known,
+        new_records.len(),
+        timeouts,
+    );
+
+    if !divergences.is_empty() {
+        if let Some(parent) = args.out_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::File::create(&args.out_path) {
+            let _ = writeln!(f, "# oracle: {oracle}");
+            for d in &divergences {
+                let _ = writeln!(f, "{d}");
+            }
+            println!(
+                "wrote {} divergences to {}",
+                divergences.len(),
+                args.out_path.display()
+            );
+        }
+    }
+
+    if !new_records.is_empty() {
+        println!(
+            "\n--- {} NEW gap signature(s) (add to baseline once triaged) ---",
+            new_sigs.len()
+        );
+        for s in &new_sigs {
+            println!("{s}");
+        }
+        println!(
+            "\n--- first {} new divergence record(s) ---",
+            new_records.len().min(5)
+        );
+        for d in new_records.iter().take(5) {
+            println!("{d}");
+        }
+        std::process::exit(1);
+    }
+    if known > 0 {
+        println!("all {known} divergences are known (in baseline) — OK");
+    }
+}
