@@ -76,7 +76,5 @@ against the reference `Rscript` rather than against a self-recorded baseline.
 - **The DAP adapter does not step.** The handshake, launch, and
   run-to-completion path with stdout forwarded as `output` events are real;
   breakpoints and stepping are not wired to the fusevm line table yet.
-- **No inline `rust { }` FFI.** The sibling frontends compile inline Rust blocks
-  to a cached `cdylib` and call them by name; rlang has no such block yet.
 - **`Recall()` and `Negate()` are stubs** that raise rather than pretending to
   work.
