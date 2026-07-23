@@ -863,6 +863,114 @@ fn gen_listx(seed: u64) -> Vec<String> {
     })
 }
 
+/// A vector literal mixing finite values with the special markers R prints
+/// deterministically (`NA`, `NaN`, `Inf`, `-Inf`).
+fn special_vec(r: &mut Rng) -> String {
+    let atoms = ["1", "2", "-3", "0", "NA", "NaN", "Inf", "-Inf", "5.5"];
+    let n = r.range(3, 5) as usize;
+    let items: Vec<&str> = (0..n).map(|_| *r.pick(&atoms)).collect();
+    format!("c({})", items.join(", "))
+}
+
+fn gen_predicates(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = special_vec(r);
+    one(match r.below(9) {
+        0 => format!("is.na({v})"),
+        1 => format!("is.nan({v})"),
+        2 => format!("is.finite({v})"),
+        3 => format!("is.infinite({v})"),
+        4 => format!("anyNA({v})"),
+        5 => format!("complete.cases({v})"),
+        6 => format!("sum(is.na({v}))"),
+        7 => format!("which(is.finite({v}))"),
+        _ => format!("{v}[is.finite({v})]"),
+    })
+}
+
+fn gen_numedge(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = special_vec(r);
+    let empty = *r.pick(&["numeric(0)", "integer(0)"]);
+    one(match r.below(9) {
+        0 => format!("max({empty})"),
+        1 => format!("min({empty})"),
+        2 => format!("range({empty})"),
+        3 => format!("sum({v}, na.rm = TRUE)"),
+        4 => format!("max({v}, na.rm = TRUE)"),
+        5 => format!("mean({v}, na.rm = TRUE)"),
+        6 => format!("prod({empty})"),
+        7 => format!("cumsum(1:{})", r.range(1, 6)),
+        _ => format!("range({v}, na.rm = TRUE)"),
+    })
+}
+
+fn gen_strx2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    one(match r.below(9) {
+        0 => format!("strrep(\"{w}\", {})", r.range(0, 4)),
+        1 => format!("trimws(\"  {w}  \", which = \"{}\")", *r.pick(&["left", "right", "both"])),
+        2 => format!("substring(\"{w}\", 1:{})", r.range(2, 4)),
+        3 => format!("encodeString(\"{w}\\t{w}\")"),
+        4 => format!("x <- \"{w}\"; substr(x, {}, {}) <- \"XY\"; x", r.range(1, 3), r.range(3, 5)),
+        5 => format!("strrep(c(\"{w}\", \"{}\"), 2)", ww(r)),
+        6 => format!("nchar(strrep(\"{w}\", {}))", r.range(1, 5)),
+        7 => format!("toupper(substring(\"{w}{w}\", {}))", r.range(1, 4)),
+        _ => format!("encodeString(c(\"{w}\", \"a\\nb\"))"),
+    })
+}
+
+fn gen_listx2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(4, 6);
+    let keys = "c(\"a\", \"b\", \"a\", \"b\", \"c\")";
+    one(match r.below(9) {
+        0 => format!("split(1:5, {keys})"),
+        1 => format!("tapply(c({}, {}, {}, {}, {}), {keys}, sum)", si(r), si(r), si(r), si(r), si(r)),
+        2 => format!("modifyList(list(a = {}, b = {}), list(b = {}))", si(r), si(r), si(r)),
+        3 => format!("Reduce(`-`, 1:{n}, right = TRUE)"),
+        4 => format!("Reduce(`+`, 1:{n}, accumulate = TRUE, right = TRUE)"),
+        5 => format!("rapply(list({}, {}), function(x) x * 2, how = \"unlist\")", si(r), si(r)),
+        6 => format!("vapply(1:{n}, function(x) c(x, x * x), numeric(2))"),
+        7 => format!("sapply(1:{n}, function(x) c(x, -x))"),
+        _ => format!("tapply(1:5, {keys}, length)"),
+    })
+}
+
+fn gen_indexing(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    let i = r.range(1, 4);
+    one(match r.below(10) {
+        0 => format!("m <- matrix(1:6, nrow = 2); m[{}, ]", r.range(1, 2)),
+        1 => format!("m <- matrix(1:6, nrow = 2); m[, {}]", r.range(1, 3)),
+        2 => format!("m <- matrix(1:6, nrow = 2); m[{}, {}]", r.range(1, 2), r.range(1, 3)),
+        3 => format!("({v})[-{i}]"),
+        4 => format!("({v})[c(TRUE, FALSE)]"),
+        5 => format!("x <- c(a = 1, b = 2, c = 3); x[\"{}\"]", *r.pick(&["a", "b", "c"])),
+        6 => format!("({v})[{i}:{}]", r.range(1, 4)),
+        7 => format!("l <- list({}, {}, {}); l[[{}]]", si(r), si(r), si(r), r.range(1, 3)),
+        8 => format!("({v})[({v}) > 0]"),
+        _ => format!("({v})[c(-1, -2)]"),
+    })
+}
+
+fn gen_replace(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(9) {
+        0 => format!("x <- 1:5; x[{}] <- {}; x", r.range(1, 5), si(r)),
+        1 => format!("x <- 1:5; x[x > {}] <- 0; x", r.range(1, 3)),
+        2 => format!("x <- 1:3; names(x) <- c(\"a\", \"b\", \"c\"); x"),
+        3 => format!("x <- 1:6; dim(x) <- c(2, 3); x"),
+        4 => format!("x <- c(1, 2); length(x) <- {}; x", r.range(3, 5)),
+        5 => format!("m <- matrix(1:4, 2); m[{}, {}] <- 9; m", r.range(1, 2), r.range(1, 2)),
+        6 => format!("l <- list(a = 1, b = 2); l$c <- {}; l", si(r)),
+        7 => format!("x <- 1:5; x[[{}]] <- {}; x", r.range(1, 5), si(r)),
+        _ => format!("x <- 1:5; x[-1] <- 0; x"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -896,6 +1004,12 @@ enum Mode {
     Linalg,
     Stringx,
     Listx,
+    Predicates,
+    Numedge,
+    Strx2,
+    Listx2,
+    Indexing,
+    Replace,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -926,6 +1040,12 @@ const ALL_MODES: &[Mode] = &[
     Mode::Linalg,
     Mode::Stringx,
     Mode::Listx,
+    Mode::Predicates,
+    Mode::Numedge,
+    Mode::Strx2,
+    Mode::Listx2,
+    Mode::Indexing,
+    Mode::Replace,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -957,6 +1077,12 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Linalg => gen_linalg(seed),
         Mode::Stringx => gen_stringx(seed),
         Mode::Listx => gen_listx(seed),
+        Mode::Predicates => gen_predicates(seed),
+        Mode::Numedge => gen_numedge(seed),
+        Mode::Strx2 => gen_strx2(seed),
+        Mode::Listx2 => gen_listx2(seed),
+        Mode::Indexing => gen_indexing(seed),
+        Mode::Replace => gen_replace(seed),
     }
 }
 
@@ -989,6 +1115,12 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Linalg => "linalg",
         Mode::Stringx => "stringx",
         Mode::Listx => "listx",
+        Mode::Predicates => "predicates",
+        Mode::Numedge => "numedge",
+        Mode::Strx2 => "strx2",
+        Mode::Listx2 => "listx2",
+        Mode::Indexing => "indexing",
+        Mode::Replace => "replace",
     }
 }
 
