@@ -29,9 +29,13 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## Types
 
-- **No data frames**, and therefore none of `data.frame`, `subset`, `merge`,
-  `aggregate`, `read.csv`, `write.csv`.
-- **No complex numbers, no raw vectors, no `Date`/`POSIXct`.** Factors are
+- **No *native* data frames / raw vectors / dates / S4 objects — they live in
+  the CRAN bridge instead.** rlang has no rlang-side type for these, so a value
+  of one is held as an opaque handle to the embedded GNU R (see below), and any
+  operation on it (`df$col`, `df[i, ]`, `nrow`, `print`, `toJSON(df)`) is
+  delegated there. This needs R installed; the values are correct but not
+  inspectable from rlang's own primitives.
+- **No complex numbers, no `Date`/`POSIXct` native type.** Factors are
   supported (`factor`, `levels`, `nlevels`, `table`, and their printing), but
   only the default `sort`-ordered levels — no ordered factors.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`

@@ -25,6 +25,11 @@ fn cran_bridge_delegates_or_degrades() {
     let two = rembed::eval_source("1 + 1").expect("eval 1+1");
     assert_eq!(rlang::host::with_host(|h| h.type_of(&two)), "double");
 
+    // A data frame (a classed list rlang has no native type for) is kept as an
+    // opaque handle and still supports `$` and reduction back to a native value.
+    let n = rembed::eval_source("sum(data.frame(x = 1:4)$x)").expect("df$col");
+    assert_eq!(rlang::host::with_host(|h| h.as_dbl(&n)), vec![Some(10.0)]);
+
     // A compiled CRAN package (jsonlite) — load it, then call one of its
     // routines, if it is installed. Absence of the package is not a failure.
     if rembed::eval_source("requireNamespace(\"jsonlite\", quietly = TRUE)").is_ok() {

@@ -18,7 +18,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use crate::builtins::{mk_dbl, mk_int, mk_lgl, mk_list, mk_str, null, set_names};
+use crate::builtins::{mk_dbl, mk_int, mk_lgl, mk_list, mk_str, names_of, null, set_names};
 use crate::host::{with_host, RData};
 use fusevm::Value;
 use libloading::Library;
@@ -57,11 +57,14 @@ struct RApi {
     xlength: unsafe extern "C" fn(Sexp) -> isize,
     typeof_: unsafe extern "C" fn(Sexp) -> c_int,
     get_attrib: unsafe extern "C" fn(Sexp, Sexp) -> Sexp,
+    set_attrib: unsafe extern "C" fn(Sexp, Sexp, Sexp) -> Sexp,
     install: unsafe extern "C" fn(*const c_char) -> Sexp,
     define_var: unsafe extern "C" fn(Sexp, Sexp, Sexp),
+    preserve: unsafe extern "C" fn(Sexp),
     global_env: Sexp,
     nil: Sexp,
     na_int: c_int,
+    visible: *const c_int,
 }
 
 // SAFETY: R is single-threaded; rlang evaluates on one thread at a time, so the
@@ -120,6 +123,7 @@ fn init() -> Option<RApi> {
         let ge: libloading::Symbol<*const Sexp> = lib.get(b"R_GlobalEnv").ok()?;
         let nl: libloading::Symbol<*const Sexp> = lib.get(b"R_NilValue").ok()?;
         let na_ptr: libloading::Symbol<*const c_int> = lib.get(b"R_NaInt").ok()?;
+        let vis: libloading::Symbol<*const c_int> = lib.get(b"R_Visible").ok()?;
         Some(RApi {
             parse: sym!(_, b"R_ParseVector"),
             try_eval_silent: sym!(_, b"R_tryEvalSilent"),
@@ -139,11 +143,14 @@ fn init() -> Option<RApi> {
             xlength: sym!(_, b"Rf_xlength"),
             typeof_: sym!(_, b"TYPEOF"),
             get_attrib: sym!(_, b"Rf_getAttrib"),
+            set_attrib: sym!(_, b"Rf_setAttrib"),
             install: sym!(_, b"Rf_install"),
             define_var: sym!(_, b"Rf_defineVar"),
+            preserve: sym!(_, b"R_PreserveObject"),
             global_env: **ge,
             nil: **nl,
             na_int: **na_ptr,
+            visible: *vis,
         })
     }
 }
@@ -158,10 +165,41 @@ pub fn available() -> bool {
 }
 
 impl RApi {
-    /// Build an R SEXP from an rlang value (atomic vectors, NULL, lists).
+    /// Build an R SEXP from an rlang value (atomic vectors, NULL, lists),
+    /// carrying its `names` across so a named list reaches R named.
     unsafe fn to_sexp(&self, v: &Value) -> Sexp {
+        let s = self.to_sexp_bare(v);
+        let nm = names_of(v);
+        if !nm.is_empty() && s != self.nil {
+            let ns = (self.protect)(s);
+            let names_sexp = (self.protect)((self.alloc_vector)(STRSXP, nm.len() as isize));
+            for (i, e) in nm.iter().enumerate() {
+                if let Some(t) = e {
+                    if let Ok(c) = CString::new(t.as_str()) {
+                        (self.set_string_elt)(names_sexp, i as isize, (self.mk_char)(c.as_ptr()));
+                    }
+                }
+            }
+            let key = CString::new("names").unwrap();
+            (self.set_attrib)(ns, (self.install)(key.as_ptr()), names_sexp);
+            (self.unprotect)(2);
+        }
+        s
+    }
+
+    /// Whether an R object carries a `class` attribute (so it should keep R
+    /// semantics as a foreign handle rather than marshal to a plain rlang value).
+    unsafe fn has_class(&self, s: Sexp) -> bool {
+        let key = CString::new("class").unwrap();
+        (self.typeof_)((self.get_attrib)(s, (self.install)(key.as_ptr()))) != NILSXP
+    }
+
+    /// The un-named SEXP for a value's data.
+    unsafe fn to_sexp_bare(&self, v: &Value) -> Sexp {
         let data = with_host(|h| h.data_of(v));
         match data {
+            // A foreign handle is an R SEXP; hand it straight back.
+            RData::RForeign(ptr) => ptr as Sexp,
             RData::Null => self.nil,
             RData::Lgl(xs) => {
                 let s = (self.protect)((self.alloc_vector)(LGLSXP, xs.len() as isize));
@@ -292,16 +330,21 @@ impl RApi {
                     })
                     .collect(),
             ),
-            VECSXP => {
+            // A plain (unclassed) list marshals to a native rlang list; a
+            // classed one (data.frame, and other S3 list objects) keeps its R
+            // semantics as a foreign handle.
+            VECSXP if !self.has_class(s) => {
                 let items: Result<Vec<Value>, String> = (0..n)
                     .map(|i| self.from_sexp((self.vector_elt)(s, i as isize)))
                     .collect();
                 mk_list(items?)
             }
-            other => {
-                return Err(format!(
-                    "CRAN bridge: cannot marshal an R value of type {other} back to rlang"
-                ))
+            // Any type rlang has no representation for is kept as an opaque
+            // handle: preserve it from R's GC and wrap the pointer, so it can be
+            // handed straight back to R on a later call.
+            _ => {
+                (self.preserve)(s);
+                with_host(|h| h.alloc(RData::RForeign(s as usize)))
             }
         };
         let nm = names(self);
@@ -337,6 +380,27 @@ impl RApi {
     }
 }
 
+/// Render a foreign R handle the way R's `print` would, by capturing its output
+/// in the embedded interpreter.
+pub fn print_foreign(ptr: usize) -> Vec<String> {
+    let Some(api) = api() else {
+        return vec!["<R object>".to_string()];
+    };
+    unsafe {
+        let key = CString::new(".rlang_print").unwrap();
+        (api.define_var)((api.install)(key.as_ptr()), ptr as Sexp, api.global_env);
+        match api.eval("capture.output(print(.rlang_print))") {
+            Ok(s) if (api.typeof_)(s) == STRSXP => (0..(api.xlength)(s))
+                .map(|i| {
+                    let c = (api.string_elt)(s, i);
+                    CStr::from_ptr((api.r_char)(c)).to_string_lossy().into_owned()
+                })
+                .collect(),
+            _ => vec!["<R object>".to_string()],
+        }
+    }
+}
+
 /// Evaluate R source in the embedded interpreter, marshalling the result back.
 pub fn eval_source(code: &str) -> Result<Value, String> {
     let api = api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
@@ -358,6 +422,12 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
         // Bind arguments to `.rlang_argN` in the global environment.
         let mut parts: Vec<String> = Vec::with_capacity(args.len());
         for (i, (tag, v)) in args.iter().enumerate() {
+            // An empty argument (`df[i, ]`) must stay a *missing* subscript in R,
+            // not a bound NULL — leave the call position empty.
+            if matches!(v, Value::Undef) {
+                parts.push(String::new());
+                continue;
+            }
             let var = format!(".rlang_arg{i}");
             let sexp = (api.protect)(api.to_sexp(v));
             (api.define_var)(
@@ -371,6 +441,12 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
                 None => var,
             });
         }
+        // Operator/`[[`-style names must be back-quoted to call by name in R.
+        let fname = if name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_')) {
+            name.to_string()
+        } else {
+            format!("`{name}`")
+        };
         // A pre-check keeps a genuine "not found" distinct from a call that
         // errors, so rlang's own message is preserved when R lacks the function.
         let probe = format!("exists(\"{name}\", mode = \"function\")");
@@ -382,9 +458,14 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
         if !found {
             return Err(format!("could not find function \"{name}\""));
         }
-        let s = (api.protect)(api.eval(&format!("{name}({})", parts.join(", ")))?);
+        let s = (api.protect)(api.eval(&format!("{fname}({})", parts.join(", ")))?);
+        // Carry R's visibility across (`print`/`invisible` make it false) so the
+        // delegated result isn't auto-printed twice. Read it right after the
+        // eval, before marshalling calls back into R.
+        let vis = *api.visible != 0;
         let r = api.from_sexp(s);
         (api.unprotect)(1);
+        with_host(|h| h.visible = vis);
         r
     }
 }

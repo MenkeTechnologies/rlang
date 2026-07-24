@@ -173,6 +173,11 @@ pub enum RData {
     },
     /// A primitive implemented in Rust, named for dispatch and printing.
     Builtin(String),
+    /// An opaque handle to an R object living in the embedded GNU R (a raw
+    /// vector, S4 object, data frame, environment — anything rlang has no type
+    /// for). The `usize` is the preserved `SEXP` pointer; it flows back into R
+    /// verbatim, so a value rlang cannot inspect can still pass through it.
+    RForeign(usize),
     /// A function built at runtime by wrapping another — `Negate(f)` /
     /// `Vectorize(f)`. The closure model uses compile-time chunk ids, so a
     /// runtime-constructed function is represented as data: the combinator kind
@@ -596,6 +601,8 @@ impl RHost {
             }
             Some(RData::Environment(_)) => "environment",
             Some(RData::Args(_)) => "list",
+            // A foreign R object's real class is only known to R.
+            Some(RData::RForeign(_)) => "R_object",
         }
         .to_string()]
     }
@@ -609,6 +616,7 @@ impl RHost {
             Some(RData::Dbl(_)) => "double",
             Some(RData::Str(_)) => "character",
             Some(RData::List(_)) | Some(RData::Args(_)) => "list",
+            Some(RData::RForeign(_)) => "externalptr",
             Some(RData::Closure { .. }) | Some(RData::Combinator { .. }) => "closure",
             Some(RData::Builtin(_)) => "builtin",
             Some(RData::Environment(_)) => "environment",

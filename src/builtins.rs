@@ -114,7 +114,7 @@ fn scalar_str(x: impl Into<String>) -> Value {
 pub(crate) fn null() -> Value {
     with_host(|h| h.null())
 }
-fn names_of(v: &Value) -> Vec<Option<String>> {
+pub(crate) fn names_of(v: &Value) -> Vec<Option<String>> {
     with_host(|h| h.names(v))
 }
 fn class_of(v: &Value) -> Vec<String> {
@@ -235,31 +235,22 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
     match with_host(|h| h.lookup_function(&name)) {
         Some(v) => v,
-        None => match primitive_value(&name) {
-            Some(v) => v,
-            None => abort(vm, format!("could not find function \"{name}\"")),
-        },
+        // An unknown *function* resolves to a builtin regardless: at call time
+        // the CRAN bridge delegates it to embedded R (a base function rlang
+        // doesn't implement, or a loaded package's routine), reproducing the
+        // "could not find function" error if R lacks it too. A bare *variable*
+        // (`b_getvar`) is unaffected — it still errors as "object not found".
+        None => primitive_value(&name)
+            .unwrap_or_else(|| with_host(|h| h.alloc(RData::Builtin(name.clone())))),
     }
 }
 
-/// Set once a package has been loaded through the CRAN bridge. Until then an
-/// unknown function name is a genuine error; after, it may live in an embedded-R
-/// package, so it resolves to a builtin that delegates there.
-pub(crate) static CRAN_ACTIVE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// A primitive as a first-class value, so `sapply(x, sqrt)` works. Once a CRAN
-/// package is loaded, any otherwise-unknown name also resolves — the call routes
-/// through the bridge, which reproduces the "could not find function" error if R
-/// lacks it too.
+/// A primitive as a first-class value, so `sapply(x, sqrt)` works.
 fn primitive_value(name: &str) -> Option<Value> {
     if let Some(v) = base_constant(name) {
         return Some(v);
     }
-    if is_primitive(name) || CRAN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
-        return Some(with_host(|h| h.alloc(RData::Builtin(name.to_string()))));
-    }
-    None
+    is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
 }
 
 /// R's built-in constants, bound in the base environment: `pi`, the letter and
@@ -766,9 +757,21 @@ fn args_of(v: &Value) -> Vec<(Option<String>, Value)> {
     }
 }
 
+/// Delegate `op(x, args…)` on a foreign R handle to embedded R.
+fn foreign_index(vm: &mut VM, op: &str, x: Value, mut args: Vec<(Option<String>, Value)>) -> Value {
+    args.insert(0, (None, x));
+    match cran_call(op, &args) {
+        Ok(v) => v,
+        Err(e) => abort(vm, e),
+    }
+}
+
 fn b_index(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
+    if matches!(data(&x), RData::RForeign(_)) {
+        return foreign_index(vm, "[", x, args_of(&argv));
+    }
     match index_single(&x, &args_of(&argv)) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -778,6 +781,9 @@ fn b_index(vm: &mut VM, _: u8) -> Value {
 fn b_index2(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
+    if matches!(data(&x), RData::RForeign(_)) {
+        return foreign_index(vm, "[[", x, args_of(&argv));
+    }
     match index_double(&x, &args_of(&argv)) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -787,6 +793,10 @@ fn b_index2(vm: &mut VM, _: u8) -> Value {
 fn b_dollar(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
     let x = vm.pop();
+    if matches!(data(&x), RData::RForeign(_)) {
+        // `df$col` on a foreign object is `df[["col"]]` in R.
+        return foreign_index(vm, "[[", x, vec![(None, scalar_str(name))]);
+    }
     match data(&x) {
         RData::Environment(e) => e.borrow().vars.get(&name).cloned().unwrap_or_else(null),
         _ => {
@@ -1652,6 +1662,15 @@ pub fn call_combinator(
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
     if OPERATORS.contains(&name) {
         return call_operator(name, &args);
+    }
+    // A foreign R object (data frame, S4, raw, …) "infects" the call: rlang's
+    // native builtins can't operate on an opaque handle, so the whole call is
+    // delegated to embedded R, which does understand it.
+    if args
+        .iter()
+        .any(|(_, v)| matches!(data(v), RData::RForeign(_)))
+    {
+        return cran_call(name, &args);
     }
     let a = Args::new(args);
     match name {
@@ -3970,8 +3989,6 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "library" | "require" | "requireNamespace" | "loadNamespace" => {
             let pkg = str1(&a.req(0, "package")?).unwrap_or_default();
             let r = cran_eval(&format!("suppressMessages({name}({pkg}))"))?;
-            // A package is loaded: let later unknown names route to the bridge.
-            CRAN_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
             with_host(|h| h.visible = false);
             // `require`/`requireNamespace` yield a logical; `library` loads
             // invisibly.
@@ -3994,7 +4011,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 /// rlang's own "could not find function" error otherwise.
 #[cfg(not(target_arch = "wasm32"))]
 fn cran_call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, String> {
-    crate::rembed::call(name, args)
+    let r = crate::rembed::call(name, args)?;
+    // The print/cat family writes to stdout and returns invisibly; make sure the
+    // delegated result is not auto-printed a second time by rlang.
+    if name.starts_with("print")
+        || matches!(name, "cat" | "message" | "writeLines" | "str" | "invisible")
+    {
+        with_host(|h| h.visible = false);
+    }
+    Ok(r)
 }
 #[cfg(target_arch = "wasm32")]
 fn cran_call(name: &str, _: &[(Option<String>, Value)]) -> Result<Value, String> {
@@ -5291,6 +5316,11 @@ pub fn format_value(v: &Value) -> Vec<String> {
         RData::Closure { .. } | RData::Builtin(_) | RData::Combinator { .. } => {
             vec![format_function(v)]
         }
+        // A foreign R object prints the way R would print it.
+        #[cfg(not(target_arch = "wasm32"))]
+        RData::RForeign(ptr) => crate::rembed::print_foreign(ptr),
+        #[cfg(target_arch = "wasm32")]
+        RData::RForeign(_) => vec!["<R object>".into()],
         RData::Environment(_) => vec!["<environment>".into()],
         RData::Args(_) => format_list(v),
         RData::List(_) => format_list(v),
