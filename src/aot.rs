@@ -26,6 +26,12 @@ use std::path::{Path, PathBuf};
 /// strips this prefix to recover the image.
 pub const AOT_CLOSURES_TAG: &str = "\u{0}rlang-aot-closures:";
 
+/// Marker for the base64-encoded original script source, embedded alongside the
+/// closures so the AOT entry can re-run the whole script in embedded R when the
+/// native path hits non-standard evaluation (`dplyr`, `data.table`) — the same
+/// whole-script CRAN fallback the interpreter has.
+pub const AOT_SOURCE_TAG: &str = "\u{0}rlang-aot-source:";
+
 /// The serde-flat closure form embedded in the AOT object (formals + body),
 /// matching `cache::CClosure`.
 type CClosure = (Vec<String>, Chunk);
@@ -66,20 +72,28 @@ pub fn compile_executable(file: &str, out: &Path) -> Result<PathBuf, String> {
     let prog = crate::compile(&src)?;
 
     // The object embeds only the fusevm chunk; carry the R closures alongside it
-    // in the chunk's name table so the register hook can rebuild them.
+    // in the chunk's name table so the register hook can rebuild them, plus the
+    // original source so the AOT entry can fall back to embedded R for NSE.
     let mut main = prog.main.clone();
     main.names
         .push(format!("{AOT_CLOSURES_TAG}{}", encode_closures(&prog)?));
+    {
+        use base64::Engine as _;
+        let src_b64 = base64::engine::general_purpose::STANDARD.encode(src.as_bytes());
+        main.names.push(format!("{AOT_SOURCE_TAG}{src_b64}"));
+    }
 
     let runtime_lib = runtime_staticlib()?;
 
     let obj = out.with_extension("o");
     fusevm::aot::compile_object(&main, &obj).map_err(|e| format!("Rscript --aot: {e}"))?;
 
+    // Call rlang's AOT entry (aot_runtime.rs), not fusevm's directly: it adds
+    // the error-surfacing and whole-script CRAN fallback the interpreter has.
     let stub = out.with_extension("aot_main.c");
     std::fs::write(
         &stub,
-        b"extern long fusevm_aot_run_embedded(void);\nint main(void){return (int)fusevm_aot_run_embedded();}\n" as &[u8],
+        b"extern long rlang_aot_main(void);\nint main(void){return (int)rlang_aot_main();}\n" as &[u8],
     )
     .map_err(|e| format!("Rscript --aot: write entry stub: {e}"))?;
 

@@ -67,7 +67,12 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
   registry, the same design as zshrs's function intercepts.
 - **Native executables** — `Rscript --aot FILE` lowers the script to a fusevm
   object and links it against the rlang runtime into a standalone `.fvm` binary
-  (user closures embedded, no interpreter startup).
+  (user closures embedded, no interpreter startup). The executable has the same
+  CRAN reach as the interpreter: base R runs natively, per-call package routines
+  delegate to embedded R through the bridge, and a whole-script fallback re-runs
+  non-standard-evaluation programs (`dplyr`, `data.table`) in embedded R — the
+  original source is embedded for that path. Runtime errors surface on stderr
+  with a non-zero exit rather than being swallowed.
 - **Inline-Rust FFI** — `.rust("…Rust source…")` compiles a self-contained Rust
   block to a cached `cdylib` on first use; `.Call(name, …)` — R's own native-call
   verb — invokes its exports, marshalling length-1 vectors to `i64`/`f64`/string
