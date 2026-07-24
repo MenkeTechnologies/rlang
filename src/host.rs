@@ -532,28 +532,33 @@ impl RHost {
 
     /// The i-th element of a vector or list as a standalone R value.
     pub fn element_at(&mut self, v: &Value, i: usize) -> Value {
-        match self.data_of(v) {
-            RData::Lgl(x) => {
-                let e = x.get(i).cloned().flatten();
-                self.lgl(vec![e])
-            }
-            RData::Int(x) => {
-                let e = x.get(i).cloned().flatten();
-                self.int(vec![e])
-            }
-            RData::Dbl(x) => {
-                let e = x.get(i).cloned().flatten();
-                self.dbl(vec![e])
-            }
-            RData::Str(x) => {
-                let e = x.get(i).cloned().flatten();
-                self.str_vec(vec![e])
-            }
-            RData::List(x) => x.get(i).cloned().unwrap_or_else(|| {
-                let n = self.null.clone();
-                n.unwrap_or(Value::Undef)
-            }),
-            _ => self.null(),
+        // Read ONE element by borrowing the backing store — never clone the
+        // whole vector. `data_of` clones all of `o.data`, so the old
+        // `match self.data_of(v)` here was O(n) per call, making
+        // `for (x in seq)` O(n^2) over the sequence length.
+        enum Elem {
+            Lgl(Option<bool>),
+            Int(Option<i64>),
+            Dbl(Option<f64>),
+            Str(Option<String>),
+            Val(Value),
+            Null,
+        }
+        let e = match self.get(v).map(|o| &o.data) {
+            Some(RData::Lgl(x)) => Elem::Lgl(x.get(i).cloned().flatten()),
+            Some(RData::Int(x)) => Elem::Int(x.get(i).cloned().flatten()),
+            Some(RData::Dbl(x)) => Elem::Dbl(x.get(i).cloned().flatten()),
+            Some(RData::Str(x)) => Elem::Str(x.get(i).cloned().flatten()),
+            Some(RData::List(x)) => x.get(i).cloned().map(Elem::Val).unwrap_or(Elem::Null),
+            _ => Elem::Null,
+        };
+        match e {
+            Elem::Lgl(o) => self.lgl(vec![o]),
+            Elem::Int(o) => self.int(vec![o]),
+            Elem::Dbl(o) => self.dbl(vec![o]),
+            Elem::Str(o) => self.str_vec(vec![o]),
+            Elem::Val(v) => v,
+            Elem::Null => self.null(),
         }
     }
 
