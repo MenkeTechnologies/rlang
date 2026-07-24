@@ -3883,34 +3883,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "outer" | "%o%" => {
-            let x = as_dbl(&a.req(0, "X")?);
-            let y = as_dbl(&a.req(1, "Y")?);
-            let fname = a.get(2, "FUN").and_then(|v| str1(&v));
-            let f = a.get(2, "FUN").filter(|v| with_host(|h| h.is_function(v)));
-            // Column-major: out[(i,j)] at j*nx + i = FUN(x[i], y[j]).
-            let (nx, ny) = (x.len(), y.len());
-            let mut vals = vec![None; nx * ny];
-            for j in 0..ny {
-                for i in 0..nx {
-                    vals[j * nx + i] = match (x[i], y[j]) {
-                        (Some(xi), Some(yj)) => match (&f, fname.as_deref()) {
-                            (Some(f), _) => num1(&call_value(
-                                f,
-                                vec![(None, scalar_dbl(xi)), (None, scalar_dbl(yj))],
-                                None,
-                            )?),
-                            (None, Some("+")) => Some(xi + yj),
-                            (None, Some("-")) => Some(xi - yj),
-                            (None, Some("/")) => Some(xi / yj),
-                            (None, Some("^")) => Some(xi.powf(yj)),
-                            // default FUN is "*"
-                            _ => Some(xi * yj),
-                        },
-                        _ => None,
-                    };
+            let xv = a.req(0, "X")?;
+            let yv = a.req(1, "Y")?;
+            let (nx, ny) = (len(&xv), len(&yv));
+            // R tiles the inputs (X repeated ny times, each Y element repeated nx
+            // times) and calls FUN *once* on the pair, so the result keeps FUN's
+            // own type — strings from `paste0`, logicals from `==`, etc. — rather
+            // than being forced to double element-by-element. Column-major slot
+            // j*nx + i pairs X[i] with Y[j].
+            let xe = take_positions(&xv, &(0..nx * ny).map(|k| Some(k % nx)).collect::<Vec<_>>());
+            let ye = take_positions(&yv, &(0..nx * ny).map(|k| Some(k / nx)).collect::<Vec<_>>());
+            let fun = a.get(2, "FUN");
+            let res = match &fun {
+                Some(f) if with_host(|h| h.is_function(f)) => {
+                    call_value(f, vec![(None, xe), (None, ye)], None)?
                 }
-            }
-            let res = mk_dbl(vals);
+                // A bare operator name (the default is "*").
+                other => {
+                    let op = other.as_ref().and_then(|v| str1(v));
+                    binop(op.as_deref().unwrap_or("*"), &xe, &ye)?
+                }
+            };
             let dim = mk_int(vec![Some(nx as i64), Some(ny as i64)]);
             with_host(|h| h.set_attr(&res, "dim", dim));
             Ok(res)
@@ -5831,21 +5824,25 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
                 .unwrap_or(1)
         })
         .collect();
+    // Character matrices are left-justified (cells and column headers alike),
+    // like character vectors; numeric matrices are right-justified.
+    let left = matches!(data(v), RData::Str(_));
+    let just = |s: &str, w: usize| {
+        if left {
+            format!("{s:<w$}")
+        } else {
+            format!("{s:>w$}")
+        }
+    };
     let mut out = Vec::with_capacity(nr + 1);
     let header = (0..nc)
-        .map(|c| format!("{:>w$}", col_labels[c], w = widths[c]))
+        .map(|c| just(&col_labels[c], widths[c]))
         .collect::<Vec<_>>()
         .join(" ");
     out.push(format!("{:w$} {header}", "", w = label_w));
     for (r, label) in row_labels.iter().enumerate() {
         let row = (0..nc)
-            .map(|c| {
-                format!(
-                    "{:>w$}",
-                    cells.get(c * nr + r).cloned().unwrap_or_default(),
-                    w = widths[c]
-                )
-            })
+            .map(|c| just(&cells.get(c * nr + r).cloned().unwrap_or_default(), widths[c]))
             .collect::<Vec<_>>()
             .join(" ");
         out.push(format!("{label:<label_w$} {row}"));
