@@ -17,6 +17,28 @@ use std::rc::Rc;
 
 /// Register every rlang builtin on `vm`.
 pub fn install(vm: &mut VM) {
+    // Native `Op::Add/Sub/Mul/Div` (emitted for scalar `+ - * /`) compute two
+    // unboxed numbers directly; when either operand is a boxed R value (vector,
+    // NA, attributed), the VM delegates here — the same vector arithmetic the
+    // `BINOP` builtin runs. This is also what puts the VM in strict numeric mode.
+    vm.set_numeric_hook(std::sync::Arc::new(|op, a, b| {
+        let name = match op {
+            fusevm::NumOp::Add => "+",
+            fusevm::NumOp::Sub => "-",
+            fusevm::NumOp::Mul => "*",
+            fusevm::NumOp::Div => "/",
+            fusevm::NumOp::Mod => "%%",
+            fusevm::NumOp::Pow => "^",
+            fusevm::NumOp::Neg => "-",
+            fusevm::NumOp::Lt => "<",
+            fusevm::NumOp::Gt => ">",
+            fusevm::NumOp::Le => "<=",
+            fusevm::NumOp::Ge => ">=",
+            fusevm::NumOp::Eq => "==",
+            fusevm::NumOp::Ne => "!=",
+        };
+        binop(name, a, b)
+    }));
     vm.register_builtin(ops::GETVAR, b_getvar);
     vm.register_builtin(ops::GETFUN, b_getfun);
     vm.register_builtin(ops::SETVAR, b_setvar);

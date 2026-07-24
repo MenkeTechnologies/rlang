@@ -245,8 +245,21 @@ impl Compiler {
                 _ => {
                     self.expr(b, lhs)?;
                     self.expr(b, rhs)?;
-                    self.kstr(b, binop_name(op));
-                    b.emit(Op::CallBuiltin(ops::BINOP, 3), 0);
+                    // `+ - * /` lower to native fusevm ops: two unboxed scalars
+                    // compute directly in the dispatch loop (and are JIT-visible),
+                    // while a boxed vector/NA operand delegates to R's `arith`
+                    // through the VM's numeric hook (installed in builtins). Ops
+                    // whose native semantics differ from R (`%%` sign, `^` NA
+                    // rules, comparison NaN→NA) keep the builtin path.
+                    match native_binop(op) {
+                        Some(nop) => {
+                            b.emit(nop, 0);
+                        }
+                        None => {
+                            self.kstr(b, binop_name(op));
+                            b.emit(Op::CallBuiltin(ops::BINOP, 3), 0);
+                        }
+                    }
                 }
             },
             Expr::Special { name, lhs, rhs } => {
@@ -767,6 +780,20 @@ pub(crate) fn deparse_ast(e: &Expr) -> String {
         // Anything else (blocks, closures, assignments) is not expected inside a
         // formula; fall back to a placeholder rather than mis-rendering.
         _ => ".".into(),
+    }
+}
+
+/// The native fusevm op for a binary operator whose scalar semantics match R
+/// exactly. `Op::Div` is always-float (so `5L/2L` is `2.5`, as R). `%%`/`%/%`
+/// arrive as `Expr::Special`, not here; `^`, comparisons, and `& |` keep the
+/// builtin path because their native forms diverge from R on NA/NaN or sign.
+fn native_binop(op: &BinOp) -> Option<Op> {
+    match op {
+        BinOp::Add => Some(Op::Add),
+        BinOp::Sub => Some(Op::Sub),
+        BinOp::Mul => Some(Op::Mul),
+        BinOp::Div => Some(Op::Div),
+        _ => None,
     }
 }
 
