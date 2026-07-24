@@ -103,6 +103,9 @@ pub mod ops {
     /// the compiled jump table then dispatches on. Keeps `switch` lazy — only the
     /// selected branch's code is ever executed.
     pub const SWITCH_INDEX: u16 = 51;
+    pub const RANGE_FROM: u16 = 52;
+    pub const RANGE_STEP: u16 = 53;
+    pub const RANGE_LEN: u16 = 54;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.

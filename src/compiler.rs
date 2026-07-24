@@ -580,6 +580,14 @@ impl Compiler {
         seq: &Expr,
         body: &Expr,
     ) -> Result<(), String> {
+        // `for (i in a:b)` with a slot loop variable iterates a native integer
+        // counter and computes `i = from + c*step` with native ops — no
+        // per-element builtin call, so `--aot` can lower the whole loop.
+        if self.locals.contains(var) {
+            if let Expr::Binary { op: BinOp::Colon, lhs, rhs } = seq {
+                return self.for_range(b, var, lhs, rhs, body);
+            }
+        }
         let v_seq = self.tmp_name(b, "seq");
         let v_len = self.tmp_name(b, "len");
         let v_i = self.tmp_name(b, "i");
@@ -632,6 +640,75 @@ impl Compiler {
         b.patch_jump(jf, end);
         self.close_loop(b, cont, end);
         // `for` itself evaluates to invisible NULL.
+        b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
+        Ok(())
+    }
+
+    /// `for (i in from:to)` as a native counter loop: `RANGE_FROM/STEP/LEN` (one
+    /// call each, at setup) reproduce `:`'s typed start, ±1 step, and count; the
+    /// body computes `i = from + c*step` with native `Mul`/`Add`, `NumLt` for the
+    /// bound — no `SEQ_ELEM`, no `1:N` materialization, and `--aot`-lowerable.
+    fn for_range(
+        &mut self,
+        b: &mut ChunkBuilder,
+        var: &str,
+        lhs: &Expr,
+        rhs: &Expr,
+        body: &Expr,
+    ) -> Result<(), String> {
+        let v_a = self.tmp_name(b, "ra");
+        let v_b = self.tmp_name(b, "rb");
+        let v_from = self.tmp_name(b, "rfrom");
+        let v_step = self.tmp_name(b, "rstep");
+        let v_len = self.tmp_name(b, "rlen");
+        let v_c = self.tmp_name(b, "rc");
+        let islot = b.add_name(var);
+
+        self.expr(b, lhs)?;
+        b.emit(Op::SetVar(v_a), 0);
+        self.expr(b, rhs)?;
+        b.emit(Op::SetVar(v_b), 0);
+        for (op, dst) in [
+            (ops::RANGE_FROM, v_from),
+            (ops::RANGE_STEP, v_step),
+            (ops::RANGE_LEN, v_len),
+        ] {
+            b.emit(Op::GetVar(v_a), 0);
+            b.emit(Op::GetVar(v_b), 0);
+            b.emit(Op::CallBuiltin(op, 2), 0);
+            b.emit(Op::SetVar(dst), 0);
+        }
+        b.emit(Op::LoadInt(0), 0);
+        b.emit(Op::SetVar(v_c), 0);
+
+        self.loops.push(LoopCtx {
+            continues: Vec::new(),
+            breaks: Vec::new(),
+        });
+        let start = b.current_pos();
+        b.emit(Op::GetVar(v_c), 0);
+        b.emit(Op::GetVar(v_len), 0);
+        b.emit(Op::NumLt, 0);
+        let jf = b.emit(Op::JumpIfFalse(0), 0);
+
+        b.emit(Op::GetVar(v_from), 0);
+        b.emit(Op::GetVar(v_c), 0);
+        b.emit(Op::GetVar(v_step), 0);
+        b.emit(Op::Mul, 0);
+        b.emit(Op::Add, 0);
+        b.emit(Op::SetVar(islot), 0);
+
+        self.stmt(b, body)?;
+
+        let cont = b.current_pos();
+        b.emit(Op::GetVar(v_c), 0);
+        b.emit(Op::LoadInt(1), 0);
+        b.emit(Op::Add, 0);
+        b.emit(Op::SetVar(v_c), 0);
+        b.emit(Op::Jump(start), 0);
+        let end = b.current_pos();
+        b.patch_jump(jf, end);
+        self.close_loop(b, cont, end);
         b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
         Ok(())
     }

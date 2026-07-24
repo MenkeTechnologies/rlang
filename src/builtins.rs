@@ -66,6 +66,9 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::TRUTHY, b_truthy);
     vm.register_builtin(ops::SEQ_LEN, b_seq_len);
     vm.register_builtin(ops::SEQ_ELEM, b_seq_elem);
+    vm.register_builtin(ops::RANGE_FROM, b_range_from);
+    vm.register_builtin(ops::RANGE_STEP, b_range_step);
+    vm.register_builtin(ops::RANGE_LEN, b_range_len);
     vm.register_builtin(ops::AUTOPRINT, b_autoprint);
     vm.register_builtin(ops::IS_FALSE, b_is_false);
     vm.register_builtin(ops::IS_TRUE, b_is_true);
@@ -818,6 +821,48 @@ fn b_is_true(vm: &mut VM, _: u8) -> Value {
 fn b_seq_len(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
     Value::Int(len(&v) as i64)
+}
+
+fn range_ends(vm: &mut VM) -> (f64, f64, bool) {
+    let to = num1(&vm.pop()).unwrap_or(f64::NAN);
+    let from = num1(&vm.pop()).unwrap_or(f64::NAN);
+    let whole = from == from.trunc() && to == to.trunc();
+    (from, to, whole)
+}
+
+/// Typed start of `from:to` (integer when both ends whole, else double; `NA`
+/// when an end is `NA`/`NaN`) — the loop-setup helper for a native range `for`.
+fn b_range_from(vm: &mut VM, _: u8) -> Value {
+    let (from, to, whole) = range_ends(vm);
+    if from.is_nan() || to.is_nan() {
+        return mk_int(vec![None]);
+    }
+    if whole {
+        Value::Int(from as i64)
+    } else {
+        Value::Float(from)
+    }
+}
+
+/// Typed ±1 step of `from:to`, matching the element type.
+fn b_range_step(vm: &mut VM, _: u8) -> Value {
+    let (from, to, whole) = range_ends(vm);
+    let up = !(from > to);
+    if whole {
+        Value::Int(if up { 1 } else { -1 })
+    } else {
+        Value::Float(if up { 1.0 } else { -1.0 })
+    }
+}
+
+/// Element count of `from:to` — `floor(|to-from| + 1e-10) + 1`, matching
+/// `colon`; `1` for an `NA`/`NaN` end.
+fn b_range_len(vm: &mut VM, _: u8) -> Value {
+    let (from, to, _) = range_ends(vm);
+    if from.is_nan() || to.is_nan() {
+        return Value::Int(1);
+    }
+    Value::Int(((to - from).abs() + 1e-10).floor() as i64 + 1)
 }
 
 fn b_seq_elem(vm: &mut VM, _: u8) -> Value {
