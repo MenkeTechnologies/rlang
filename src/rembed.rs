@@ -407,6 +407,43 @@ impl RApi {
     }
 }
 
+/// Call a foreign R function handle (an R6 method, a closure returned by a
+/// package) with marshalled arguments — `o$inc()`, `sapply(x, obj$method)`.
+pub fn call_handle(ptr: usize, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    let api = api().ok_or_else(|| "attempt to apply non-function".to_string())?;
+    unsafe {
+        let fkey = CString::new(".rlang_fn").unwrap();
+        (api.define_var)((api.install)(fkey.as_ptr()), ptr as Sexp, api.global_env);
+        let mut parts: Vec<String> = Vec::with_capacity(args.len());
+        for (i, (tag, v)) in args.iter().enumerate() {
+            if matches!(v, Value::Undef) {
+                parts.push(String::new());
+                continue;
+            }
+            let var = format!(".rlang_arg{i}");
+            let sexp = (api.protect)(api.to_sexp(v));
+            (api.define_var)(
+                (api.install)(CString::new(var.as_str()).unwrap().as_ptr()),
+                sexp,
+                api.global_env,
+            );
+            (api.unprotect)(1);
+            parts.push(match tag {
+                Some(t) => format!("`{t}` = {var}"),
+                None => var,
+            });
+        }
+        let wv = (api.protect)(api.eval(&format!("withVisible(.rlang_fn({}))", parts.join(", ")))?);
+        let value = (api.vector_elt)(wv, 0);
+        let visible = (api.vector_elt)(wv, 1);
+        let vis = (api.typeof_)(visible) == LGLSXP && (api.logical)(visible).read() == 1;
+        let r = api.from_sexp(value);
+        (api.unprotect)(1);
+        with_host(|h| h.visible = vis);
+        r
+    }
+}
+
 /// Render a foreign R handle the way R's `print` would, by capturing its output
 /// in the embedded interpreter.
 pub fn print_foreign(ptr: usize) -> Vec<String> {

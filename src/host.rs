@@ -853,6 +853,10 @@ pub fn call_value(
         RData::Builtin(name) => crate::builtins::call_primitive(&name, args),
         RData::Closure { id, env } => call_closure(id, env, args, fun_name),
         RData::Combinator { kind, inner } => crate::builtins::call_combinator(kind, &inner, args),
+        // A foreign R function handle (R6 method, package closure) is invoked in
+        // embedded R with marshalled arguments.
+        #[cfg(not(target_arch = "wasm32"))]
+        RData::RForeign(ptr) => crate::rembed::call_handle(ptr, &args),
         _ => Err("attempt to apply non-function".into()),
     }
 }
