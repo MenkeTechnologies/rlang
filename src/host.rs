@@ -348,6 +348,12 @@ impl RHost {
     /// The data behind a handle, cloned. R has copy-on-assign value semantics,
     /// so every mutation path here rebuilds the object rather than aliasing it.
     pub fn data_of(&self, v: &Value) -> RData {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return RData::Int(vec![Some(n)]),
+            Some(Ub::F(f)) => return RData::Dbl(vec![Some(f)]),
+            Some(Ub::B(b)) => return RData::Lgl(vec![Some(b)]),
+            None => {}
+        }
         self.get(v).map(|o| o.data.clone()).unwrap_or(RData::Null)
     }
 
@@ -357,6 +363,12 @@ impl RHost {
     /// with attributes, length != 1, an NA element, or a non-numeric type. Reads
     /// by borrow: no `data_of` clone of the backing vector.
     pub fn scalar_real(&self, v: &Value) -> Option<(f64, bool)> {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return Some((n as f64, true)),
+            Some(Ub::F(f)) => return Some((f, false)),
+            Some(Ub::B(b)) => return Some((b as i64 as f64, true)),
+            None => {}
+        }
         let o = self.get(v)?;
         if !o.attrs.is_empty() {
             return None;
@@ -371,11 +383,17 @@ impl RHost {
 
     /// The attributes of a value.
     pub fn attrs_of(&self, v: &Value) -> IndexMap<String, Value> {
+        if unboxed(v).is_some() {
+            return IndexMap::default();
+        }
         self.get(v).map(|o| o.attrs.clone()).unwrap_or_default()
     }
 
     /// Read one attribute.
     pub fn attr(&self, v: &Value, name: &str) -> Option<Value> {
+        if unboxed(v).is_some() {
+            return None;
+        }
         self.get(v).and_then(|o| o.attrs.get(name).cloned())
     }
 
@@ -444,6 +462,9 @@ impl RHost {
 
     /// `length(x)`.
     pub fn length(&self, v: &Value) -> usize {
+        if unboxed(v).is_some() {
+            return 1;
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Null) | None => 0,
             Some(RData::Lgl(x)) => x.len(),
@@ -459,6 +480,12 @@ impl RHost {
 
     /// Coerce to logicals (`as.logical`); non-convertible strings become NA.
     pub fn as_lgl(&self, v: &Value) -> Vec<Option<bool>> {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return vec![Some(n != 0)],
+            Some(Ub::F(f)) => return vec![Some(f != 0.0)],
+            Some(Ub::B(b)) => return vec![Some(b)],
+            None => {}
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Lgl(x)) => x.clone(),
             Some(RData::Int(x)) => x.iter().map(|e| e.map(|n| n != 0)).collect(),
@@ -478,6 +505,12 @@ impl RHost {
 
     /// Coerce to integers (`as.integer`); doubles truncate toward zero.
     pub fn as_int(&self, v: &Value) -> Vec<Option<i64>> {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return vec![Some(n)],
+            Some(Ub::F(f)) => return vec![f.is_finite().then_some(f.trunc() as i64)],
+            Some(Ub::B(b)) => return vec![Some(b as i64)],
+            None => {}
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Lgl(x)) => x.iter().map(|e| e.map(|b| b as i64)).collect(),
             Some(RData::Int(x)) => x.clone(),
@@ -497,6 +530,12 @@ impl RHost {
 
     /// Coerce to doubles (`as.numeric`).
     pub fn as_dbl(&self, v: &Value) -> Vec<Option<f64>> {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return vec![Some(n as f64)],
+            Some(Ub::F(f)) => return vec![Some(f)],
+            Some(Ub::B(b)) => return vec![Some(b as i64 as f64)],
+            None => {}
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Lgl(x)) => x.iter().map(|e| e.map(|b| b as i64 as f64)).collect(),
             Some(RData::Int(x)) => x.iter().map(|e| e.map(|n| n as f64)).collect(),
@@ -512,6 +551,12 @@ impl RHost {
 
     /// Coerce to strings (`as.character`).
     pub fn as_str(&self, v: &Value) -> Vec<Option<String>> {
+        match unboxed(v) {
+            Some(Ub::I(n)) => return vec![Some(n.to_string())],
+            Some(Ub::F(f)) => return vec![Some(format_dbl(f))],
+            Some(Ub::B(b)) => return vec![Some(if b { "TRUE" } else { "FALSE" }.to_string())],
+            None => {}
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Lgl(x)) => x
                 .iter()
@@ -550,6 +595,10 @@ impl RHost {
 
     /// The i-th element of a vector or list as a standalone R value.
     pub fn element_at(&mut self, v: &Value, i: usize) -> Value {
+        // An unboxed scalar is length-1: element 0 is itself.
+        if unboxed(v).is_some() {
+            return if i == 0 { v.clone() } else { self.null() };
+        }
         // Read ONE element by borrowing the backing store — never clone the
         // whole vector. `data_of` clones all of `o.data`, so the old
         // `match self.data_of(v)` here was O(n) per call, making
@@ -570,7 +619,13 @@ impl RHost {
             Some(RData::List(x)) => x.get(i).cloned().map(Elem::Val).unwrap_or(Elem::Null),
             _ => Elem::Null,
         };
+        // A non-NA numeric/logical element rides unboxed (allocation-free) — this
+        // is what makes `for (i in seq)` allocate nothing per iteration. NA has
+        // no unboxed form, and strings are not yet unboxed, so those still box.
         match e {
+            Elem::Lgl(Some(b)) => Value::Bool(b),
+            Elem::Int(Some(n)) => Value::Int(n),
+            Elem::Dbl(Some(f)) => Value::Float(f),
             Elem::Lgl(o) => self.lgl(vec![o]),
             Elem::Int(o) => self.int(vec![o]),
             Elem::Dbl(o) => self.dbl(vec![o]),
@@ -590,6 +645,9 @@ impl RHost {
 
     /// Whether the value is `NULL`.
     pub fn is_null(&self, v: &Value) -> bool {
+        if unboxed(v).is_some() {
+            return false;
+        }
         matches!(self.get(v).map(|o| &o.data), Some(RData::Null) | None)
     }
 
@@ -612,6 +670,12 @@ impl RHost {
         if self.attr(v, "dim").map(|d| self.length(&d)) == Some(2) {
             return vec!["matrix".into(), "array".into()];
         }
+        match unboxed(v) {
+            Some(Ub::I(_)) => return vec!["integer".into()],
+            Some(Ub::F(_)) => return vec!["numeric".into()],
+            Some(Ub::B(_)) => return vec!["logical".into()],
+            None => {}
+        }
         vec![match self.get(v).map(|o| &o.data) {
             Some(RData::Null) | None => "NULL",
             Some(RData::Lgl(_)) => "logical",
@@ -632,6 +696,12 @@ impl RHost {
 
     /// `typeof(x)`.
     pub fn type_of(&self, v: &Value) -> &'static str {
+        match unboxed(v) {
+            Some(Ub::I(_)) => return "integer",
+            Some(Ub::F(_)) => return "double",
+            Some(Ub::B(_)) => return "logical",
+            None => {}
+        }
         match self.get(v).map(|o| &o.data) {
             Some(RData::Null) | None => "NULL",
             Some(RData::Lgl(_)) => "logical",
@@ -733,6 +803,26 @@ impl RHost {
 }
 
 /// Parse a numeric literal the way `as.numeric` does, including `Inf`/`NaN`.
+/// An unboxed length-1 atomic carried directly on the fusevm stack (no RHost
+/// heap object), used for scalar-heavy code like `for`/`while` loop bodies.
+/// `Value::Int/Float/Bool` are R's length-1 integer/double/logical with no
+/// attributes; every host accessor maps them to that vector view so any builtin
+/// consumes them transparently.
+enum Ub {
+    I(i64),
+    F(f64),
+    B(bool),
+}
+
+fn unboxed(v: &Value) -> Option<Ub> {
+    match v {
+        Value::Int(n) => Some(Ub::I(*n)),
+        Value::Float(f) => Some(Ub::F(*f)),
+        Value::Bool(b) => Some(Ub::B(*b)),
+        _ => None,
+    }
+}
+
 fn parse_num(s: &str) -> Option<f64> {
     match s {
         "Inf" => Some(f64::INFINITY),

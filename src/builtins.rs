@@ -612,9 +612,15 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         // non-finite); `/` and `^` are always double.
         let int_result = matches!(op, "+" | "-" | "*" | "%%" | "%/%") && xi && yi;
         return Ok(if int_result {
-            mk_int(vec![r.is_finite().then_some(r as i64)])
+            // Integer stays unboxed unless the result is non-finite, which R
+            // reports as NA_integer_ — and an unboxed `Value::Int` can't be NA.
+            match r.is_finite() {
+                true => Value::Int(r as i64),
+                false => mk_int(vec![None]),
+            }
         } else {
-            mk_dbl(vec![Some(r)])
+            // Every double (incl. NaN/Inf, which are values, not NA) is unboxed.
+            Value::Float(r)
         });
     }
     if matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_)) {
@@ -666,8 +672,11 @@ fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     if let (Some((x, _)), Some((y, _))) =
         (with_host(|h| h.scalar_real(lhs)), with_host(|h| h.scalar_real(rhs)))
     {
-        let r = (!x.is_nan() && !y.is_nan()).then(|| cmp_result(op, x.partial_cmp(&y).unwrap()));
-        return Ok(mk_lgl(vec![r]));
+        return Ok(match (!x.is_nan() && !y.is_nan()).then(|| cmp_result(op, x.partial_cmp(&y).unwrap())) {
+            Some(b) => Value::Bool(b),
+            // NaN on either side is NA, which an unboxed `Value::Bool` can't hold.
+            None => mk_lgl(vec![None]),
+        });
     }
     let n = recycle_len(len(lhs), len(rhs));
     let as_text = matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_));
