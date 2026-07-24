@@ -1661,6 +1661,7 @@ pub const PRIMITIVES: &[&str] = &[
     "deparse",
     "rownames",
     "colnames",
+    "dimnames",
     // Inline-Rust FFI bridge (src/ffi.rs): register a `rust {}` block, then call
     // its exports through R's own native-call verb.
     ".rust",
@@ -1883,7 +1884,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 _ => null(),
             })
         }
-        "rownames" | "colnames" => Ok(null()),
+        "rownames" | "colnames" => {
+            let x = a.req(0, "x")?;
+            let idx = if name == "rownames" { 0 } else { 1 };
+            match dimnames_of(&x).get(idx) {
+                Some(Some(names)) => Ok(mk_str(names.clone())),
+                _ => Ok(null()),
+            }
+        }
+        "dimnames" => {
+            let x = a.req(0, "x")?;
+            Ok(with_host(|h| h.attr(&x, "dimnames")).unwrap_or_else(null))
+        }
 
         // ── output ──────────────────────────────────────────────────────
         // ── inline-Rust FFI ──────────────────────────────────────────────
@@ -3596,6 +3608,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let out = take_positions(&x, &pos);
             let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
+            // `dimnames = list(rownames, colnames)`, either element possibly NULL.
+            if let Some(dn) = a.get(4, "dimnames").filter(|v| !matches!(data(v), RData::Null)) {
+                let parts = elements(&dn);
+                let pick = |i: usize| -> Option<Vec<Option<String>>> {
+                    parts.get(i).filter(|e| !matches!(data(e), RData::Null)).map(|e| as_str(e))
+                };
+                set_dimnames(&out, pick(0), pick(1));
+            }
             Ok(out)
         }
         "t" => {
@@ -3720,6 +3740,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if keep.len() >= 2 {
                 let d = mk_int(keep_shape.iter().map(|&n| Some(n as i64)).collect());
                 with_host(|h| h.set_attr(&res, "dim", d));
+            } else if keep.len() == 1 {
+                // A 1-D reduction keeps the retained dimension's labels as names.
+                if let Some(Some(names)) = dimnames_of(&x).get(keep[0]) {
+                    set_names(&res, names.clone());
+                }
             }
             Ok(res)
         }
@@ -4674,6 +4699,27 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
     let out = mk_dbl(vals);
     let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
     with_host(|h| h.set_attr(&out, "dim", dim));
+    // The seam dimension (the one that grows with each argument) takes the
+    // explicit argument labels; the cross dimension inherits the names carried
+    // on an input vector. (R's deparse-derived seam labels for bare symbols —
+    // `rbind(x, x)` giving rownames "x","x" — are not reproduced: builtins do
+    // not receive the argument expressions.)
+    let seam_names: Vec<Option<String>> = a.all.iter().map(|(n, _)| n.clone()).collect();
+    let any_seam = seam_names.iter().any(|n| n.is_some());
+    let cross_names: Option<Vec<Option<String>>> = a.all.iter().find_map(|(_, v)| {
+        let nm = names_of(v);
+        if nm.iter().any(|e| e.is_some()) && nm.len() == cross {
+            Some(nm)
+        } else {
+            None
+        }
+    });
+    let seam = any_seam.then_some(seam_names);
+    if by_col {
+        set_dimnames(&out, cross_names, seam);
+    } else {
+        set_dimnames(&out, seam, cross_names);
+    }
     out
 }
 
@@ -4710,6 +4756,39 @@ fn dims_of(x: &Value) -> Vec<usize> {
     with_host(|h| h.attr(x, "dim"))
         .map(|d| as_int(&d).into_iter().map(|e| e.unwrap_or(0) as usize).collect())
         .unwrap_or_else(|| vec![len(x)])
+}
+
+/// A value's `dimnames` as one optional label vector per dimension. An absent
+/// `dimnames` attribute yields an empty list; a `NULL` entry within it yields
+/// `None` for that dimension.
+fn dimnames_of(x: &Value) -> Vec<Option<Vec<Option<String>>>> {
+    match with_host(|h| h.attr(x, "dimnames")) {
+        Some(dn) => elements(&dn)
+            .iter()
+            .map(|e| {
+                if matches!(data(e), RData::Null) {
+                    None
+                } else {
+                    Some(as_str(e))
+                }
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Store row/column labels as a `dimnames` list (a `NULL` element for a
+/// dimension with no labels). Setting nothing leaves the attribute absent.
+fn set_dimnames(v: &Value, rn: Option<Vec<Option<String>>>, cn: Option<Vec<Option<String>>>) {
+    if rn.is_none() && cn.is_none() {
+        return;
+    }
+    let to_val = |o: Option<Vec<Option<String>>>| match o {
+        Some(names) => mk_str(names),
+        None => null(),
+    };
+    let dn = mk_list(vec![to_val(rn), to_val(cn)]);
+    with_host(|h| h.set_attr(v, "dimnames", dn));
 }
 
 /// The `(nrow, ncol)` of a value's `dim`, treating a bare vector as a single
@@ -5690,8 +5769,16 @@ fn format_vector(v: &Value) -> Vec<String> {
 
 fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     let cells = format_elements(v);
-    let row_labels: Vec<String> = (1..=nr).map(|r| format!("[{r},]")).collect();
-    let col_labels: Vec<String> = (1..=nc).map(|c| format!("[,{c}]")).collect();
+    let dn = dimnames_of(v);
+    let dn_at = |dim: usize, k: usize| -> Option<String> {
+        dn.get(dim).and_then(|o| o.as_ref()).and_then(|names| names.get(k).cloned().flatten())
+    };
+    let row_labels: Vec<String> = (0..nr)
+        .map(|r| dn_at(0, r).unwrap_or_else(|| format!("[{},]", r + 1)))
+        .collect();
+    let col_labels: Vec<String> = (0..nc)
+        .map(|c| dn_at(1, c).unwrap_or_else(|| format!("[,{}]", c + 1)))
+        .collect();
     let label_w = row_labels.iter().map(|s| s.len()).max().unwrap_or(0);
     let widths: Vec<usize> = (0..nc)
         .map(|c| {
@@ -5729,6 +5816,55 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     out
 }
 
+/// R quotes a `$name` list header in backticks when the name is not a syntactic
+/// R identifier — starts with a digit or `.` followed by a digit, contains a
+/// non-`[A-Za-z0-9._]` character, is empty, or is a reserved word.
+fn is_syntactic_name(n: &str) -> bool {
+    let mut chars = n.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !(first.is_ascii_alphabetic() || first == '.') {
+        return false;
+    }
+    // `.1` is non-syntactic (a dot immediately followed by a digit).
+    if first == '.' {
+        if let Some(c2) = n.chars().nth(1) {
+            if c2.is_ascii_digit() {
+                return false;
+            }
+        }
+    }
+    if !n
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+    {
+        return false;
+    }
+    !matches!(
+        n,
+        "if" | "else"
+            | "repeat"
+            | "while"
+            | "function"
+            | "for"
+            | "in"
+            | "next"
+            | "break"
+            | "TRUE"
+            | "FALSE"
+            | "NULL"
+            | "Inf"
+            | "NaN"
+            | "NA"
+            | "NA_integer_"
+            | "NA_real_"
+            | "NA_character_"
+            | "NA_complex_"
+    )
+}
+
 fn format_list(v: &Value) -> Vec<String> {
     let items = elements(v);
     if items.is_empty() {
@@ -5738,7 +5874,8 @@ fn format_list(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     for (i, it) in items.iter().enumerate() {
         let header = match names.get(i).cloned().flatten() {
-            Some(n) => format!("${n}"),
+            Some(n) if is_syntactic_name(&n) => format!("${n}"),
+            Some(n) => format!("$`{n}`"),
             None => format!("[[{}]]", i + 1),
         };
         out.push(header);

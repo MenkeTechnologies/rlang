@@ -44,8 +44,16 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   supported (`factor`, `levels`, `nlevels`, `table`, and their printing), but
   only the default `sort`-ordered levels — no ordered factors.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
-  printing, `aperm`, `apply` over any margin) work; `dimnames`, named-margin
-  `apply`, and array-specific helpers (`slice.index`, `arrayInd`) do not.
+  printing, `aperm`, `apply` over any margin) work; named-margin `apply` and
+  array-specific helpers (`slice.index`, `arrayInd`) do not.
+- **Matrix `dimnames` work for the 2-D common cases**: `matrix(dimnames=)`,
+  `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
+  the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix
+  printing, and reductions that keep a dimension's labels as names
+  (`colSums`/`rowSums`/`colMeans`/`rowMeans`). Two gaps remain: `rbind(x, x)`
+  does not synthesise deparse-derived seam labels (`"x"`, `"x"`) because
+  builtins receive argument values, not expressions; and `dimnames` on N-D
+  arrays (3-D+) is not stored.
 - **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
   `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
