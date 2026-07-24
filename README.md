@@ -13,7 +13,7 @@
 ![license](https://img.shields.io/badge/license-MIT-ff2a6d?style=flat-square)
 ![status](https://img.shields.io/badge/status-active%20%C2%B7%20in%20development-9b5de5?style=flat-square)
 
-### `[R, COMPILED TO BYTECODE — NOT TREE-WALKED]`
+### `[R, COMPILED TO BYTECODE — AOT-NATIVE, NOT TREE-WALKED]`
 
 > *"GNU R walks the tree. rlang compiles it."*
 
@@ -48,18 +48,24 @@ AST, lowers it to `fusevm` bytecode, and runs it on a compiled VM. rlang carries
 no VM of its own. Highlights:
 
 - **Compiled, not tree-walked** — `for`, `while`, `repeat`, `if`, `&&` and `||`
-  lower to native fusevm jumps and integer loop counters, scalar `+ - * /` to
-  native arithmetic ops, and a whole-program top level's locals to native frame
-  slots (`GetVar`/`SetVar` by index, not a name hash) when the unit is slot-safe.
-  A scalar loop's hot path is then free of interpreter builtin calls for
-  arithmetic and variable access, and runs within ~1.2× of GNU R — faster on
-  some (a `for (v in x) s <- s + v` reduction beats GNU R by ~1.5×).
-- **No tracing JIT** — fusevm's tracer cannot compile R (it rejects any trace
+  lower to native fusevm jumps and integer loop counters, scalar `+ - *` to
+  native arithmetic ops, numeric literals ride unboxed, and a whole-program top
+  level's locals bind to native frame slots (`GetVar`/`SetVar` by index, not a
+  name hash) when the unit is slot-safe. On the interpreter a scalar loop runs
+  within ~1.2× of GNU R — faster on some (a `for (v in x) s <- s + v` reduction
+  beats it ~1.5×).
+- **AOT native loops crush GNU R** — because the hot path of a scalar loop is now
+  entirely builtin-free (unboxed literals, compile-time-folded `LIT:LIT` ranges,
+  native arithmetic and slots), `--aot` lets fusevm's Cranelift backend lower the
+  whole loop to register arithmetic — `fadd`/`iadd` on typed slots, no operand
+  stack, no dispatch. A 10-million-iteration accumulator, standalone `.fvm` vs
+  GNU R 4.6.1: **12.5 ms vs 188.7 ms — 15× faster** (and 100× the interpreter),
+  bit-identical result.
+- **No tracing JIT** — fusevm's *tracer* cannot compile R (it rejects any trace
   containing a builtin call, and R lowers element fetch, comparisons, `%%`, and
   indexing to builtins), so rlang leaves it off: its per-loop trace-cache probe
-  was pure overhead (~12% on a scalar loop) with nothing to show for it. Native
-  execution is available ahead-of-time instead — `--aot` emits a Cranelift object
-  linked into a standalone `.fvm` binary.
+  was pure overhead (~12% on a scalar loop). The AOT path above is where native
+  execution comes from instead.
 - **fusevm-hosted** — no local `vm.rs` / `jit.rs`; the shared engine behind
   `zshrs`, `stryke`, `awkrs`, `elisp`, and `rubylang`. `jit-disk-cache` persists
   native code across runs.
