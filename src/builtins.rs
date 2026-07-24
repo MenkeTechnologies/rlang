@@ -1934,7 +1934,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         "print" => {
             let x = a.req(0, "x")?;
+            // `print(x, digits = n)` overrides the significant-digit setting for
+            // this one call, then restores the prior value.
+            let restore = a
+                .named("digits")
+                .and_then(|v| num1(&v))
+                .map(|d| crate::host::set_print_digits(d as usize));
             print_value(&x);
+            if let Some(prev) = restore {
+                crate::host::set_print_digits(prev);
+            }
             with_host(|h| h.visible = false);
             Ok(x)
         }

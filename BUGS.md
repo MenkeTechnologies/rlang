@@ -69,9 +69,11 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## Printing and formatting
 
-- **`options(digits=, scipen=)` is not implemented.** The 7-significant-digit
-  default and the `scipen = 0` fixed-vs-scientific rule are, and are checked
-  against R by the parity corpus, but neither is configurable.
+- **`options(digits=, scipen=)` is not implemented**, but `print(x, digits = n)`
+  is: it overrides the significant-digit count for that one call and restores the
+  default afterwards. The 7-significant-digit default and the `scipen = 0`
+  fixed-vs-scientific rule are checked against R by the parity corpus; the global
+  `options()` toggles are not configurable.
 - **`format()` handles `nsmall`, `digits`, `big.mark`, common decimals, and
   common-width justification** (and `formatC`/`prettyNum`/`deparse` exist), but
   not the `width`/`justify` arguments or per-call scientific control.

@@ -732,18 +732,36 @@ fn parse_num(s: &str) -> Option<f64> {
     }
 }
 
-/// Decimal places a fixed-notation rendering of `x` needs at R's default
-/// 7 significant digits, with trailing zeros dropped.
+thread_local! {
+    /// Significant digits for numeric printing — R's `getOption("digits")`,
+    /// default 7. `print(x, digits = n)` overrides it for one call.
+    static PRINT_DIGITS: std::cell::Cell<usize> = const { std::cell::Cell::new(7) };
+}
+
+/// The current significant-digit setting for numeric printing.
+pub fn print_digits() -> usize {
+    PRINT_DIGITS.with(|c| c.get())
+}
+
+/// Set the significant-digit setting; returns the previous value so a caller can
+/// restore it after a one-off `print(x, digits = n)`.
+pub fn set_print_digits(d: usize) -> usize {
+    PRINT_DIGITS.with(|c| c.replace(d.max(1)))
+}
+
+/// Decimal places a fixed-notation rendering of `x` needs at the current
+/// significant-digit setting, with trailing zeros dropped.
 pub fn fixed_decimals(x: f64) -> usize {
     if !x.is_finite() || (x == x.trunc() && x.abs() < 1e15) {
         return 0;
     }
     let mag = x.abs().log10().floor() as i32;
-    // Enough places to keep 7 significant digits even for tiny magnitudes: a
-    // 15-place cap rounded values like `1e-17` down to `0`, so `format_dbl`
-    // then judged fixed "0" narrower than scientific and printed the wrong,
-    // lossy form. The double exponent range bounds the real need.
-    let d = (6 - mag).clamp(0, 340) as usize;
+    // Enough places to keep `print_digits()` significant digits even for tiny
+    // magnitudes: a 15-place cap rounded values like `1e-17` down to `0`, so
+    // `format_dbl` then judged fixed "0" narrower than scientific and printed
+    // the wrong, lossy form. The double exponent range bounds the real need.
+    let sig = print_digits() as i32;
+    let d = ((sig - 1) - mag).clamp(0, 340) as usize;
     let s = format!("{x:.d$}");
     let trimmed = s.trim_end_matches('0');
     match trimmed.split_once('.') {
@@ -752,15 +770,17 @@ pub fn fixed_decimals(x: f64) -> usize {
     }
 }
 
-/// Mantissa decimal places a scientific rendering of `x` needs at 7 significant
-/// digits, with trailing zeros dropped (`1e+05` needs none, `1.5e-05` needs one).
+/// Mantissa decimal places a scientific rendering of `x` needs at the current
+/// significant-digit setting, with trailing zeros dropped (`1e+05` needs none,
+/// `1.5e-05` needs one).
 pub fn sci_decimals(x: f64) -> usize {
     if !x.is_finite() || x == 0.0 {
         return 0;
     }
     let mag = x.abs().log10().floor() as i32;
     let mant = x / 10f64.powi(mag);
-    let s = format!("{mant:.6}");
+    let prec = print_digits().saturating_sub(1);
+    let s = format!("{mant:.prec$}");
     let trimmed = s.trim_end_matches('0');
     match trimmed.split_once('.') {
         Some((_, frac)) => frac.len(),
