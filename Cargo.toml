@@ -77,7 +77,7 @@ path = "src/bin/parity_fuzz.rs"
 # build compiles; the native target below layers `jit`/`aot`/`ffi` on top of the
 # same dependency (cargo unions the feature sets per target).
 [dependencies]
-fusevm = { version = "0.14.10" }
+fusevm = { version = "0.14.17" }
 
 # R vectors and lists carry ordered `names`; attribute maps are insertion-ordered
 # and observable (`attributes(x)`), so IndexMap is the right container.
@@ -100,7 +100,7 @@ glob = "0.3"
 # persistent on-disk cache of native code; `aot` enables the ahead-of-time
 # emitter behind `Rscript --aot`; `ffi` enables the inline-Rust `rust {}` bridge
 # reached from R via `.rust()` / `.Call()`.
-fusevm = { version = "0.14.10", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
+fusevm = { version = "0.14.17", features = ["jit", "jit-disk-cache", "aot", "ffi"] }
 
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
