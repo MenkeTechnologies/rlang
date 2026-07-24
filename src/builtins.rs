@@ -2369,7 +2369,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 sxx += dx * dx;
                 syy += dy * dy;
             }
-            Ok(scalar_dbl(sxy / (sxx.sqrt() * syy.sqrt())))
+            // Zero variance in either vector makes the correlation undefined:
+            // R returns NA there, not the `0/0 = NaN` the formula would give.
+            if sxx == 0.0 || syy == 0.0 {
+                Ok(mk_dbl(vec![None]))
+            } else {
+                Ok(scalar_dbl(sxy / (sxx.sqrt() * syy.sqrt())))
+            }
         }
         "rle" => {
             let x = a.req(0, "x")?;

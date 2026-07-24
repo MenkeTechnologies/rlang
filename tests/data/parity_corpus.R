@@ -451,3 +451,6 @@ print(rle(c(1, 1, 2, 3, 3, 3)))
 print(inverse.rle(rle(c(1, 1, 2, 2, 2))))
 print(sort(c(3, 1, 2), index.return = TRUE)$ix)
 print(rowSums(array(1:8, c(2, 2, 2))))
+#==#
+print(cor(c(-2, -2, -2), c(1, 2, 3)))
+print(cor(c(5, 5, 5), c(5, 5, 5)))
