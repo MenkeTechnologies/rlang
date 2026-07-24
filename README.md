@@ -55,12 +55,14 @@ no VM of its own. Highlights:
   within ~1.2× of GNU R — faster on some (a `for (v in x) s <- s + v` reduction
   beats it ~1.5×).
 - **AOT native loops crush GNU R** — because the hot path of a scalar loop is now
-  entirely builtin-free (unboxed literals, compile-time-folded `LIT:LIT` ranges,
-  native arithmetic and slots), `--aot` lets fusevm's Cranelift backend lower the
-  whole loop to register arithmetic — `fadd`/`iadd` on typed slots, no operand
-  stack, no dispatch. A 10-million-iteration accumulator, standalone `.fvm` vs
-  GNU R 4.6.1: **12.5 ms vs 188.7 ms — 15× faster** (and 100× the interpreter),
-  bit-identical result.
+  entirely builtin-free (unboxed literals, native arithmetic and slots, and range
+  bounds computed with native ops — folded at compile time for `1:LIT`, inferred
+  native for `1:n` when `n` is a proven scalar), `--aot` lets fusevm's Cranelift
+  backend lower the whole loop to register arithmetic — `fadd`/`iadd` on typed
+  slots, no operand stack, no dispatch. A 10-million-iteration accumulator,
+  standalone `.fvm` vs GNU R 4.6.1: **`for(i in 1:1e7)` 12.5 ms vs 188.7 ms —
+  15× faster**; **`for(i in 1:n)` (runtime bound) 26.4 ms — 7× faster** (100× the
+  interpreter), bit-identical results.
 - **No tracing JIT** — fusevm's *tracer* cannot compile R (it rejects any trace
   containing a builtin call, and R lowers element fetch, comparisons, `%%`, and
   indexing to builtins), so rlang leaves it off: its per-loop trace-cache probe
