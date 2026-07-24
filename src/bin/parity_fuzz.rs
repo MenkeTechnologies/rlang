@@ -1115,6 +1115,22 @@ fn gen_arrays(seed: u64) -> Vec<String> {
     })
 }
 
+fn gen_stat2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_int(r);
+    one(match r.below(9) {
+        0 => format!("quantile(1:{}, {})", r.range(4, 20), *r.pick(&["0.25", "0.5", "0.75", "0.1"])),
+        1 => format!("quantile(1:{})", r.range(4, 20)),
+        2 => format!("cor(1:{n}, (1:{n}) * {})", r.range(2, 5), n = r.range(3, 8)),
+        3 => format!("rle(c({}, {}, {}, {}, {}))$lengths", r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3)),
+        4 => format!("rle(c({}, {}, {}, {}, {}))", r.range(1,2), r.range(1,2), r.range(1,2), r.range(1,2), r.range(1,2)),
+        5 => format!("inverse.rle(rle(c({}, {}, {}, {})))", r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3)),
+        6 => format!("sort({v}, index.return = TRUE)$ix"),
+        7 => format!("quantile({v})"),
+        _ => format!("cor({v}, rev({v}))"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
@@ -1163,6 +1179,7 @@ enum Mode {
     Seqx2,
     Combinator,
     Arrays,
+    Stat2,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1208,6 +1225,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Seqx2,
     Mode::Combinator,
     Mode::Arrays,
+    Mode::Stat2,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1254,6 +1272,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Seqx2 => gen_seqx2(seed),
         Mode::Combinator => gen_combinator(seed),
         Mode::Arrays => gen_arrays(seed),
+        Mode::Stat2 => gen_stat2(seed),
     }
 }
 
@@ -1301,6 +1320,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Seqx2 => "seqx2",
         Mode::Combinator => "combinator",
         Mode::Arrays => "arrays",
+        Mode::Stat2 => "stat2",
     }
 }
 

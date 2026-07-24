@@ -123,6 +123,12 @@ fn class_of(v: &Value) -> Vec<String> {
 fn elements(v: &Value) -> Vec<Value> {
     with_host(|h| h.elements(v))
 }
+/// The element of a named list/vector bound to `name`, if present (`x$name`).
+fn element_field(v: &Value, name: &str) -> Option<Value> {
+    let names = names_of(v);
+    let i = names.iter().position(|n| n.as_deref() == Some(name))?;
+    elements(v).into_iter().nth(i)
+}
 fn element_at(v: &Value, i: usize) -> Value {
     with_host(|h| h.element_at(v, i))
 }
@@ -1414,6 +1420,10 @@ pub const PRIMITIVES: &[&str] = &[
     "prod",
     "mean",
     "median",
+    "quantile",
+    "cor",
+    "rle",
+    "inverse.rle",
     "var",
     "sd",
     "min",
@@ -2079,12 +2089,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
 
         // ── ordering and sets ───────────────────────────────────────────
-        "sort" => Ok(sort_value(
-            &a.req(0, "x")?,
-            a.named("decreasing")
-                .and_then(|v| lgl1(&v))
-                .unwrap_or(false),
-        )),
+        "sort" => {
+            let x = a.req(0, "x")?;
+            let decreasing = a.named("decreasing").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let sorted = sort_value(&x, decreasing);
+            // `index.return = TRUE` also returns the ordering as `$ix`.
+            if a.named("index.return").and_then(|v| lgl1(&v)).unwrap_or(false) {
+                let ix = order_value(&x, decreasing);
+                let out = mk_list(vec![sorted, ix]);
+                set_names(&out, vec![Some("x".into()), Some("ix".into())]);
+                Ok(out)
+            } else {
+                Ok(sorted)
+            }
+        }
         "order" => Ok(order_value(
             &a.req(0, "x")?,
             a.named("decreasing")
@@ -2295,6 +2313,99 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             } else {
                 (xs[m - 1] + xs[m]) / 2.0
             }))
+        }
+        "quantile" => {
+            let mut xs = numeric_arg(&a, 0, "x")?;
+            xs.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            let probs: Vec<f64> = match a.get(1, "probs") {
+                Some(p) => as_dbl(&p).into_iter().flatten().collect(),
+                None => vec![0.0, 0.25, 0.5, 0.75, 1.0],
+            };
+            let n = xs.len();
+            // R's default type 7: h = (n-1)p, linear interpolation.
+            let vals: Vec<Option<f64>> = probs
+                .iter()
+                .map(|&p| {
+                    if n == 0 {
+                        return None;
+                    }
+                    let h = (n as f64 - 1.0) * p;
+                    let lo = h.floor() as usize;
+                    let frac = h - lo as f64;
+                    Some(if lo + 1 < n {
+                        xs[lo] + frac * (xs[lo + 1] - xs[lo])
+                    } else {
+                        xs[lo]
+                    })
+                })
+                .collect();
+            let out = mk_dbl(vals);
+            let names = a.named("names").and_then(|v| lgl1(&v)).unwrap_or(true);
+            if names {
+                set_names(
+                    &out,
+                    probs
+                        .iter()
+                        .map(|&p| Some(format!("{}%", crate::host::format_dbl(p * 100.0))))
+                        .collect(),
+                );
+            }
+            Ok(out)
+        }
+        "cor" => {
+            // Pearson correlation of two equal-length numeric vectors.
+            let x = numeric_arg(&a, 0, "x")?;
+            let y = as_dbl(&a.req(1, "y")?).into_iter().flatten().collect::<Vec<_>>();
+            let n = x.len().min(y.len());
+            if n < 2 {
+                return Ok(mk_dbl(vec![None]));
+            }
+            let mx = x[..n].iter().sum::<f64>() / n as f64;
+            let my = y[..n].iter().sum::<f64>() / n as f64;
+            let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+            for i in 0..n {
+                let (dx, dy) = (x[i] - mx, y[i] - my);
+                sxy += dx * dy;
+                sxx += dx * dx;
+                syy += dy * dy;
+            }
+            Ok(scalar_dbl(sxy / (sxx.sqrt() * syy.sqrt())))
+        }
+        "rle" => {
+            let x = a.req(0, "x")?;
+            let keys = as_str(&x);
+            let mut starts: Vec<Option<usize>> = Vec::new();
+            let mut lengths: Vec<Option<i64>> = Vec::new();
+            let mut i = 0;
+            while i < keys.len() {
+                let mut j = i + 1;
+                while j < keys.len() && keys[j] == keys[i] {
+                    j += 1;
+                }
+                starts.push(Some(i));
+                lengths.push(Some((j - i) as i64));
+                i = j;
+            }
+            let values = take_positions(&x, &starts);
+            let out = mk_list(vec![mk_int(lengths), values]);
+            set_names(&out, vec![Some("lengths".into()), Some("values".into())]);
+            let cls = scalar_str("rle");
+            with_host(|h| h.set_attr(&out, "class", cls));
+            Ok(out)
+        }
+        "inverse.rle" => {
+            let x = a.req(0, "x")?;
+            let lengths = element_field(&x, "lengths")
+                .map(|v| as_int(&v))
+                .unwrap_or_default();
+            let values = element_field(&x, "values").unwrap_or_else(null);
+            let mut pos: Vec<Option<usize>> = Vec::new();
+            for (i, l) in lengths.iter().enumerate() {
+                for _ in 0..l.unwrap_or(0).max(0) {
+                    pos.push(Some(i));
+                }
+            }
+            Ok(take_positions(&values, &pos))
         }
         "var" | "sd" => {
             let xs = numeric_arg(&a, 0, "x")?;
@@ -3466,24 +3577,59 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "rowSums" | "colSums" | "rowMeans" | "colMeans" => {
             let x = a.req(0, "x")?;
-            let (nr, nc) = mat_dim(&x);
+            let dims = dims_of(&x);
             let data = as_dbl(&x);
             let by_row = name.starts_with("row");
             let mean = name.ends_with("Means");
-            let outer = if by_row { nr } else { nc };
-            let inner = if by_row { nc } else { nr };
-            let out: Vec<Option<f64>> = (0..outer)
-                .map(|o| {
-                    let mut acc = 0.0;
-                    for i in 0..inner {
-                        // column-major index (r, c) = c*nr + r
-                        let (r, c) = if by_row { (o, i) } else { (i, o) };
-                        acc += data.get(c * nr + r).and_then(|e| *e).unwrap_or(f64::NAN);
+            // `row*` keeps the first dimension and reduces the rest; `col*`
+            // reduces the first and keeps the rest (a matrix for 3-D+ input).
+            let keep: Vec<usize> = if by_row {
+                vec![0]
+            } else {
+                (1..dims.len()).collect()
+            };
+            let reduce: Vec<usize> = (0..dims.len()).filter(|d| !keep.contains(d)).collect();
+            let mut stride = vec![1usize; dims.len()];
+            for d in 1..dims.len() {
+                stride[d] = stride[d - 1] * dims[d - 1];
+            }
+            let keep_shape: Vec<usize> = keep.iter().map(|&d| dims[d]).collect();
+            let red_shape: Vec<usize> = reduce.iter().map(|&d| dims[d]).collect();
+            let ktotal: usize = keep_shape.iter().product::<usize>().max(1);
+            let rtotal: usize = red_shape.iter().product::<usize>().max(1);
+            let mut out = Vec::with_capacity(ktotal);
+            let mut kidx = vec![0usize; keep.len()];
+            for _ in 0..ktotal {
+                let base: usize = keep.iter().enumerate().map(|(i, &d)| kidx[i] * stride[d]).sum();
+                let mut acc = 0.0;
+                let mut ridx = vec![0usize; reduce.len()];
+                for _ in 0..rtotal {
+                    let off: usize =
+                        reduce.iter().enumerate().map(|(i, &d)| ridx[i] * stride[d]).sum();
+                    acc += data.get(base + off).and_then(|e| *e).unwrap_or(f64::NAN);
+                    for i in 0..reduce.len() {
+                        ridx[i] += 1;
+                        if ridx[i] < red_shape[i] {
+                            break;
+                        }
+                        ridx[i] = 0;
                     }
-                    Some(if mean { acc / inner as f64 } else { acc })
-                })
-                .collect();
-            Ok(mk_dbl(out))
+                }
+                out.push(Some(if mean { acc / rtotal as f64 } else { acc }));
+                for i in 0..keep.len() {
+                    kidx[i] += 1;
+                    if kidx[i] < keep_shape[i] {
+                        break;
+                    }
+                    kidx[i] = 0;
+                }
+            }
+            let res = mk_dbl(out);
+            if keep.len() >= 2 {
+                let d = mk_int(keep_shape.iter().map(|&n| Some(n as i64)).collect());
+                with_host(|h| h.set_attr(&res, "dim", d));
+            }
+            Ok(res)
         }
         "apply" => {
             let x = a.req(0, "X")?;
@@ -5068,6 +5214,9 @@ pub fn format_value(v: &Value) -> Vec<String> {
         out.extend(format_vector(v));
         return out;
     }
+    if classes.iter().any(|c| c == "rle") {
+        return format_rle(v);
+    }
     match data(v) {
         RData::Null => vec!["NULL".into()],
         RData::Closure { .. } | RData::Builtin(_) | RData::Combinator { .. } => {
@@ -5210,6 +5359,45 @@ fn format_elements(v: &Value) -> Vec<String> {
             .collect();
     }
     (0..n).map(|i| print_element(v, i)).collect()
+}
+
+/// Print an `rle` object the way R's `print.rle` does: a header, then the
+/// `lengths` and `values` as one-line `str`-style summaries.
+fn format_rle(v: &Value) -> Vec<String> {
+    let lengths = element_field(v, "lengths").unwrap_or_else(null);
+    let values = element_field(v, "values").unwrap_or_else(null);
+    let line = |field: &Value| -> String {
+        let n = len(field);
+        let abbr = match data(field) {
+            RData::Int(_) => "int",
+            RData::Dbl(_) => "num",
+            RData::Str(_) => "chr",
+            RData::Lgl(_) => "logi",
+            _ => "num",
+        };
+        let cells: Vec<String> = as_str(field)
+            .into_iter()
+            .map(|s| {
+                let s = s.unwrap_or_else(|| "NA".into());
+                if matches!(data(field), RData::Str(_)) {
+                    format!("\"{s}\"")
+                } else {
+                    s
+                }
+            })
+            .collect();
+        // R's `str` shows the `[1:n]` index range only for length > 1.
+        if n > 1 {
+            format!("{abbr} [1:{n}] {}", cells.join(" "))
+        } else {
+            format!("{abbr} {}", cells.join(" "))
+        }
+    };
+    vec![
+        "Run Length Encoding".to_string(),
+        format!("  lengths: {}", line(&lengths)),
+        format!("  values : {}", line(&values)),
+    ]
 }
 
 /// Print a factor: the level labels (unquoted, `[i]`-indexed like a character
