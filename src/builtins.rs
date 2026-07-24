@@ -371,7 +371,19 @@ fn b_call(vm: &mut VM, _: u8) -> Value {
         RData::Builtin(n) => Some(n),
         _ => None,
     };
-    with_host(|h| h.visible = true);
+    // Most calls are visible by default (R sets `R_Visible = TRUE` on entry).
+    // The `suppress*` wrappers are visibility-transparent: they return their
+    // argument with its visibility intact. Because rlang evaluates arguments
+    // eagerly, that visibility is already in `h.visible` here, so skipping the
+    // reset lets an invisible argument (`suppressMessages(library(x))`) stay
+    // invisible instead of auto-printing NULL.
+    let transparent = matches!(
+        name.as_deref(),
+        Some("suppressMessages" | "suppressWarnings" | "suppressPackageStartupMessages")
+    );
+    if !transparent {
+        with_host(|h| h.visible = true);
+    }
     match call_value(&f, args, name) {
         Ok(v) => propagate(vm, v),
         Err(e) => abort(vm, e),
