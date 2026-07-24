@@ -967,10 +967,15 @@ pub fn format_dbl(x: f64) -> String {
 pub fn run_chunk(chunk: Chunk) -> Result<Value, String> {
     let mut vm = VM::new(chunk);
     crate::builtins::install(&mut vm);
-    // The tracing JIT is a native-only fusevm feature; the wasm build runs the
-    // same chunk on the interpreter.
-    #[cfg(not(target_arch = "wasm32"))]
-    vm.enable_tracing_jit();
+    // The tracing JIT is deliberately NOT enabled. It cannot compile R: fusevm's
+    // tracer rejects any trace containing `Op::CallBuiltin` (builtin bodies are
+    // arbitrary Rust it can't lower to Cranelift IR), and R lowers nearly every
+    // operation — element fetch, comparisons, `%%`, indexing — to a builtin. So
+    // for R the tracer never produces native code, yet its per-backward-branch
+    // trace-cache lookup (a hashed probe) runs every loop iteration. Profiling a
+    // scalar loop showed ~12% of time in that bookkeeping; turning the tracer off
+    // is a measured ~12% speedup with zero loss of compilation (there was none).
+    // AOT (`--aot`) is a separate Cranelift path and is unaffected.
     let outcome = vm.run();
     if let Some(e) = with_host(|h| h.take_error()) {
         return Err(e);
