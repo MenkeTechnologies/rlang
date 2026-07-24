@@ -68,8 +68,14 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   construct.
 - **`?help`, `::` namespaces** — `pkg::name` parses and the qualifier is dropped
   (rlang has one namespace); `?` is lexed and unused.
-- **No `library()`/`require()`/packages.** There is no package system, so any
-  CRAN-dependent program is out of scope by construction.
+- **CRAN packages run through an embedded-R bridge, not natively.**
+  `library(pkg)` and any package routine (including compiled C/C++/Fortran) are
+  delegated to a `dlopen`'d GNU R via FFI (`src/rembed.rs`) — rlang does not
+  re-implement the package system or R's C API. This needs a real R install at
+  run time; without one, `library` and unknown functions report "could not find
+  function" as before. Current marshalling limits: named-list *names* are not yet
+  carried into R, and a return value with no rlang representation (S4 object,
+  environment, data frame) surfaces as an error rather than a value.
 
 ## S3 / S4 / R5
 

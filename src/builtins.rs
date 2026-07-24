@@ -84,19 +84,19 @@ fn is_null(v: &Value) -> bool {
 fn data(v: &Value) -> RData {
     with_host(|h| h.data_of(v))
 }
-fn mk_dbl(xs: Vec<Option<f64>>) -> Value {
+pub(crate) fn mk_dbl(xs: Vec<Option<f64>>) -> Value {
     with_host(|h| h.dbl(xs))
 }
-fn mk_int(xs: Vec<Option<i64>>) -> Value {
+pub(crate) fn mk_int(xs: Vec<Option<i64>>) -> Value {
     with_host(|h| h.int(xs))
 }
-fn mk_lgl(xs: Vec<Option<bool>>) -> Value {
+pub(crate) fn mk_lgl(xs: Vec<Option<bool>>) -> Value {
     with_host(|h| h.lgl(xs))
 }
-fn mk_str(xs: Vec<Option<String>>) -> Value {
+pub(crate) fn mk_str(xs: Vec<Option<String>>) -> Value {
     with_host(|h| h.str_vec(xs))
 }
-fn mk_list(xs: Vec<Value>) -> Value {
+pub(crate) fn mk_list(xs: Vec<Value>) -> Value {
     with_host(|h| h.list(xs))
 }
 fn scalar_dbl(x: f64) -> Value {
@@ -111,7 +111,7 @@ fn scalar_lgl(x: bool) -> Value {
 fn scalar_str(x: impl Into<String>) -> Value {
     with_host(|h| h.scalar_str(x))
 }
-fn null() -> Value {
+pub(crate) fn null() -> Value {
     with_host(|h| h.null())
 }
 fn names_of(v: &Value) -> Vec<Option<String>> {
@@ -132,7 +132,7 @@ fn element_field(v: &Value, name: &str) -> Option<Value> {
 fn element_at(v: &Value, i: usize) -> Value {
     with_host(|h| h.element_at(v, i))
 }
-fn set_names(v: &Value, names: Vec<Option<String>>) {
+pub(crate) fn set_names(v: &Value, names: Vec<Option<String>>) {
     if names.iter().all(|n| n.is_none()) {
         with_host(|h| {
             let nl = h.null();
@@ -242,12 +242,24 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
     }
 }
 
-/// A primitive as a first-class value, so `sapply(x, sqrt)` works.
+/// Set once a package has been loaded through the CRAN bridge. Until then an
+/// unknown function name is a genuine error; after, it may live in an embedded-R
+/// package, so it resolves to a builtin that delegates there.
+pub(crate) static CRAN_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A primitive as a first-class value, so `sapply(x, sqrt)` works. Once a CRAN
+/// package is loaded, any otherwise-unknown name also resolves — the call routes
+/// through the bridge, which reproduces the "could not find function" error if R
+/// lacks it too.
 fn primitive_value(name: &str) -> Option<Value> {
     if let Some(v) = base_constant(name) {
         return Some(v);
     }
-    is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
+    if is_primitive(name) || CRAN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return Some(with_host(|h| h.alloc(RData::Builtin(name.to_string()))));
+    }
+    None
 }
 
 /// R's built-in constants, bound in the base environment: `pi`, the letter and
@@ -1597,6 +1609,14 @@ pub const PRIMITIVES: &[&str] = &[
     // its exports through R's own native-call verb.
     ".rust",
     ".Call",
+    // CRAN bridge: package loaders delegate to an embedded GNU R (src/rembed.rs).
+    "library",
+    "require",
+    "requireNamespace",
+    "loadNamespace",
+    "suppressMessages",
+    "suppressWarnings",
+    "suppressPackageStartupMessages",
 ];
 
 /// Invoke a runtime-constructed function ([`RData::Combinator`]): `Negate`
@@ -3944,8 +3964,51 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
 
-        other => Err(format!("could not find function \"{other}\"")),
+        // Package loaders and unknown functions fall through to the CRAN bridge
+        // (an embedded GNU R), so `library(pkg)` and any package routine work
+        // without rlang re-implementing them.
+        "library" | "require" | "requireNamespace" | "loadNamespace" => {
+            let pkg = str1(&a.req(0, "package")?).unwrap_or_default();
+            let r = cran_eval(&format!("suppressMessages({name}({pkg}))"))?;
+            // A package is loaded: let later unknown names route to the bridge.
+            CRAN_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+            with_host(|h| h.visible = false);
+            // `require`/`requireNamespace` yield a logical; `library` loads
+            // invisibly.
+            if name.starts_with("require") {
+                Ok(r)
+            } else {
+                Ok(null())
+            }
+        }
+        "suppressMessages" | "suppressWarnings" | "suppressPackageStartupMessages" => {
+            // Arguments are evaluated eagerly, so any message already fired;
+            // just pass the value through.
+            Ok(a.get(0, "expr").unwrap_or_else(null))
+        }
+        other => cran_call(other, &a.all),
     }
+}
+
+/// Delegate `name(args…)` to the embedded GNU R when available, preserving
+/// rlang's own "could not find function" error otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+fn cran_call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    crate::rembed::call(name, args)
+}
+#[cfg(target_arch = "wasm32")]
+fn cran_call(name: &str, _: &[(Option<String>, Value)]) -> Result<Value, String> {
+    Err(format!("could not find function \"{name}\""))
+}
+
+/// Evaluate R source in the embedded GNU R (used by the package loaders).
+#[cfg(not(target_arch = "wasm32"))]
+fn cran_eval(code: &str) -> Result<Value, String> {
+    crate::rembed::eval_source(code)
+}
+#[cfg(target_arch = "wasm32")]
+fn cran_eval(_: &str) -> Result<Value, String> {
+    Err("package loading needs an R installation (unavailable on wasm)".into())
 }
 
 /// An operator invoked through its function name: ``\`+\`(1, 2)``, ``\`[\`(x, 2)``.

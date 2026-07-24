@@ -201,6 +201,26 @@ impl Compiler {
                     }
                     other => self.expr(b, other)?,
                 }
+                // `library(pkg)`/`require(pkg)` take the package name unevaluated
+                // (NSE); a bare symbol is compiled as its string name so the
+                // loader receives it instead of failing to find a variable.
+                let pkg_nse = matches!(
+                    fun.as_ref(),
+                    Expr::Ident(n) if matches!(n.as_str(),
+                        "library" | "require" | "requireNamespace" | "loadNamespace")
+                );
+                if pkg_nse {
+                    if let Some(Arg { name, value: Some(Expr::Ident(sym)) }) = args.first() {
+                        let mut rewritten = args.clone();
+                        rewritten[0] = Arg {
+                            name: name.clone(),
+                            value: Some(Expr::Str(sym.clone())),
+                        };
+                        self.args(b, &rewritten)?;
+                        b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                        return Ok(());
+                    }
+                }
                 self.args(b, args)?;
                 b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
             }

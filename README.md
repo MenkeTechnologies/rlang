@@ -72,6 +72,11 @@ Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
   block to a cached `cdylib` on first use; `.Call(name, …)` — R's own native-call
   verb — invokes its exports, marshalling length-1 vectors to `i64`/`f64`/string
   and back.
+- **CRAN bridge** — rlang runs its own compiled path for base R and, for
+  `library(pkg)` and any CRAN routine (including compiled C/C++/Fortran), it
+  `dlopen`s the system `libR` at run time and delegates to an embedded GNU R —
+  no re-implementation of R's package system or C API. Loaded lazily and only if
+  R is installed, so the base runtime is unaffected when it isn't.
 - **Runs on wasm** — the same crate builds for `wasm32-unknown-unknown` (pure
   interpreter, no Cranelift) and exports `rlang_eval` for a web-worker host.
 - **Editor-ready** — an LSP server and a DAP adapter over stdio, introspection
@@ -146,6 +151,17 @@ m <- matrix(1:6, nrow = 2)
 print(m[, 2])        # [1] 3 4
 
 c(3, 1, 2) |> sort() |> rev()   # [1] 3 2 1
+```
+
+Base R runs on rlang's own compiled path; CRAN packages are delegated to an
+embedded GNU R (needs R installed):
+
+```r
+library(jsonlite)
+cat(toJSON(1:3), "\n")          # [1,2,3]
+
+library(stringi)
+print(stri_reverse("hello"))    # [1] "olleh"
 ```
 
 ---
