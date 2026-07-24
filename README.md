@@ -48,12 +48,13 @@ AST, lowers it to `fusevm` bytecode, and runs it on a compiled VM with a
 Cranelift JIT. rlang carries no VM or JIT of its own. Highlights:
 
 - **Compiled, not tree-walked** — `for`, `while`, `repeat`, `if`, `&&` and `||`
-  lower to native fusevm jumps and integer loop counters, and scalar `+ - * /`
-  to native arithmetic ops. R variable access still routes through the
-  interpreter, so the tracing JIT and `--aot` do not yet compile a whole R loop
-  to native code — the interpreter runs the hot path (scalar loops land within
-  ~2–3× of GNU R). Making locals slot-resolved so the JIT compiles the full loop
-  is the active performance work.
+  lower to native fusevm jumps and integer loop counters, scalar `+ - * /` to
+  native arithmetic ops, and a whole-program top level's locals to native frame
+  slots (`GetVar`/`SetVar` by index, not a name hash) when the unit is slot-safe.
+  A scalar loop's hot path is then free of interpreter builtin calls, the tracing
+  JIT traces it, and scalar loops run within ~1.2× of GNU R (faster on some).
+  Remaining: `for (i in a:b)` still fetches each element through a builtin, so a
+  native range counter is the next step to make the JIT trace a net win.
 - **fusevm-hosted** — no local `vm.rs` / `jit.rs`; the shared engine behind
   `zshrs`, `stryke`, `awkrs`, `elisp`, and `rubylang`. `jit-disk-cache` persists
   native code across runs.
