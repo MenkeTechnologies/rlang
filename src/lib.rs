@@ -50,6 +50,12 @@ pub fn compile(src: &str) -> Result<compiler::Program, String> {
     compiler::compile(&parser::parse(src)?)
 }
 
+/// Compile without binding top-level locals to native slots — for the REPL,
+/// which persists variables across prompts through the shared environment.
+pub fn compile_no_slots(src: &str) -> Result<compiler::Program, String> {
+    compiler::compile_no_slots(&parser::parse(src)?)
+}
+
 /// Parse, compile, and run R source on a fresh host, echoing top-level values
 /// the way `Rscript` does. Returns the last expression's value.
 pub fn eval_str(src: &str) -> Result<Value, String> {

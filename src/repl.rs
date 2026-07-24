@@ -82,7 +82,7 @@ pub fn run() {
 
 /// Compile and run one line on the persistent host, echoing a visible result.
 fn eval_line(line: &str) {
-    let prog = match crate::compile(line) {
+    let prog = match crate::compile_no_slots(line) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", Color::Red.paint(format!("Error: {e}")));

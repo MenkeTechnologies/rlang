@@ -35,21 +35,176 @@ struct Compiler {
     loops: Vec<LoopCtx>,
     /// Counter for unique loop temporaries in the VM's own variable space.
     tmp: usize,
+    /// Names bound to native frame slots (fusevm `GetVar`/`SetVar`, JIT-visible)
+    /// instead of the string-keyed environment. Empty unless the whole top level
+    /// is slot-safe (see [`slot_locals`]).
+    locals: std::collections::HashSet<String>,
 }
 
-/// Compile a parsed program.
+/// Builtins that reach into an environment by name; their presence makes it
+/// unsafe to keep any local in a native slot instead of the string environment.
+const DYNAMIC_ENV_FNS: &[&str] = &[
+    "get", "get0", "mget", "assign", "exists", "environment", "environmentName",
+    "eval", "evalq", "local", "with", "within", "do.call", "Recall", "sys.call",
+    "sys.function", "sys.frame", "match.call", "match.arg", "parent.frame",
+    "parent.env", "ls", "rm", "remove", "attach", "detach", "substitute", "quote",
+    "bquote", "missing", "on.exit", "delayedAssign", "makeActiveBinding", "new.env",
+    "globalenv", "as.environment", "list2env", "eapply", "Reduce", "Filter", "Map",
+    "do.call", "apply", "sapply", "lapply", "vapply", "mapply", "tapply", "outer",
+];
+
+/// The names in a whole-program top level that are safe to bind to native frame
+/// slots: the unit must contain no nested `function` (a closure captures the
+/// enclosing frame by name), no `<<-`, no formula, and no call to an
+/// environment-reaching builtin. A name assigned through a complex target
+/// (`x[i] <-`, `x$f <-`) is excluded — `rebuild` reads/writes it by name — so
+/// its every access stays on the environment path. If the unit is not slot-safe
+/// the set is empty and nothing changes from the string-keyed default.
+fn slot_locals(exprs: &[Expr]) -> std::collections::HashSet<String> {
+    let mut targets = std::collections::HashSet::new();
+    let mut blocked = std::collections::HashSet::new();
+    let mut safe = true;
+    for e in exprs {
+        scan_slots(e, &mut safe, &mut targets, &mut blocked);
+    }
+    if !safe {
+        return std::collections::HashSet::new();
+    }
+    targets.retain(|n| !blocked.contains(n));
+    targets
+}
+
+/// The root variable name of a (possibly complex) assignment target, e.g. `x`
+/// for `x[[1]]$y[2]`.
+fn root_ident(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident(n) | Expr::Str(n) => Some(n),
+        Expr::Index { obj, .. } => root_ident(obj),
+        Expr::Call { args, .. } => args.first().and_then(|a| a.value.as_ref()).and_then(root_ident),
+        _ => None,
+    }
+}
+
+fn scan_slots(
+    e: &Expr,
+    safe: &mut bool,
+    targets: &mut std::collections::HashSet<String>,
+    blocked: &mut std::collections::HashSet<String>,
+) {
+    if !*safe {
+        return;
+    }
+    let mut go = |x: &Expr, s: &mut bool| scan_slots(x, s, targets, blocked);
+    match e {
+        Expr::Function { .. } | Expr::Formula { .. } => *safe = false,
+        Expr::Assign { target, value, super_assign } => {
+            if *super_assign {
+                *safe = false;
+                return;
+            }
+            match target.as_ref() {
+                Expr::Ident(n) | Expr::Str(n) => {
+                    targets.insert(n.clone());
+                }
+                other => {
+                    if let Some(r) = root_ident(other) {
+                        blocked.insert(r.to_string());
+                    }
+                    scan_slots(other, safe, targets, blocked);
+                }
+            }
+            scan_slots(value, safe, targets, blocked);
+        }
+        Expr::For { var, seq, body } => {
+            targets.insert(var.clone());
+            scan_slots(seq, safe, targets, blocked);
+            scan_slots(body, safe, targets, blocked);
+        }
+        Expr::Call { fun, args } => {
+            if let Expr::Ident(name) = fun.as_ref() {
+                if DYNAMIC_ENV_FNS.contains(&name.as_str()) {
+                    *safe = false;
+                    return;
+                }
+            }
+            scan_slots(fun, safe, targets, blocked);
+            for a in args {
+                if let Some(v) = &a.value {
+                    scan_slots(v, safe, targets, blocked);
+                }
+            }
+        }
+        Expr::If { cond, then, els } => {
+            go(cond, safe);
+            go(then, safe);
+            if let Some(x) = els {
+                go(x, safe);
+            }
+        }
+        Expr::While { cond, body } => {
+            go(cond, safe);
+            go(body, safe);
+        }
+        Expr::Repeat(b) => go(b, safe),
+        Expr::Block(xs) => {
+            for x in xs {
+                scan_slots(x, safe, targets, blocked);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } | Expr::Special { lhs, rhs, .. } => {
+            go(lhs, safe);
+            go(rhs, safe);
+        }
+        Expr::Unary { operand, .. } => go(operand, safe),
+        Expr::Index { obj, args, .. } => {
+            go(obj, safe);
+            for a in args {
+                if let Some(v) = &a.value {
+                    scan_slots(v, safe, targets, blocked);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compile a whole program — top-level locals may be bound to native frame
+/// slots (JIT-visible) when the unit is slot-safe.
 pub fn compile(exprs: &[Expr]) -> Result<Program, String> {
+    compile_inner(exprs, true)
+}
+
+/// Compile without slot binding. The REPL keeps one host across prompts and
+/// persists variables through the shared environment, so its top-level names
+/// must live there, not in a per-chunk slot vector.
+pub fn compile_no_slots(exprs: &[Expr]) -> Result<Program, String> {
+    compile_inner(exprs, false)
+}
+
+fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
     let mut c = Compiler::default();
+    if use_slots {
+        c.locals = slot_locals(exprs);
+    }
     let mut b = ChunkBuilder::new();
     if exprs.is_empty() {
         b.emit(Op::CallBuiltin(ops::CONST_NULL, 0), 0);
     }
     for (i, e) in exprs.iter().enumerate() {
         c.expr(&mut b, e)?;
-        // Top level echoes each visible value, exactly like `Rscript` does.
-        b.emit(Op::CallBuiltin(ops::AUTOPRINT, 1), 0);
-        if i + 1 < exprs.len() {
+        // A slot assignment's native `SetVar` does not clear the visibility flag
+        // the way the `SETVAR` builtin does, so it can't reach `AUTOPRINT` — but
+        // an assignment is invisible and never echoed anyway, so discard it. All
+        // other top-level values are echoed exactly like `Rscript`.
+        let slot_assign = matches!(e, Expr::Assign { target, super_assign: false, .. }
+            if matches!(target.as_ref(), Expr::Ident(n) | Expr::Str(n) if c.locals.contains(n)));
+        if slot_assign {
             b.emit(Op::Pop, 0);
+        } else {
+            b.emit(Op::CallBuiltin(ops::AUTOPRINT, 1), 0);
+            if i + 1 < exprs.len() {
+                b.emit(Op::Pop, 0);
+            }
         }
     }
     Ok(Program {
@@ -172,8 +327,14 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::CONST_DBL, 1), 0);
             }
             Expr::Ident(name) => {
-                self.kstr(b, name);
-                b.emit(Op::CallBuiltin(ops::GETVAR, 1), 0);
+                if self.locals.contains(name) {
+                    // A slot-bound local: native read, JIT-visible, no env hash.
+                    let slot = b.add_name(name);
+                    b.emit(Op::GetVar(slot), 0);
+                } else {
+                    self.kstr(b, name);
+                    b.emit(Op::CallBuiltin(ops::GETVAR, 1), 0);
+                }
             }
             Expr::Dots => {
                 b.emit(Op::CallBuiltin(ops::DOTS, 0), 0);
@@ -422,12 +583,22 @@ impl Compiler {
         let jf = b.emit(Op::JumpIfFalse(0), 0);
 
         // var <- seq[[i]]
-        self.kstr(b, var);
-        b.emit(Op::GetVar(v_seq), 0);
-        b.emit(Op::GetVar(v_i), 0);
-        b.emit(Op::CallBuiltin(ops::SEQ_ELEM, 2), 0);
-        b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
-        b.emit(Op::Pop, 0);
+        if self.locals.contains(var) {
+            // Native store into the loop variable's slot; `SetVar` consumes the
+            // fetched element, leaving nothing (no trailing `Pop`).
+            b.emit(Op::GetVar(v_seq), 0);
+            b.emit(Op::GetVar(v_i), 0);
+            b.emit(Op::CallBuiltin(ops::SEQ_ELEM, 2), 0);
+            let slot = b.add_name(var);
+            b.emit(Op::SetVar(slot), 0);
+        } else {
+            self.kstr(b, var);
+            b.emit(Op::GetVar(v_seq), 0);
+            b.emit(Op::GetVar(v_i), 0);
+            b.emit(Op::CallBuiltin(ops::SEQ_ELEM, 2), 0);
+            b.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
+            b.emit(Op::Pop, 0);
+        }
 
         self.expr(b, body)?;
         b.emit(Op::Pop, 0);
@@ -601,6 +772,15 @@ impl Compiler {
         sup: bool,
     ) -> Result<(), String> {
         match target {
+            Expr::Ident(name) | Expr::Str(name) if !sup && self.locals.contains(name) => {
+                // A slot-bound local: native store, JIT-visible. `SetVar` pops
+                // the value, so `Dup` keeps the copy an assignment expression
+                // yields (statements pop it, `y <- x <- 1` and `f(x <- 1)` use it).
+                self.expr(b, value)?;
+                b.emit(Op::Dup, 0);
+                let slot = b.add_name(name);
+                b.emit(Op::SetVar(slot), 0);
+            }
             Expr::Ident(name) | Expr::Str(name) => {
                 self.kstr(b, name);
                 self.expr(b, value)?;
