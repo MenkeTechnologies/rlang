@@ -191,16 +191,17 @@ fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
         b.emit(Op::CallBuiltin(ops::CONST_NULL, 0), 0);
     }
     for (i, e) in exprs.iter().enumerate() {
-        c.expr(&mut b, e)?;
         // A slot assignment's native `SetVar` does not clear the visibility flag
         // the way the `SETVAR` builtin does, so it can't reach `AUTOPRINT` — but
-        // an assignment is invisible and never echoed anyway, so discard it. All
-        // other top-level values are echoed exactly like `Rscript`.
+        // an assignment is invisible and never echoed anyway, so `stmt` stores it
+        // directly (no Dup/Pop). All other top-level values are echoed like
+        // `Rscript`.
         let slot_assign = matches!(e, Expr::Assign { target, super_assign: false, .. }
             if matches!(target.as_ref(), Expr::Ident(n) | Expr::Str(n) if c.locals.contains(n)));
         if slot_assign {
-            b.emit(Op::Pop, 0);
+            c.stmt(&mut b, e)?;
         } else {
+            c.expr(&mut b, e)?;
             b.emit(Op::CallBuiltin(ops::AUTOPRINT, 1), 0);
             if i + 1 < exprs.len() {
                 b.emit(Op::Pop, 0);
@@ -279,11 +280,32 @@ impl Compiler {
             return Ok(());
         }
         for (i, e) in body.iter().enumerate() {
-            self.expr(b, e)?;
             if i + 1 < body.len() {
-                b.emit(Op::Pop, 0);
+                self.stmt(b, e)?;
+            } else {
+                self.expr(b, e)?;
             }
         }
+        Ok(())
+    }
+
+    /// Compile an expression in statement position — its value is discarded. A
+    /// slot assignment stores directly (native `SetVar` consumes the value) with
+    /// no `Dup`/`Pop`, saving two ops per statement: this is the hot path of a
+    /// `for`/`while` body like `s <- s + i`.
+    fn stmt(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        if let Expr::Assign { target, value, super_assign: false } = e {
+            if let Expr::Ident(n) | Expr::Str(n) = target.as_ref() {
+                if self.locals.contains(n) {
+                    self.expr(b, value)?;
+                    let slot = b.add_name(n);
+                    b.emit(Op::SetVar(slot), 0);
+                    return Ok(());
+                }
+            }
+        }
+        self.expr(b, e)?;
+        b.emit(Op::Pop, 0);
         Ok(())
     }
 
@@ -489,8 +511,7 @@ impl Compiler {
                 self.expr(b, cond)?;
                 b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
                 let jf = b.emit(Op::JumpIfFalse(0), 0);
-                self.expr(b, body)?;
-                b.emit(Op::Pop, 0);
+                self.stmt(b, body)?;
                 b.emit(Op::Jump(start), 0);
                 let end = b.current_pos();
                 b.patch_jump(jf, end);
@@ -504,8 +525,7 @@ impl Compiler {
                     breaks: Vec::new(),
                 });
                 let start = b.current_pos();
-                self.expr(b, body)?;
-                b.emit(Op::Pop, 0);
+                self.stmt(b, body)?;
                 b.emit(Op::Jump(start), 0);
                 let end = b.current_pos();
                 self.close_loop(b, start, end);
@@ -600,8 +620,7 @@ impl Compiler {
             b.emit(Op::Pop, 0);
         }
 
-        self.expr(b, body)?;
-        b.emit(Op::Pop, 0);
+        self.stmt(b, body)?;
 
         let cont = b.current_pos();
         b.emit(Op::GetVar(v_i), 0);
