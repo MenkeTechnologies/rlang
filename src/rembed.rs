@@ -79,6 +79,11 @@ static API: OnceLock<Option<RApi>> = OnceLock::new();
 /// Discover `R_HOME` (from the env, else by asking `R RHOME`), set it, and
 /// return the path to `libR`.
 fn locate_libr() -> Option<String> {
+    // An explicit opt-out keeps the differential fuzzer and parity harness on
+    // rlang's own compiled path instead of delegating to R.
+    if std::env::var_os("RLANG_NO_CRAN").is_some() {
+        return None;
+    }
     let home = std::env::var("R_HOME").ok().or_else(|| {
         let out = std::process::Command::new("R").arg("RHOME").output().ok()?;
         out.status
@@ -421,6 +426,20 @@ pub fn print_foreign(ptr: usize) -> Vec<String> {
             _ => vec!["<R object>".to_string()],
         }
     }
+}
+
+/// Run a whole R script in the embedded interpreter with top-level autoprint,
+/// exactly as `Rscript` would. Used as the fallback when rlang's eager evaluator
+/// can't run a program (typically non-standard evaluation — `dplyr::filter(df,
+/// x > 2)`, `data.table` `[`), so such scripts still execute correctly.
+pub fn run_script(src: &str) -> Result<(), String> {
+    let api = api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
+    unsafe {
+        api.eval(&format!(
+            "invisible(source(textConnection({src:?}), echo = FALSE, print.eval = TRUE, spaced = FALSE, keep.source = FALSE))"
+        ))?;
+    }
+    Ok(())
 }
 
 /// Evaluate R source in the embedded interpreter, marshalling the result back.

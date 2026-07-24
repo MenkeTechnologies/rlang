@@ -321,6 +321,9 @@ fn run_oracle(script: &str, timeout: Duration) -> RunOut {
 fn run_ours(script: &str, bin: &Path, timeout: Duration) -> RunOut {
     let mut cmd = Command::new(bin);
     cmd.args(["-e", script]);
+    // Test rlang's own compiled path, never the embedded-R fallback — a
+    // divergence must come from rlang, not from R answering for it.
+    cmd.env("RLANG_NO_CRAN", "1");
     // Redirect the bytecode cache into a private HOME so the fuzzer never
     // pollutes the user's ~/.rlang (see `ours_home`).
     cmd.env("HOME", ours_home());

@@ -11,14 +11,15 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## Evaluation model
 
-- **Arguments are evaluated eagerly, not as promises.** R passes unevaluated
-  promises, which is what makes `substitute()`, `quote()`, `match.call()`,
-  `sys.call()`, and every non-standard-evaluation idiom (`subset(df, x > 1)`,
-  formulas, `~`) work. rlang evaluates each argument at the call site, so those
-  are absent — including `deparse()` of an unevaluated expression (`deparse` of a
-  plain value works). Defaults still behave lazily — they compile into a body
-  prologue (`if (missing(p)) p <- <default>`), so a default may refer to another
-  argument.
+- **Arguments are evaluated eagerly, not as promises**, so `substitute()`,
+  `quote()`, `match.call()`, `sys.call()`, and `deparse()` of an unevaluated
+  expression are absent from rlang's own evaluator. Non-standard-evaluation
+  *programs* (`dplyr::filter(df, x > 2)`, `data.table` `[`, `subset`) still run:
+  when rlang cannot evaluate a script, the whole thing is re-run in the embedded
+  GNU R (needs R installed), so the answer is correct even though rlang's JIT
+  didn't produce it. Set `RLANG_NO_CRAN=1` to force the native path only.
+  Defaults behave lazily — they compile into a body prologue
+  (`if (missing(p)) p <- <default>`), so a default may refer to another argument.
 - **No condition system.** `tryCatch`, `withCallingHandlers`, `simpleError`,
   `on.exit`, `signalCondition`, restarts. `stop()` aborts the program and
   `warning()`/`message()` write to stderr, but nothing can catch them.

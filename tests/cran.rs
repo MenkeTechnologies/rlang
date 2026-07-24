@@ -30,6 +30,15 @@ fn cran_bridge_delegates_or_degrades() {
     let n = rembed::eval_source("sum(data.frame(x = 1:4)$x)").expect("df$col");
     assert_eq!(rlang::host::with_host(|h| h.as_dbl(&n)), vec![Some(10.0)]);
 
+    // A non-standard-evaluation program (dplyr) runs whole via the script
+    // fallback, if dplyr is installed.
+    if rembed::eval_source("requireNamespace(\"dplyr\", quietly = TRUE)").is_ok() {
+        assert!(rembed::run_script(
+            "library(dplyr); invisible(nrow(filter(data.frame(x = 1:5), x > 2)))"
+        )
+        .is_ok());
+    }
+
     // A compiled CRAN package (jsonlite) — load it, then call one of its
     // routines, if it is installed. Absence of the package is not a failure.
     if rembed::eval_source("requireNamespace(\"jsonlite\", quietly = TRUE)").is_ok() {

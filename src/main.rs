@@ -77,9 +77,9 @@ fn run() -> ExitCode {
                 Err(e) => fail(&e),
             };
         }
-        return match rlang::eval_file(&file) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => fail(&e),
+        return match std::fs::read_to_string(&file) {
+            Ok(src) => eval_with_cran_fallback(&src, || rlang::eval_str(&src)),
+            Err(e) => fail(&format!("cannot read {file}: {e}")),
         };
     }
 
@@ -93,10 +93,66 @@ fn run() -> ExitCode {
 }
 
 fn run_source(src: &str) -> ExitCode {
-    match rlang::eval_str(src) {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(e) => fail(&e),
+    eval_with_cran_fallback(src, || rlang::eval_str(src))
+}
+
+/// Evaluate a program on rlang's compiled path, but if it cannot (most often
+/// non-standard evaluation — `dplyr::filter(df, x > 2)`, `data.table` `[`) and an
+/// embedded R is available, run the whole script in R instead. rlang's own
+/// stdout is captured during the attempt and discarded on fallback, so nothing
+/// prints twice.
+fn eval_with_cran_fallback(src: &str, run: impl FnOnce() -> Result<rlang::Value, String>) -> ExitCode {
+    let (result, captured) = capture_stdout(run);
+    match result {
+        Ok(_) => {
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if rlang::rembed::available() {
+                return match rlang::rembed::run_script(src) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(re) => fail(&re),
+                };
+            }
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
+            fail(&e)
+        }
     }
+}
+
+/// Run `f` with fd 1 redirected into a temp file, returning what it wrote. A
+/// temp file (not a pipe) avoids blocking when the program out-writes the pipe
+/// buffer before anyone drains it.
+fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>) {
+    use std::io::{Read, Seek, Write};
+    use std::os::unix::io::AsRawFd;
+    let path = std::env::temp_dir().join(format!("rlang-cap-{}.out", std::process::id()));
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+    else {
+        return (f(), Vec::new());
+    };
+    // SAFETY: dup/dup2 on the process's own stdout fd; restored below.
+    let (r, mut file) = unsafe {
+        let saved = libc::dup(1);
+        libc::dup2(file.as_raw_fd(), 1);
+        let r = f();
+        let _ = std::io::stdout().flush();
+        libc::dup2(saved, 1);
+        libc::close(saved);
+        (r, file)
+    };
+    let mut buf = Vec::new();
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.read_to_end(&mut buf);
+    let _ = std::fs::remove_file(&path);
+    (r, buf)
 }
 
 /// The introspection dumps: token stream, AST, and bytecode disassembly. All
