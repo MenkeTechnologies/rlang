@@ -113,9 +113,34 @@ impl Parser {
         Ok(lhs)
     }
 
+    /// `lhs ~ rhs` / `~ rhs` — R's tilde binds looser than `||` but tighter than
+    /// `<-`, so it sits just below assignment.
+    fn formula_expr(&mut self) -> Result<Expr, String> {
+        if self.peek() == &Tok::Tilde {
+            self.bump();
+            self.nl();
+            let rhs = self.or_expr()?;
+            return Ok(Expr::Formula {
+                lhs: None,
+                rhs: Box::new(rhs),
+            });
+        }
+        let lhs = self.or_expr()?;
+        if self.peek() == &Tok::Tilde {
+            self.bump();
+            self.nl();
+            let rhs = self.or_expr()?;
+            return Ok(Expr::Formula {
+                lhs: Some(Box::new(lhs)),
+                rhs: Box::new(rhs),
+            });
+        }
+        Ok(lhs)
+    }
+
     /// `<-`, `<<-` (right-associative) and `->`, `->>` (rewritten).
     fn assign_arrow(&mut self) -> Result<Expr, String> {
-        let lhs = self.or_expr()?;
+        let lhs = self.formula_expr()?;
         match self.peek().clone() {
             Tok::Assign | Tok::SuperAssign => {
                 let sup = matches!(self.bump(), Tok::SuperAssign);

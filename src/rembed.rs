@@ -11,10 +11,13 @@
 //! runs on a machine with no R installed — the bridge simply reports itself
 //! unavailable and callers fall back to the usual "could not find function".
 //!
-//! Marshalling is atomic-vector-oriented (logical/integer/double/character, plus
-//! NULL and lists), which covers the value types that cross the boundary in
-//! practice. A return type with no rlang representation (S4 object, environment,
-//! data frame) surfaces as an error rather than a wrong value.
+//! Plain atomic vectors (logical/integer/double/character), NULL, and unclassed
+//! lists marshal to native rlang values. Everything else — a classed value
+//! (Date, factor, data.frame), S4 object, raw vector, environment — is kept as
+//! an opaque `RForeign` handle that round-trips back into R verbatim, so any R
+//! type flows through rlang even when rlang has no representation for it. A
+//! builtin, operator, or `$`/`[`/`[[` that touches a handle delegates the whole
+//! operation to R (see `call_primitive`/`binop`).
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -64,7 +67,6 @@ struct RApi {
     global_env: Sexp,
     nil: Sexp,
     na_int: c_int,
-    visible: *const c_int,
 }
 
 // SAFETY: R is single-threaded; rlang evaluates on one thread at a time, so the
@@ -123,7 +125,6 @@ fn init() -> Option<RApi> {
         let ge: libloading::Symbol<*const Sexp> = lib.get(b"R_GlobalEnv").ok()?;
         let nl: libloading::Symbol<*const Sexp> = lib.get(b"R_NilValue").ok()?;
         let na_ptr: libloading::Symbol<*const c_int> = lib.get(b"R_NaInt").ok()?;
-        let vis: libloading::Symbol<*const c_int> = lib.get(b"R_Visible").ok()?;
         Some(RApi {
             parse: sym!(_, b"R_ParseVector"),
             try_eval_silent: sym!(_, b"R_tryEvalSilent"),
@@ -150,7 +151,6 @@ fn init() -> Option<RApi> {
             global_env: **ge,
             nil: **nl,
             na_int: **na_ptr,
-            visible: *vis,
         })
     }
 }
@@ -162,6 +162,21 @@ fn api() -> Option<&'static RApi> {
 /// Whether an embedded R is available to delegate to.
 pub fn available() -> bool {
     api().is_some()
+}
+
+/// Whether embedded R has `name` bound as a function — lets a bare package
+/// function name (`sapply(x, digest)`) resolve as a value.
+pub fn has_function(name: &str) -> bool {
+    let Some(api) = api() else { return false };
+    // Reject obvious non-identifiers cheaply without touching R.
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_')) {
+        return false;
+    }
+    unsafe {
+        api.eval(&format!("exists(\"{name}\", mode = \"function\")"))
+            .map(|s| (api.typeof_)(s) == LGLSXP && (api.logical)(s).read() == 1)
+            .unwrap_or(false)
+    }
 }
 
 impl RApi {
@@ -200,6 +215,9 @@ impl RApi {
         match data {
             // A foreign handle is an R SEXP; hand it straight back.
             RData::RForeign(ptr) => ptr as Sexp,
+            // An rlang builtin passed as a function argument (e.g. the `sum` in
+            // `aggregate(v ~ g, df, sum)`) resolves to R's function of that name.
+            RData::Builtin(name) => self.eval(&format!("`{name}`")).unwrap_or(self.nil),
             RData::Null => self.nil,
             RData::Lgl(xs) => {
                 let s = (self.protect)((self.alloc_vector)(LGLSXP, xs.len() as isize));
@@ -261,6 +279,13 @@ impl RApi {
     unsafe fn from_sexp(&self, s: Sexp) -> Result<Value, String> {
         let ty = (self.typeof_)(s);
         let n = (self.xlength)(s) as usize;
+        // A classed value (Date, factor, difftime, data.frame, S4, …) keeps its
+        // R semantics as a foreign handle rather than losing its class in a
+        // native atomic vector.
+        if matches!(ty, LGLSXP | INTSXP | REALSXP | STRSXP | VECSXP) && self.has_class(s) {
+            (self.preserve)(s);
+            return Ok(with_host(|h| h.alloc(RData::RForeign(s as usize))));
+        }
         let names = |api: &RApi| -> Vec<Option<String>> {
             let key = CString::new("names").unwrap();
             let nm = (api.get_attrib)(s, (api.install)(key.as_ptr()));
@@ -330,10 +355,7 @@ impl RApi {
                     })
                     .collect(),
             ),
-            // A plain (unclassed) list marshals to a native rlang list; a
-            // classed one (data.frame, and other S3 list objects) keeps its R
-            // semantics as a foreign handle.
-            VECSXP if !self.has_class(s) => {
+            VECSXP => {
                 let items: Result<Vec<Value>, String> = (0..n)
                     .map(|i| self.from_sexp((self.vector_elt)(s, i as isize)))
                     .collect();
@@ -458,12 +480,14 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
         if !found {
             return Err(format!("could not find function \"{name}\""));
         }
-        let s = (api.protect)(api.eval(&format!("{fname}({})", parts.join(", ")))?);
-        // Carry R's visibility across (`print`/`invisible` make it false) so the
-        // delegated result isn't auto-printed twice. Read it right after the
-        // eval, before marshalling calls back into R.
-        let vis = *api.visible != 0;
-        let r = api.from_sexp(s);
+        // `withVisible` exposes R's visibility reliably (unlike reading the
+        // `R_Visible` global after `R_tryEval`): it returns `list(value=,
+        // visible=)`, so `print`/`set.seed`/`invisible` don't auto-print twice.
+        let wv = (api.protect)(api.eval(&format!("withVisible({fname}({}))", parts.join(", ")))?);
+        let value = (api.vector_elt)(wv, 0);
+        let visible = (api.vector_elt)(wv, 1);
+        let vis = (api.typeof_)(visible) == LGLSXP && (api.logical)(visible).read() == 1;
+        let r = api.from_sexp(value);
         (api.unprotect)(1);
         with_host(|h| h.visible = vis);
         r

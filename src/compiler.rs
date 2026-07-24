@@ -224,6 +224,22 @@ impl Compiler {
                 self.args(b, args)?;
                 b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
             }
+            Expr::Formula { lhs, rhs } => {
+                // A formula is unevaluated language: deparse it back to R source
+                // and build the formula object in the embedded R.
+                let src = match lhs {
+                    Some(l) => format!("{} ~ {}", deparse_ast(l), deparse_ast(rhs)),
+                    None => format!("~ {}", deparse_ast(rhs)),
+                };
+                let call = Expr::Call {
+                    fun: Box::new(Expr::Ident(".rlang_formula".into())),
+                    args: vec![Arg {
+                        name: None,
+                        value: Some(Expr::Str(src)),
+                    }],
+                };
+                self.expr(b, &call)?;
+            }
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::And2 | BinOp::Or2 => self.short_circuit(b, op, lhs, rhs)?,
                 _ => {
@@ -681,6 +697,76 @@ impl Compiler {
             }
             other => Err(format!("invalid nested assignment target: {other:?}")),
         }
+    }
+}
+
+/// Deparse an expression back to R source — enough of the grammar to reconstruct
+/// what appears inside a model formula (`y ~ x + log(z)`, `v ~ g`, `~ .`).
+pub(crate) fn deparse_ast(e: &Expr) -> String {
+    match e {
+        Expr::Num(n) => {
+            if *n == n.trunc() && n.abs() < 1e15 {
+                format!("{}", *n as i64)
+            } else {
+                format!("{n}")
+            }
+        }
+        Expr::Int(i) => format!("{i}L"),
+        Expr::Str(s) => format!("{s:?}"),
+        Expr::Bool(true) => "TRUE".into(),
+        Expr::Bool(false) => "FALSE".into(),
+        Expr::Null => "NULL".into(),
+        Expr::Na(_) => "NA".into(),
+        Expr::Inf => "Inf".into(),
+        Expr::NaN => "NaN".into(),
+        Expr::Ident(s) => s.clone(),
+        Expr::Dots => "...".into(),
+        Expr::Formula { lhs, rhs } => match lhs {
+            Some(l) => format!("{} ~ {}", deparse_ast(l), deparse_ast(rhs)),
+            None => format!("~ {}", deparse_ast(rhs)),
+        },
+        Expr::Binary { op, lhs, rhs } => {
+            format!("{} {} {}", deparse_ast(lhs), binop_name(op), deparse_ast(rhs))
+        }
+        Expr::Special { name, lhs, rhs } => {
+            format!("{} %{}% {}", deparse_ast(lhs), name, deparse_ast(rhs))
+        }
+        Expr::Unary { op, operand } => {
+            let s = match op {
+                crate::ast::UnOp::Neg => "-",
+                crate::ast::UnOp::Plus => "+",
+                crate::ast::UnOp::Not => "!",
+            };
+            format!("{s}{}", deparse_ast(operand))
+        }
+        Expr::Call { fun, args } => {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|a| {
+                    let v = a.value.as_ref().map(deparse_ast).unwrap_or_default();
+                    match &a.name {
+                        Some(n) => format!("{n} = {v}"),
+                        None => v,
+                    }
+                })
+                .collect();
+            format!("{}({})", deparse_ast(fun), parts.join(", "))
+        }
+        Expr::Index { kind, obj, args } => {
+            let inner: Vec<String> = args
+                .iter()
+                .map(|a| a.value.as_ref().map(deparse_ast).unwrap_or_default())
+                .collect();
+            match kind {
+                crate::ast::IndexKind::Single => format!("{}[{}]", deparse_ast(obj), inner.join(", ")),
+                crate::ast::IndexKind::Double => format!("{}[[{}]]", deparse_ast(obj), inner.join(", ")),
+                crate::ast::IndexKind::Dollar => format!("{}${}", deparse_ast(obj), inner.join("")),
+                crate::ast::IndexKind::At => format!("{}@{}", deparse_ast(obj), inner.join("")),
+            }
+        }
+        // Anything else (blocks, closures, assignments) is not expected inside a
+        // formula; fall back to a placeholder rather than mis-rendering.
+        _ => ".".into(),
     }
 }
 

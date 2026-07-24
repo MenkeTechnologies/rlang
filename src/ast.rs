@@ -119,6 +119,13 @@ pub enum Expr {
         value: Box<Expr>,
         super_assign: bool,
     },
+    /// A model formula `lhs ~ rhs` (or one-sided `~ rhs`). Unevaluated: it is
+    /// deparsed back to R source and built as a formula object in the CRAN
+    /// bridge, since formulas are non-standard-evaluation language objects.
+    Formula {
+        lhs: Option<Box<Expr>>,
+        rhs: Box<Expr>,
+    },
     Binary {
         op: BinOp,
         lhs: Box<Expr>,

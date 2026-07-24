@@ -226,9 +226,22 @@ fn b_getvar(vm: &mut VM, _: u8) -> Value {
         Some(v) => v,
         None => match primitive_value(&name) {
             Some(v) => v,
+            // A bare name that is a function in a loaded CRAN package (used as a
+            // value, e.g. `sapply(x, digest)`) resolves to a delegating builtin;
+            // a genuine unknown is still "object not found".
+            None if cran_has_function(&name) => with_host(|h| h.alloc(RData::Builtin(name))),
             None => abort(vm, format!("object '{name}' not found")),
         },
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cran_has_function(name: &str) -> bool {
+    crate::rembed::has_function(name)
+}
+#[cfg(target_arch = "wasm32")]
+fn cran_has_function(_: &str) -> bool {
+    false
 }
 
 fn b_getfun(vm: &mut VM, _: u8) -> Value {
@@ -532,6 +545,11 @@ fn value_in(x: &Value, table: &Value) -> Value {
 
 /// R's binary operators, vectorized with recycling and NA propagation.
 pub fn binop(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    // An operator on a foreign R object (`date + months(3)`, `sparse %*% x`)
+    // delegates to embedded R, which knows the S3/S4 method.
+    if matches!(data(lhs), RData::RForeign(_)) || matches!(data(rhs), RData::RForeign(_)) {
+        return cran_call(op, &[(None, lhs.clone()), (None, rhs.clone())]);
+    }
     match op {
         "+" | "-" | "*" | "/" | "^" | "%%" | "%/%" => arith(op, lhs, rhs),
         "==" | "!=" | "<" | ">" | "<=" | ">=" => compare(op, lhs, rhs),
@@ -1627,6 +1645,7 @@ pub const PRIMITIVES: &[&str] = &[
     "suppressMessages",
     "suppressWarnings",
     "suppressPackageStartupMessages",
+    ".rlang_formula",
 ];
 
 /// Invoke a runtime-constructed function ([`RData::Combinator`]): `Negate`
@@ -4002,6 +4021,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // Arguments are evaluated eagerly, so any message already fired;
             // just pass the value through.
             Ok(a.get(0, "expr").unwrap_or_else(null))
+        }
+        // A model formula (compiled from `lhs ~ rhs`): build the real formula
+        // object in embedded R so `lm`/`glm`/`aggregate` receive it intact.
+        ".rlang_formula" => {
+            let src = str1(&a.req(0, "src")?).unwrap_or_default();
+            cran_eval(&format!("stats::as.formula({src:?})"))
         }
         other => cran_call(other, &a.all),
     }

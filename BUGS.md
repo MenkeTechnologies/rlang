@@ -22,7 +22,11 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **No condition system.** `tryCatch`, `withCallingHandlers`, `simpleError`,
   `on.exit`, `signalCondition`, restarts. `stop()` aborts the program and
   `warning()`/`message()` write to stderr, but nothing can catch them.
-- **No `~` formulas.** The token lexes; nothing consumes it.
+- **Formulas (`~`) parse and become real formula objects** — `lhs ~ rhs` is
+  deparsed to R source and built in the CRAN bridge, so `lm(y ~ x, data = df)`,
+  `aggregate(v ~ g, df, sum)`, and one-sided `~ x` work. A formula referencing a
+  bare rlang variable (`lm(y ~ x)` with `x` defined only in rlang) can't see it —
+  pass the data explicitly, or use literal vectors.
 - **No environments as first-class manipulation targets** beyond `new.env()`,
   `environment()`, `$`, and `[[` on an environment: `local()`, `sys.function()`,
   `parent.frame()`, `eval(expr, envir)` are missing.
