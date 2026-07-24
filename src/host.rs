@@ -351,6 +351,24 @@ impl RHost {
         self.get(v).map(|o| o.data.clone()).unwrap_or(RData::Null)
     }
 
+    /// A length-1, unattributed, non-NA numeric/logical value as
+    /// `(value, is_integer_typed)` — the scalar fast path for arithmetic and
+    /// comparison. Returns `None` (forcing the full vector path) for anything
+    /// with attributes, length != 1, an NA element, or a non-numeric type. Reads
+    /// by borrow: no `data_of` clone of the backing vector.
+    pub fn scalar_real(&self, v: &Value) -> Option<(f64, bool)> {
+        let o = self.get(v)?;
+        if !o.attrs.is_empty() {
+            return None;
+        }
+        match &o.data {
+            RData::Int(x) if x.len() == 1 => x[0].map(|n| (n as f64, true)),
+            RData::Lgl(x) if x.len() == 1 => x[0].map(|b| (b as i64 as f64, true)),
+            RData::Dbl(x) if x.len() == 1 => x[0].map(|n| (n, false)),
+            _ => None,
+        }
+    }
+
     /// The attributes of a value.
     pub fn attrs_of(&self, v: &Value) -> IndexMap<String, Value> {
         self.get(v).map(|o| o.attrs.clone()).unwrap_or_default()

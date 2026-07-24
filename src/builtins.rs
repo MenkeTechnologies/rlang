@@ -591,6 +591,32 @@ fn carry_attrs(out: &Value, lhs: &Value, rhs: &Value) {
 }
 
 fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    // Scalar fast path: two length-1 unattributed numerics compute directly,
+    // skipping the vector engine's data_of clones, as_dbl allocations, output
+    // Vec, and carry_attrs — a single result allocation remains. This is the
+    // common case in tight loops (`s <- s + i`).
+    if let (Some((x, xi)), Some((y, yi))) =
+        (with_host(|h| h.scalar_real(lhs)), with_host(|h| h.scalar_real(rhs)))
+    {
+        let r = match op {
+            "+" => x + y,
+            "-" => x - y,
+            "*" => x * y,
+            "/" => x / y,
+            "^" => x.powf(y),
+            "%%" => r_mod(x, y),
+            _ => r_idiv(x, y),
+        };
+        // Same integer-vs-double rule as the vector path: `+ - * %% %/%` on two
+        // integer/logical operands stays integer (NA when the result is
+        // non-finite); `/` and `^` are always double.
+        let int_result = matches!(op, "+" | "-" | "*" | "%%" | "%/%") && xi && yi;
+        return Ok(if int_result {
+            mk_int(vec![r.is_finite().then_some(r as i64)])
+        } else {
+            mk_dbl(vec![Some(r)])
+        });
+    }
     if matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_)) {
         return Err("non-numeric argument to binary operator".into());
     }
@@ -635,6 +661,14 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
 }
 
 fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    // Scalar fast path (see `arith`): two length-1 unattributed numerics compare
+    // directly. NaN on either side yields NA, matching the vector path.
+    if let (Some((x, _)), Some((y, _))) =
+        (with_host(|h| h.scalar_real(lhs)), with_host(|h| h.scalar_real(rhs)))
+    {
+        let r = (!x.is_nan() && !y.is_nan()).then(|| cmp_result(op, x.partial_cmp(&y).unwrap()));
+        return Ok(mk_lgl(vec![r]));
+    }
     let n = recycle_len(len(lhs), len(rhs));
     let as_text = matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_));
     let mut out: Vec<Option<bool>> = Vec::with_capacity(n);
