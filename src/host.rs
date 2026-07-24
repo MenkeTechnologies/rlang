@@ -469,8 +469,8 @@ impl RHost {
                 .collect(),
             Some(RData::Str(x)) => x
                 .iter()
-                .map(|e| e.as_ref().and_then(|s| s.trim().parse::<f64>().ok()))
-                .map(|o| o.map(|n| n.trunc() as i64))
+                .map(|e| e.as_ref().and_then(|s| parse_num(s.trim())))
+                .map(|o| o.and_then(|n| n.is_finite().then_some(n.trunc() as i64)))
                 .collect(),
             Some(RData::List(x)) => x.iter().flat_map(|e| self.as_int(e)).collect(),
             _ => Vec::new(),
@@ -715,7 +715,20 @@ fn parse_num(s: &str) -> Option<f64> {
         "Inf" => Some(f64::INFINITY),
         "-Inf" => Some(f64::NEG_INFINITY),
         "NaN" => Some(f64::NAN),
-        _ => s.parse().ok(),
+        _ => {
+            // R accepts C-style hexadecimal (`0x1F`, `-0xff`) in numeric coercion.
+            if let Some(hex) = s
+                .strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .or_else(|| s.strip_prefix("-0x").or_else(|| s.strip_prefix("-0X")))
+            {
+                let neg = s.starts_with('-');
+                return i64::from_str_radix(hex, 16)
+                    .ok()
+                    .map(|n| if neg { -n } else { n } as f64);
+            }
+            s.parse().ok()
+        }
     }
 }
 

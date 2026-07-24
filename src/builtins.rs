@@ -3188,8 +3188,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(mk_int(
                 x.iter()
                     .map(|s| {
-                        s.as_ref()
-                            .and_then(|s| i64::from_str_radix(s.trim(), base).ok())
+                        s.as_ref().and_then(|s| {
+                            let t = s.trim();
+                            // C strtol semantics: base 16 accepts an optional
+                            // `0x`/`0X` prefix (which Rust's from_str_radix rejects).
+                            let t = if base == 16 {
+                                t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t)
+                            } else {
+                                t
+                            };
+                            i64::from_str_radix(t, base).ok()
+                        })
                     })
                     .collect(),
             ))
@@ -4988,24 +4997,40 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
                 .map(|s| s.as_ref().map(|s| re.is_match(s)))
                 .collect(),
         )),
-        "grep" => Ok(mk_int(
-            x.iter()
+        "grep" => {
+            // `value = TRUE` returns the matching strings rather than positions.
+            let value = a.named("value").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let hits = x
+                .iter()
                 .enumerate()
-                .filter(|(_, s)| s.as_ref().is_some_and(|s| re.is_match(s)))
-                .map(|(i, _)| Some(i as i64 + 1))
-                .collect(),
-        )),
+                .filter(|(_, s)| s.as_ref().is_some_and(|s| re.is_match(s)));
+            if value {
+                Ok(mk_str(hits.map(|(_, s)| s.clone()).collect()))
+            } else {
+                Ok(mk_int(hits.map(|(i, _)| Some(i as i64 + 1)).collect()))
+            }
+        }
         _ => {
             let replacement = str1(&a.req(1, "replacement")?).unwrap_or_default();
-            // R writes back-references as \1; the regex crate wants $1.
+            // R writes back-references as \1; the regex crate wants ${1}. The
+            // brace form is required (bare `$1_` would read `1_` as the group
+            // name), and `\\` collapses to a literal backslash as R does.
             let rep = if fixed {
                 replacement.replace('$', "$$")
             } else {
                 let mut out = String::new();
                 let mut chars = replacement.chars().peekable();
                 while let Some(c) = chars.next() {
-                    if c == '\\' && chars.peek().is_some_and(|d| d.is_ascii_digit()) {
-                        out.push('$');
+                    if c == '\\' {
+                        match chars.next() {
+                            Some(d) if d.is_ascii_digit() => {
+                                out.push_str("${");
+                                out.push(d);
+                                out.push('}');
+                            }
+                            Some(d) => out.push(d),
+                            None => out.push('\\'),
+                        }
                     } else if c == '$' {
                         out.push_str("$$");
                     } else {
