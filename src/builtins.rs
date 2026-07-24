@@ -784,6 +784,24 @@ fn foreign_index(vm: &mut VM, op: &str, x: Value, mut args: Vec<(Option<String>,
     }
 }
 
+/// `x[i] <- v` / `x[[i]] <- v` / `x$n <- v` on a foreign handle. R turns each
+/// into the replacement call `x <- `op`(x, ...index..., value)`, so we delegate
+/// the same shape to embedded R and hand back the modified object.
+fn foreign_index_set(
+    vm: &mut VM,
+    op: &str,
+    x: Value,
+    mut args: Vec<(Option<String>, Value)>,
+    value: Value,
+) -> Value {
+    args.insert(0, (None, x));
+    args.push((None, value));
+    match cran_call(op, &args) {
+        Ok(v) => v,
+        Err(e) => abort(vm, e),
+    }
+}
+
 fn b_index(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
@@ -1052,6 +1070,9 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
+    if matches!(data(&x), RData::RForeign(_)) {
+        return foreign_index_set(vm, "[<-", x, args_of(&argv), value);
+    }
     match assign_index(&x, &args_of(&argv), &value, false) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -1062,6 +1083,9 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
+    if matches!(data(&x), RData::RForeign(_)) {
+        return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
+    }
     match assign_index(&x, &args_of(&argv), &value, true) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -1075,6 +1099,10 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     if let RData::Environment(e) = data(&x) {
         e.borrow_mut().vars.insert(name, value);
         return x;
+    }
+    if matches!(data(&x), RData::RForeign(_)) {
+        // `df$n <- v` is `df[["n"]] <- v` in R.
+        return foreign_index_set(vm, "[[<-", x, vec![(None, scalar_str(name))], value);
     }
     let key = scalar_str(name);
     let args = vec![(None, key)];
