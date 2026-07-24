@@ -311,13 +311,17 @@ impl Compiler {
 
     fn expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
         match e {
+            // A numeric literal rides unboxed (native `Value::Float`/`Int`) — no
+            // `CONST_DBL`/`CONST_INT` builtin. Every host accessor already reads
+            // the unboxed variants, and keeping literals off the builtin path is
+            // what lets `--aot` native-lower a whole loop that starts with, e.g.,
+            // `s <- 0` (a deopt-point builtin call there would end native codegen
+            // before the loop even begins).
             Expr::Num(n) => {
                 b.emit(Op::LoadFloat(*n), 0);
-                b.emit(Op::CallBuiltin(ops::CONST_DBL, 1), 0);
             }
             Expr::Int(n) => {
                 b.emit(Op::LoadInt(*n), 0);
-                b.emit(Op::CallBuiltin(ops::CONST_INT, 1), 0);
             }
             Expr::Str(s) => {
                 self.kstr(b, s);
@@ -664,19 +668,48 @@ impl Compiler {
         let v_c = self.tmp_name(b, "rc");
         let islot = b.add_name(var);
 
-        self.expr(b, lhs)?;
-        b.emit(Op::SetVar(v_a), 0);
-        self.expr(b, rhs)?;
-        b.emit(Op::SetVar(v_b), 0);
-        for (op, dst) in [
-            (ops::RANGE_FROM, v_from),
-            (ops::RANGE_STEP, v_step),
-            (ops::RANGE_LEN, v_len),
-        ] {
-            b.emit(Op::GetVar(v_a), 0);
-            b.emit(Op::GetVar(v_b), 0);
-            b.emit(Op::CallBuiltin(op, 2), 0);
-            b.emit(Op::SetVar(dst), 0);
+        // Constant-fold `LIT:LIT` (e.g. `1:1000000`): compute the typed start,
+        // ±1 step, and count at compile time and load them as native constants,
+        // so the loop setup makes no builtin call. That keeps the whole loop off
+        // the builtin path, which is what lets `--aot` native-lower it (a builtin
+        // call is a deopt point that ends native codegen).
+        let folded = match (const_num(lhs), const_num(rhs)) {
+            (Some(a), Some(bv)) => {
+                let whole = a == a.trunc() && bv == bv.trunc();
+                let step_up = !(a > bv);
+                let count = ((bv - a).abs() + 1e-10).floor() as i64 + 1;
+                if whole {
+                    b.emit(Op::LoadInt(a as i64), 0);
+                    b.emit(Op::SetVar(v_from), 0);
+                    b.emit(Op::LoadInt(if step_up { 1 } else { -1 }), 0);
+                    b.emit(Op::SetVar(v_step), 0);
+                } else {
+                    b.emit(Op::LoadFloat(a), 0);
+                    b.emit(Op::SetVar(v_from), 0);
+                    b.emit(Op::LoadFloat(if step_up { 1.0 } else { -1.0 }), 0);
+                    b.emit(Op::SetVar(v_step), 0);
+                }
+                b.emit(Op::LoadInt(count), 0);
+                b.emit(Op::SetVar(v_len), 0);
+                true
+            }
+            _ => false,
+        };
+        if !folded {
+            self.expr(b, lhs)?;
+            b.emit(Op::SetVar(v_a), 0);
+            self.expr(b, rhs)?;
+            b.emit(Op::SetVar(v_b), 0);
+            for (op, dst) in [
+                (ops::RANGE_FROM, v_from),
+                (ops::RANGE_STEP, v_step),
+                (ops::RANGE_LEN, v_len),
+            ] {
+                b.emit(Op::GetVar(v_a), 0);
+                b.emit(Op::GetVar(v_b), 0);
+                b.emit(Op::CallBuiltin(op, 2), 0);
+                b.emit(Op::SetVar(dst), 0);
+            }
         }
         b.emit(Op::LoadInt(0), 0);
         b.emit(Op::SetVar(v_c), 0);
@@ -1060,15 +1093,26 @@ pub(crate) fn deparse_ast(e: &Expr) -> String {
 }
 
 /// The native fusevm op for a binary operator whose scalar semantics match R
-/// exactly. `Op::Div` is always-float (so `5L/2L` is `2.5`, as R). `%%`/`%/%`
-/// arrive as `Expr::Special`, not here; `^`, comparisons, and `& |` keep the
-/// builtin path because their native forms diverge from R on NA/NaN or sign.
+/// exactly. `+ - *` do. `/` does NOT: fusevm's `Op::Div` yields `Undef` on a
+/// zero divisor (awk/shell semantics), whereas R's `/` is IEEE (`1/0` is `Inf`,
+/// `0/0` is `NaN`) — so it stays on the builtin path, as fusevm's own `Op::Div`
+/// comment prescribes for a frontend with different division semantics. `%%`/
+/// `%/%` arrive as `Expr::Special`; `^`, comparisons, and `& |` also stay
+/// builtins (native forms diverge from R on NA/NaN or sign).
+/// A numeric literal's value, for compile-time folding of a `LIT:LIT` range.
+fn const_num(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Num(n) => Some(*n),
+        Expr::Int(n) => Some(*n as f64),
+        _ => None,
+    }
+}
+
 fn native_binop(op: &BinOp) -> Option<Op> {
     match op {
         BinOp::Add => Some(Op::Add),
         BinOp::Sub => Some(Op::Sub),
         BinOp::Mul => Some(Op::Mul),
-        BinOp::Div => Some(Op::Div),
         _ => None,
     }
 }
