@@ -2613,17 +2613,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "x")?;
             let xs = as_dbl(&x);
             let mut acc = if name == "cumsum" { 0.0 } else { 1.0 };
+            // NA is cumulative: once a running total meets an NA, every later
+            // element is NA too (R can no longer know the accumulated value).
+            let mut na = false;
             let out: Vec<Option<f64>> = xs
                 .iter()
                 .map(|e| {
-                    e.map(|v| {
-                        if name == "cumsum" {
-                            acc += v
-                        } else {
-                            acc *= v
+                    if na {
+                        return None;
+                    }
+                    match e {
+                        Some(v) => {
+                            if name == "cumsum" {
+                                acc += v
+                            } else {
+                                acc *= v
+                            }
+                            Some(acc)
                         }
-                        acc
-                    })
+                        None => {
+                            na = true;
+                            None
+                        }
+                    }
                 })
                 .collect();
             // `cumsum` of an integer/logical vector stays integer (R's rule);
@@ -2801,16 +2813,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "cummax" | "cummin" => {
             let xs = as_dbl(&a.req(0, "x")?);
             let mut acc: Option<f64> = None;
+            // Like cumsum, an NA poisons every later element of the running
+            // extremum.
+            let mut na = false;
             Ok(mk_dbl(
                 xs.iter()
                     .map(|e| {
-                        let v = (*e)?;
-                        acc = Some(match acc {
-                            None => v,
-                            Some(a) if name == "cummax" => a.max(v),
-                            Some(a) => a.min(v),
-                        });
-                        acc
+                        if na {
+                            return None;
+                        }
+                        match e {
+                            None => {
+                                na = true;
+                                None
+                            }
+                            Some(v) => {
+                                acc = Some(match acc {
+                                    None => *v,
+                                    Some(a) if name == "cummax" => a.max(*v),
+                                    Some(a) => a.min(*v),
+                                });
+                                acc
+                            }
+                        }
                     })
                     .collect(),
             ))
