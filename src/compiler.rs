@@ -39,6 +39,9 @@ struct Compiler {
     /// instead of the string-keyed environment. Empty unless the whole top level
     /// is slot-safe (see [`slot_locals`]).
     locals: std::collections::HashSet<String>,
+    /// Slots proven to hold an unboxed native numeric scalar (see
+    /// [`native_num_slots`]) — usable as a native `for (i in 1:n)` bound.
+    native_nums: std::collections::HashSet<String>,
 }
 
 /// Builtins that reach into an environment by name; their presence makes it
@@ -185,6 +188,7 @@ fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
     let mut c = Compiler::default();
     if use_slots {
         c.locals = slot_locals(exprs);
+        c.native_nums = native_num_slots(exprs);
     }
     let mut b = ChunkBuilder::new();
     if exprs.is_empty() {
@@ -695,7 +699,47 @@ impl Compiler {
             }
             _ => false,
         };
-        if !folded {
+        // `for (i in <int-literal> : <native-scalar>)` — e.g. `1:n`: the elements
+        // are integers (start is integer-valued), so compute step/count with
+        // native ops on the bound (its `to_float` reads a real scalar only
+        // because `native_nums` proved it unboxed). No builtin call, so `--aot`
+        // lowers the whole loop.
+        let native_bound = !folded
+            && int_literal(lhs).is_some()
+            && matches!(rhs, Expr::Ident(n) if self.native_nums.contains(n));
+        if native_bound {
+            let a = int_literal(lhs).unwrap();
+            self.expr(b, rhs)?; // the bound → native scalar
+            b.emit(Op::SetVar(v_b), 0);
+            b.emit(Op::LoadInt(a), 0);
+            b.emit(Op::SetVar(v_from), 0);
+            // step = if from <= to { 1 } else { -1 }
+            b.emit(Op::GetVar(v_from), 0);
+            b.emit(Op::GetVar(v_b), 0);
+            b.emit(Op::NumLe, 0);
+            let to_desc = b.emit(Op::JumpIfFalse(0), 0);
+            b.emit(Op::LoadInt(1), 0);
+            b.emit(Op::SetVar(v_step), 0);
+            let to_after = b.emit(Op::Jump(0), 0);
+            let desc = b.current_pos();
+            b.patch_jump(to_desc, desc);
+            b.emit(Op::LoadInt(-1), 0);
+            b.emit(Op::SetVar(v_step), 0);
+            let after = b.current_pos();
+            b.patch_jump(to_after, after);
+            // count = floor(|to - from| + 1e-10) + 1  (native)
+            b.emit(Op::GetVar(v_b), 0);
+            b.emit(Op::GetVar(v_from), 0);
+            b.emit(Op::Sub, 0);
+            b.emit(Op::AbsFloat, 0);
+            b.emit(Op::LoadFloat(1e-10), 0);
+            b.emit(Op::Add, 0);
+            b.emit(Op::FloorFloat, 0);
+            b.emit(Op::TruncInt, 0);
+            b.emit(Op::LoadInt(1), 0);
+            b.emit(Op::Add, 0);
+            b.emit(Op::SetVar(v_len), 0);
+        } else if !folded {
             self.expr(b, lhs)?;
             b.emit(Op::SetVar(v_a), 0);
             self.expr(b, rhs)?;
@@ -1105,6 +1149,116 @@ fn const_num(e: &Expr) -> Option<f64> {
         Expr::Num(n) => Some(*n),
         Expr::Int(n) => Some(*n as f64),
         _ => None,
+    }
+}
+
+/// An integer-valued numeric literal — the start of a range whose elements are
+/// integers (`1:n`), so the loop variable is statically `Int`.
+fn int_literal(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(n) => Some(*n),
+        Expr::Num(n) if *n == n.trunc() => Some(*n as i64),
+        _ => None,
+    }
+}
+
+/// Slots that provably hold an **unboxed native numeric scalar** — a value
+/// `Value::Int/Float`, never a heap `Obj`. A slot qualifies when every
+/// assignment to it is a numeric literal or scalar arithmetic over such slots
+/// (and `for`-range counters, which are native ints). Anything that could box —
+/// a builtin call, `c(...)`, an index — disqualifies it. Fixed-point over the
+/// self/other-slot references (`s <- s + i`). Used so `for (i in 1:n)` can lower
+/// its bound `n` with native ops (whose `to_float` reads only native scalars).
+fn native_num_slots(exprs: &[Expr]) -> std::collections::HashSet<String> {
+    let mut cand = std::collections::HashSet::new();
+    let mut assigns: Vec<(String, &Expr)> = Vec::new();
+    for e in exprs {
+        collect_num_assigns(e, &mut cand, &mut assigns);
+    }
+    loop {
+        let mut changed = false;
+        for (name, rhs) in &assigns {
+            if cand.contains(name) && !is_native_num(rhs, &cand) {
+                cand.remove(name);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    cand
+}
+
+/// Gather every simple `name <- rhs` (and `for` counter) under `e`; a name is a
+/// candidate native-num slot, `assigns` records each rhs to re-check at fixpoint.
+fn collect_num_assigns<'a>(
+    e: &'a Expr,
+    cand: &mut std::collections::HashSet<String>,
+    assigns: &mut Vec<(String, &'a Expr)>,
+) {
+    match e {
+        Expr::Assign { target, value, super_assign: false } => {
+            if let Expr::Ident(n) | Expr::Str(n) = target.as_ref() {
+                cand.insert(n.clone());
+                assigns.push((n.clone(), value));
+            }
+            collect_num_assigns(value, cand, assigns);
+        }
+        Expr::For { var, seq, body } => {
+            // A for-range counter is a native int; a general `for` var is not.
+            if int_literal(seq_start(seq)).is_some() {
+                cand.insert(var.clone());
+            }
+            collect_num_assigns(body, cand, assigns);
+        }
+        Expr::If { cond, then, els } => {
+            collect_num_assigns(cond, cand, assigns);
+            collect_num_assigns(then, cand, assigns);
+            if let Some(x) = els {
+                collect_num_assigns(x, cand, assigns);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_num_assigns(cond, cand, assigns);
+            collect_num_assigns(body, cand, assigns);
+        }
+        Expr::Repeat(b) => collect_num_assigns(b, cand, assigns),
+        Expr::Block(xs) => {
+            for x in xs {
+                collect_num_assigns(x, cand, assigns);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The `lhs` of a `seq` that is a `:` range (else the expr itself).
+fn seq_start(seq: &Expr) -> &Expr {
+    match seq {
+        Expr::Binary { op: BinOp::Colon, lhs, .. } => lhs,
+        other => other,
+    }
+}
+
+/// Whether `e` provably evaluates to a native numeric scalar given the current
+/// candidate slot set.
+fn is_native_num(e: &Expr, cand: &std::collections::HashSet<String>) -> bool {
+    match e {
+        Expr::Num(_) | Expr::Int(_) => true,
+        Expr::Ident(n) => cand.contains(n),
+        Expr::Binary { op, lhs, rhs } => {
+            matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow
+            ) && is_native_num(lhs, cand)
+                && is_native_num(rhs, cand)
+        }
+        Expr::Special { name, lhs, rhs } if name == "%%" || name == "%/%" => {
+            is_native_num(lhs, cand) && is_native_num(rhs, cand)
+        }
+        Expr::Unary { operand, .. } => is_native_num(operand, cand),
+        _ => false,
     }
 }
 
