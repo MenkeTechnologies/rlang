@@ -847,7 +847,9 @@ fn b_range_from(vm: &mut VM, _: u8) -> Value {
 /// Typed ±1 step of `from:to`, matching the element type.
 fn b_range_step(vm: &mut VM, _: u8) -> Value {
     let (from, to, whole) = range_ends(vm);
-    let up = !(from > to);
+    // NaN-preserving: `!(from > to)` is true when either end is NaN, which
+    // `from <= to` is not — keep the original ordering semantics.
+    let up = !matches!(from.partial_cmp(&to), Some(std::cmp::Ordering::Greater));
     if whole {
         Value::Int(if up { 1 } else { -1 })
     } else {
@@ -3777,7 +3779,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if let Some(dn) = a.get(4, "dimnames").filter(|v| !matches!(data(v), RData::Null)) {
                 let parts = elements(&dn);
                 let pick = |i: usize| -> Option<Vec<Option<String>>> {
-                    parts.get(i).filter(|e| !matches!(data(e), RData::Null)).map(|e| as_str(e))
+                    parts.get(i).filter(|e| !matches!(data(e), RData::Null)).map(as_str)
                 };
                 set_dimnames(&out, pick(0), pick(1));
             }
@@ -4044,7 +4046,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 // A bare operator name (the default is "*").
                 other => {
-                    let op = other.as_ref().and_then(|v| str1(v));
+                    let op = other.as_ref().and_then(str1);
                     binop(op.as_deref().unwrap_or("*"), &xe, &ye)?
                 }
             };

@@ -281,7 +281,7 @@ impl RApi {
 
     /// Marshal an R SEXP back into an rlang value, or `Err` for a type rlang has
     /// no representation for.
-    unsafe fn from_sexp(&self, s: Sexp) -> Result<Value, String> {
+    unsafe fn sexp_to_value(&self, s: Sexp) -> Result<Value, String> {
         let ty = (self.typeof_)(s);
         let n = (self.xlength)(s) as usize;
         // A classed value (Date, factor, difftime, data.frame, S4, …) keeps its
@@ -362,7 +362,7 @@ impl RApi {
             ),
             VECSXP => {
                 let items: Result<Vec<Value>, String> = (0..n)
-                    .map(|i| self.from_sexp((self.vector_elt)(s, i as isize)))
+                    .map(|i| self.sexp_to_value((self.vector_elt)(s, i as isize)))
                     .collect();
                 mk_list(items?)
             }
@@ -437,7 +437,7 @@ pub fn call_handle(ptr: usize, args: &[(Option<String>, Value)]) -> Result<Value
         let value = (api.vector_elt)(wv, 0);
         let visible = (api.vector_elt)(wv, 1);
         let vis = (api.typeof_)(visible) == LGLSXP && (api.logical)(visible).read() == 1;
-        let r = api.from_sexp(value);
+        let r = api.sexp_to_value(value);
         (api.unprotect)(1);
         with_host(|h| h.visible = vis);
         r
@@ -485,7 +485,7 @@ pub fn eval_source(code: &str) -> Result<Value, String> {
     unsafe {
         let s = api.eval(code)?;
         let s = (api.protect)(s);
-        let r = api.from_sexp(s);
+        let r = api.sexp_to_value(s);
         (api.unprotect)(1);
         r
     }
@@ -543,7 +543,7 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
         let value = (api.vector_elt)(wv, 0);
         let visible = (api.vector_elt)(wv, 1);
         let vis = (api.typeof_)(visible) == LGLSXP && (api.logical)(visible).read() == 1;
-        let r = api.from_sexp(value);
+        let r = api.sexp_to_value(value);
         (api.unprotect)(1);
         with_host(|h| h.visible = vis);
         r

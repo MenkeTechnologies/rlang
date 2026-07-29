@@ -680,7 +680,8 @@ impl Compiler {
         let folded = match (const_num(lhs), const_num(rhs)) {
             (Some(a), Some(bv)) => {
                 let whole = a == a.trunc() && bv == bv.trunc();
-                let step_up = !(a > bv);
+                // NaN-preserving (see `b_range_step`): `!(a > bv)` holds for NaN.
+                let step_up = !matches!(a.partial_cmp(&bv), Some(std::cmp::Ordering::Greater));
                 let count = ((bv - a).abs() + 1e-10).floor() as i64 + 1;
                 if whole {
                     b.emit(Op::LoadInt(a as i64), 0);

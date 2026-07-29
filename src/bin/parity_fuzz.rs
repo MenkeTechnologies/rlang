@@ -727,7 +727,7 @@ fn gen_rounding(seed: u64) -> Vec<String> {
         2 => format!("floor({f} * {g})"),
         3 => format!("trunc({f} * {g})"),
         4 => format!("signif({f} * {g}, {})", r.range(1, 5)),
-        5 => format!("round(c(0.5, 1.5, 2.5, 3.5))"),
+        5 => "round(c(0.5, 1.5, 2.5, 3.5))".to_string(),
         6 => format!("round({f} * 100) / 100"),
         7 => format!("ceiling(sqrt({}))", r.range(1, 200)),
         _ => format!("floor(log2({}))", r.range(1, 1000)),
@@ -861,7 +861,7 @@ fn gen_listx(seed: u64) -> Vec<String> {
         3 => format!("Reduce(function(a, b) a + b, 1:{n}, accumulate = TRUE)"),
         4 => format!("mapply(function(a, b) a * b, 1:{n}, {n}:1)"),
         5 => format!("lengths(list(1:{}, 1:{}, 1:{}))", r.range(1,4), r.range(1,4), r.range(1,4)),
-        6 => format!("do.call(pmax, list(c(1, 5), c(3, 2)))"),
+        6 => "do.call(pmax, list(c(1, 5), c(3, 2)))".to_string(),
         _ => format!("unlist(Map(`+`, 1:{n}, {n}:1))"),
     })
 }
@@ -964,13 +964,13 @@ fn gen_replace(seed: u64) -> Vec<String> {
     one(match r.below(9) {
         0 => format!("x <- 1:5; x[{}] <- {}; x", r.range(1, 5), si(r)),
         1 => format!("x <- 1:5; x[x > {}] <- 0; x", r.range(1, 3)),
-        2 => format!("x <- 1:3; names(x) <- c(\"a\", \"b\", \"c\"); x"),
-        3 => format!("x <- 1:6; dim(x) <- c(2, 3); x"),
+        2 => "x <- 1:3; names(x) <- c(\"a\", \"b\", \"c\"); x".to_string(),
+        3 => "x <- 1:6; dim(x) <- c(2, 3); x".to_string(),
         4 => format!("x <- c(1, 2); length(x) <- {}; x", r.range(3, 5)),
         5 => format!("m <- matrix(1:4, 2); m[{}, {}] <- 9; m", r.range(1, 2), r.range(1, 2)),
         6 => format!("l <- list(a = 1, b = 2); l$c <- {}; l", si(r)),
         7 => format!("x <- 1:5; x[[{}]] <- {}; x", r.range(1, 5), si(r)),
-        _ => format!("x <- 1:5; x[-1] <- 0; x"),
+        _ => "x <- 1:5; x[-1] <- 0; x".to_string(),
     })
 }
 
@@ -987,7 +987,7 @@ fn gen_switch(seed: u64) -> Vec<String> {
             "f <- function(t) switch(t, a = \"A\", b = \"B\", \"?\"); f(\"{key}\")"
         ),
         5 => format!("x <- switch(\"{key}\", a = 10); is.null(x)"),
-        6 => format!("sapply(c(\"a\", \"b\"), function(x) switch(x, a = 1, b = 2))"),
+        6 => "sapply(c(\"a\", \"b\"), function(x) switch(x, a = 1, b = 2))".to_string(),
         _ => format!("switch({n} + 1, {}, {}, {})", si(r), si(r), si(r)),
     })
 }
@@ -1034,7 +1034,7 @@ fn gen_factorx(seed: u64) -> Vec<String> {
         0 => format!("as.integer(cut(1:{}, c(0, 2, 4, 6, 8)))", r.range(3, 8)),
         1 => format!("nlevels(cut(1:{}, c(0, 5, 10)))", r.range(2, 10)),
         2 => format!("cut(c({}, {}, {}), c(0, 3, 6, 9))", r.range(1, 8), r.range(1, 8), r.range(1, 8)),
-        3 => format!("levels(cut(1:9, c(0, 3, 6, 9)))"),
+        3 => "levels(cut(1:9, c(0, 3, 6, 9)))".to_string(),
         4 => format!("as.integer(droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\"))))"),
         5 => format!("droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\", \"e\")))"),
         6 => format!("factor({s}, levels = c(\"a\", \"b\", \"c\"), ordered = TRUE)"),
@@ -1049,7 +1049,7 @@ fn gen_deparsex(seed: u64) -> Vec<String> {
         1 => format!("deparse(c({}, {}, {}))", ff(r), ff(r), ff(r)),
         2 => format!("deparse(c(\"{}\", \"{}\"))", ww(r), ww(r)),
         3 => format!("deparse({}L)", si(r)),
-        4 => format!("deparse(c(TRUE, FALSE, NA))"),
+        4 => "deparse(c(TRUE, FALSE, NA))".to_string(),
         5 => format!("deparse({})", si(r)),
         6 => format!("diff(c({}, {}, {}, {}), differences = 2)", si(r), si(r), si(r), si(r)),
         _ => format!("diff(1:{}, lag = {})", r.range(5, 10), r.range(1, 3)),
@@ -1081,7 +1081,7 @@ fn gen_seqx2(seed: u64) -> Vec<String> {
         5 => format!("isTRUE(all.equal({}, {}))", si(r), si(r)),
         6 => format!("all.equal(c({}, {}), c({}, {}))", ff(r), ff(r), ff(r), ff(r)),
         7 => format!("rep_len(c(\"{}\", \"{}\"), {})", ww(r), ww(r), r.range(1, 7)),
-        _ => format!("rev(setNames(1:3, c(\"a\", \"b\", \"c\")))"),
+        _ => "rev(setNames(1:3, c(\"a\", \"b\", \"c\")))".to_string(),
     })
 }
 
@@ -1095,7 +1095,7 @@ fn gen_combinator(seed: u64) -> Vec<String> {
         3 => format!("Vectorize(function(x) x ^ 2)(1:{})", r.range(2, 6)),
         4 => format!("Vectorize(function(x, y) x + y)(1:{n}, {n}:1)", n = r.range(2, 5)),
         5 => format!("sapply({v}, Negate(function(x) x > 0))"),
-        6 => format!("is.function(Negate(is.null))"),
+        6 => "is.function(Negate(is.null))".to_string(),
         _ => format!("Filter(Negate(function(x) x %% 2 == 0), 1:{})", r.range(3, 9)),
     })
 }
