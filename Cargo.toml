@@ -17,10 +17,18 @@ publish = true
 # `Rscript` binary, the man page and completions — not the HUD site, CI config,
 # integration corpus, or the bug tracker. None are referenced at compile time.
 exclude = [
-    "/docs/",
     "/.github/",
     "/tests/",
     "/examples/",
+    "/docs/",
+    "/bench/",
+    "/benches/",
+    "/parity/",
+    "/parity-scripts/",
+    "/scripts/",
+    "/vendor/",
+    "/tools/",
+    "/fuzz/",
     "/BUGS.md",
 ]
 
