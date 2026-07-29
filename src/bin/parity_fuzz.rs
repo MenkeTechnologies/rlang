@@ -150,7 +150,11 @@ fn oracle_id() -> String {
         // `Rscript --version` prints to stdout on R 4.x; older builds used
         // stderr. Try stdout first, fall back to stderr, take the first line.
         .map(|o| {
-            let s = if o.stdout.is_empty() { &o.stderr } else { &o.stdout };
+            let s = if o.stdout.is_empty() {
+                &o.stderr
+            } else {
+                &o.stdout
+            };
             String::from_utf8_lossy(s)
                 .lines()
                 .next()
@@ -336,7 +340,9 @@ fn run_ours(script: &str, bin: &Path, timeout: Duration) -> RunOut {
 
 const INTS: &[&str] = &["0", "1", "2", "3", "5", "7", "10", "42", "100"];
 const NEG_INTS: &[&str] = &["-1", "-2", "-3", "-7", "-10"];
-const DBLS: &[&str] = &["0.5", "1.5", "2.25", "3.14", "10.0", "0.1", "0.333", "100.25"];
+const DBLS: &[&str] = &[
+    "0.5", "1.5", "2.25", "3.14", "10.0", "0.1", "0.333", "100.25",
+];
 const WORDS: &[&str] = &["foo", "bar", "baz", "hello", "world", "abc", "xyz", "quux"];
 
 /// A non-negative integer literal — safe as the first token of a program.
@@ -424,7 +430,10 @@ fn gen_numfmt(seed: u64) -> Vec<String> {
         2 => format!("signif({a} * {b}, {})", r.range(1, 6)),
         3 => format!("format({a} / {b}, nsmall = {})", r.range(0, 5)),
         4 => format!("c({a}, {b}, {a} * {b})"),
-        5 => format!("formatC({a} / {b}, digits = {}, format = \"f\")", r.range(0, 5)),
+        5 => format!(
+            "formatC({a} / {b}, digits = {}, format = \"f\")",
+            r.range(0, 5)
+        ),
         6 => format!("prettyNum({}, big.mark = \",\")", r.range(1000, 9_999_999)),
         _ => format!("sqrt({a}) + {b}"),
     })
@@ -453,7 +462,10 @@ fn gen_seqrep(seed: u64) -> Vec<String> {
     let b = r.range(a + 1, a + 9);
     one(match r.below(9) {
         0 => format!("seq({a}, {b})"),
-        1 => format!("seq({a}, {b}, by = {})", *r.pick(&["0.5", "0.25", "2", "1.5"])),
+        1 => format!(
+            "seq({a}, {b}, by = {})",
+            *r.pick(&["0.5", "0.25", "2", "1.5"])
+        ),
         2 => format!("seq_len({})", r.range(0, 6)),
         3 => format!("seq_along(c({}, {}, {}))", si(r), si(r), si(r)),
         4 => format!("rep({}, {})", si(r), r.range(1, 5)),
@@ -468,7 +480,11 @@ fn gen_vecmath(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     // Half the draws use a double vector so float-vector print alignment
     // (`digits`, decimal padding) is exercised alongside the integer path.
-    let v = if r.below(2) == 0 { vec_int(r) } else { vec_dbl(r) };
+    let v = if r.below(2) == 0 {
+        vec_int(r)
+    } else {
+        vec_dbl(r)
+    };
     // `var`/`sd` run only on integer vectors: on fractional inputs R accumulates
     // the sum of squares in C `long double`, so a result landing on a 7th-sig
     // rounding tie prints one ULP off from Rust's f64 — a precision artifact,
@@ -580,7 +596,10 @@ fn gen_logical(seed: u64) -> Vec<String> {
         6 => format!("({v}) >= {a} & ({v}) <= {b}"),
         7 => format!("sum(({v}) > 0)"),
         8 => format!("isTRUE({a} == {b})"),
-        9 => format!("!c(TRUE, FALSE, {})", if r.below(2) == 0 { "TRUE" } else { "NA" }),
+        9 => format!(
+            "!c(TRUE, FALSE, {})",
+            if r.below(2) == 0 { "TRUE" } else { "NA" }
+        ),
         _ => format!("({a} > {b}) || ({a} < {b})"),
     })
 }
@@ -607,7 +626,11 @@ fn gen_control(seed: u64) -> Vec<String> {
         1 => format!("v <- c(); for (i in 1:{n}) v <- c(v, i * i); v"),
         2 => format!("i <- 1; s <- 0; while (i <= {n}) {{ s <- s + i; i <- i + 1 }}; s"),
         3 => format!("acc <- 1; for (i in 1:{n}) acc <- acc * i; acc"),
-        4 => format!("out <- c(); for (w in c(\"{}\", \"{}\")) out <- c(out, nchar(w)); out", ww(r), ww(r)),
+        4 => format!(
+            "out <- c(); for (w in c(\"{}\", \"{}\")) out <- c(out, nchar(w)); out",
+            ww(r),
+            ww(r)
+        ),
         _ => format!("i <- 0; repeat {{ i <- i + 1; if (i >= {n}) break }}; i"),
     })
 }
@@ -622,9 +645,18 @@ fn gen_funcs(seed: u64) -> Vec<String> {
             "fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib({})",
             r.range(2, 12)
         ),
-        3 => format!("adder <- function(a) function(b) a + b; adder({})({})", si(r), si(r)),
+        3 => format!(
+            "adder <- function(a) function(b) a + b; adder({})({})",
+            si(r),
+            si(r)
+        ),
         4 => format!("f <- function(x, y = {}) x + y; f({})", si(r), si(r)),
-        _ => format!("g <- function(...) sum(...); g({}, {}, {})", si(r), si(r), si(r)),
+        _ => format!(
+            "g <- function(...) sum(...); g({}, {}, {})",
+            si(r),
+            si(r),
+            si(r)
+        ),
     })
 }
 
@@ -686,10 +718,21 @@ fn gen_types(seed: u64) -> Vec<String> {
         1 => format!("as.numeric(\"{f}\")"),
         2 => format!("as.character({n})"),
         3 => format!("as.logical({})", *r.pick(&["0", "1", "2"])),
-        4 => format!("class({})", if r.below(2) == 0 { format!("{n}L") } else { f.to_string() }),
+        4 => format!(
+            "class({})",
+            if r.below(2) == 0 {
+                format!("{n}L")
+            } else {
+                f.to_string()
+            }
+        ),
         5 => format!("typeof({n}L)"),
         6 => format!("is.na(c({n}, NA, {f}))"),
-        7 => format!("as.integer(c(\"{}\", \"{}\"))", r.range(0, 99), r.range(0, 99)),
+        7 => format!(
+            "as.integer(c(\"{}\", \"{}\"))",
+            r.range(0, 99),
+            r.range(0, 99)
+        ),
         8 => format!("storage.mode({n}L)"),
         9 => format!("as.numeric(TRUE) + {f}"),
         _ => format!("round(as.numeric(\"{f}\") * {})", r.range(1, 9)),
@@ -797,7 +840,11 @@ fn gen_mathfn(seed: u64) -> Vec<String> {
         7 => format!("cumsum({})", vec_int(r)),
         8 => format!("cumprod(1:{})", r.range(1, 6)),
         9 => format!("lfactorial({})", r.range(1, 20)),
-        _ => format!("factorial({}) / factorial({})", r.range(3, 8), r.range(1, 3)),
+        _ => format!(
+            "factorial({}) / factorial({})",
+            r.range(3, 8),
+            r.range(1, 3)
+        ),
     })
 }
 
@@ -811,8 +858,19 @@ fn gen_pmaxmin(seed: u64) -> Vec<String> {
         2 => format!("pmax({a}, 0)"),
         3 => format!("cummax({a})"),
         4 => format!("cummin({a})"),
-        5 => format!("tabulate(c({}, {}, {}, {}), {})", r.range(1,4), r.range(1,4), r.range(1,4), r.range(1,4), r.range(3,5)),
-        6 => format!("findInterval(c({}, {}), c(1, 2, 3, 4))", r.range(0,5), r.range(0,5)),
+        5 => format!(
+            "tabulate(c({}, {}, {}, {}), {})",
+            r.range(1, 4),
+            r.range(1, 4),
+            r.range(1, 4),
+            r.range(1, 4),
+            r.range(3, 5)
+        ),
+        6 => format!(
+            "findInterval(c({}, {}), c(1, 2, 3, 4))",
+            r.range(0, 5),
+            r.range(0, 5)
+        ),
         7 => format!("pmin(pmax({a}, 0), 3)"),
         _ => format!("range({a})"),
     })
@@ -840,12 +898,19 @@ fn gen_stringx(seed: u64) -> Vec<String> {
     let w = ww(r);
     one(match r.below(9) {
         0 => format!("chartr(\"abc\", \"ABC\", \"{w}\")"),
-        1 => format!("strtoi(\"{}\", {})", r.range(10, 999), *r.pick(&["10", "8", "16"])),
+        1 => format!(
+            "strtoi(\"{}\", {})",
+            r.range(10, 999),
+            *r.pick(&["10", "8", "16"])
+        ),
         2 => format!("sprintf(\"%d:%s\", 1:3, \"{w}\")"),
         3 => format!("toupper(chartr(\"aeiou\", \"AEIOU\", \"{w}\"))"),
         4 => format!("paste(rev(strsplit(\"{w}\", \"\")[[1]]), collapse = \"\")"),
         5 => format!("strtoi(\"{}\")", r.range(0, 9999)),
-        6 => format!("nchar(chartr(\"{}\", \"X\", \"{w}\"))", &w[..1.min(w.len())]),
+        6 => format!(
+            "nchar(chartr(\"{}\", \"X\", \"{w}\"))",
+            &w[..1.min(w.len())]
+        ),
         7 => format!("sprintf(\"[%s]\", c(\"{w}\", \"{}\"))", ww(r)),
         _ => format!("chartr(\"{w}\", \"{}\", \"{w}{w}\")", ww(r)),
     })
@@ -855,12 +920,23 @@ fn gen_listx(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let n = r.range(3, 6);
     one(match r.below(8) {
-        0 => format!("Position(function(x) x > {}, c({}, {}, {}))", r.range(1,3), si(r), si(r), si(r)),
+        0 => format!(
+            "Position(function(x) x > {}, c({}, {}, {}))",
+            r.range(1, 3),
+            si(r),
+            si(r),
+            si(r)
+        ),
         1 => format!("Find(function(x) x %% 2 == 0, 1:{n})"),
         2 => format!("Filter(function(x) x > 0, {})", vec_int(r)),
         3 => format!("Reduce(function(a, b) a + b, 1:{n}, accumulate = TRUE)"),
         4 => format!("mapply(function(a, b) a * b, 1:{n}, {n}:1)"),
-        5 => format!("lengths(list(1:{}, 1:{}, 1:{}))", r.range(1,4), r.range(1,4), r.range(1,4)),
+        5 => format!(
+            "lengths(list(1:{}, 1:{}, 1:{}))",
+            r.range(1, 4),
+            r.range(1, 4),
+            r.range(1, 4)
+        ),
         6 => "do.call(pmax, list(c(1, 5), c(3, 2)))".to_string(),
         _ => format!("unlist(Map(`+`, 1:{n}, {n}:1))"),
     })
@@ -913,10 +989,17 @@ fn gen_strx2(seed: u64) -> Vec<String> {
     let w = ww(r);
     one(match r.below(9) {
         0 => format!("strrep(\"{w}\", {})", r.range(0, 4)),
-        1 => format!("trimws(\"  {w}  \", which = \"{}\")", *r.pick(&["left", "right", "both"])),
+        1 => format!(
+            "trimws(\"  {w}  \", which = \"{}\")",
+            *r.pick(&["left", "right", "both"])
+        ),
         2 => format!("substring(\"{w}\", 1:{})", r.range(2, 4)),
         3 => format!("encodeString(\"{w}\\t{w}\")"),
-        4 => format!("x <- \"{w}\"; substr(x, {}, {}) <- \"XY\"; x", r.range(1, 3), r.range(3, 5)),
+        4 => format!(
+            "x <- \"{w}\"; substr(x, {}, {}) <- \"XY\"; x",
+            r.range(1, 3),
+            r.range(3, 5)
+        ),
         5 => format!("strrep(c(\"{w}\", \"{}\"), 2)", ww(r)),
         6 => format!("nchar(strrep(\"{w}\", {}))", r.range(1, 5)),
         7 => format!("toupper(substring(\"{w}{w}\", {}))", r.range(1, 4)),
@@ -930,11 +1013,27 @@ fn gen_listx2(seed: u64) -> Vec<String> {
     let keys = "c(\"a\", \"b\", \"a\", \"b\", \"c\")";
     one(match r.below(9) {
         0 => format!("split(1:5, {keys})"),
-        1 => format!("tapply(c({}, {}, {}, {}, {}), {keys}, sum)", si(r), si(r), si(r), si(r), si(r)),
-        2 => format!("modifyList(list(a = {}, b = {}), list(b = {}))", si(r), si(r), si(r)),
+        1 => format!(
+            "tapply(c({}, {}, {}, {}, {}), {keys}, sum)",
+            si(r),
+            si(r),
+            si(r),
+            si(r),
+            si(r)
+        ),
+        2 => format!(
+            "modifyList(list(a = {}, b = {}), list(b = {}))",
+            si(r),
+            si(r),
+            si(r)
+        ),
         3 => format!("Reduce(`-`, 1:{n}, right = TRUE)"),
         4 => format!("Reduce(`+`, 1:{n}, accumulate = TRUE, right = TRUE)"),
-        5 => format!("rapply(list({}, {}), function(x) x * 2, how = \"unlist\")", si(r), si(r)),
+        5 => format!(
+            "rapply(list({}, {}), function(x) x * 2, how = \"unlist\")",
+            si(r),
+            si(r)
+        ),
         6 => format!("vapply(1:{n}, function(x) c(x, x * x), numeric(2))"),
         7 => format!("sapply(1:{n}, function(x) c(x, -x))"),
         _ => format!("tapply(1:5, {keys}, length)"),
@@ -948,12 +1047,25 @@ fn gen_indexing(seed: u64) -> Vec<String> {
     one(match r.below(10) {
         0 => format!("m <- matrix(1:6, nrow = 2); m[{}, ]", r.range(1, 2)),
         1 => format!("m <- matrix(1:6, nrow = 2); m[, {}]", r.range(1, 3)),
-        2 => format!("m <- matrix(1:6, nrow = 2); m[{}, {}]", r.range(1, 2), r.range(1, 3)),
+        2 => format!(
+            "m <- matrix(1:6, nrow = 2); m[{}, {}]",
+            r.range(1, 2),
+            r.range(1, 3)
+        ),
         3 => format!("({v})[-{i}]"),
         4 => format!("({v})[c(TRUE, FALSE)]"),
-        5 => format!("x <- c(a = 1, b = 2, c = 3); x[\"{}\"]", *r.pick(&["a", "b", "c"])),
+        5 => format!(
+            "x <- c(a = 1, b = 2, c = 3); x[\"{}\"]",
+            *r.pick(&["a", "b", "c"])
+        ),
         6 => format!("({v})[{i}:{}]", r.range(1, 4)),
-        7 => format!("l <- list({}, {}, {}); l[[{}]]", si(r), si(r), si(r), r.range(1, 3)),
+        7 => format!(
+            "l <- list({}, {}, {}); l[[{}]]",
+            si(r),
+            si(r),
+            si(r),
+            r.range(1, 3)
+        ),
         8 => format!("({v})[({v}) > 0]"),
         _ => format!("({v})[c(-1, -2)]"),
     })
@@ -967,7 +1079,11 @@ fn gen_replace(seed: u64) -> Vec<String> {
         2 => "x <- 1:3; names(x) <- c(\"a\", \"b\", \"c\"); x".to_string(),
         3 => "x <- 1:6; dim(x) <- c(2, 3); x".to_string(),
         4 => format!("x <- c(1, 2); length(x) <- {}; x", r.range(3, 5)),
-        5 => format!("m <- matrix(1:4, 2); m[{}, {}] <- 9; m", r.range(1, 2), r.range(1, 2)),
+        5 => format!(
+            "m <- matrix(1:4, 2); m[{}, {}] <- 9; m",
+            r.range(1, 2),
+            r.range(1, 2)
+        ),
         6 => format!("l <- list(a = 1, b = 2); l$c <- {}; l", si(r)),
         7 => format!("x <- 1:5; x[[{}]] <- {}; x", r.range(1, 5), si(r)),
         _ => "x <- 1:5; x[-1] <- 0; x".to_string(),
@@ -983,9 +1099,7 @@ fn gen_switch(seed: u64) -> Vec<String> {
         1 => format!("switch(\"{key}\", a = 1, b = 2, 99)"),
         2 => format!("switch({n}, \"x\", \"y\", \"z\")"),
         3 => format!("switch(\"{key}\", a = , b = 2, c = 3)"),
-        4 => format!(
-            "f <- function(t) switch(t, a = \"A\", b = \"B\", \"?\"); f(\"{key}\")"
-        ),
+        4 => format!("f <- function(t) switch(t, a = \"A\", b = \"B\", \"?\"); f(\"{key}\")"),
         5 => format!("x <- switch(\"{key}\", a = 10); is.null(x)"),
         6 => "sapply(c(\"a\", \"b\"), function(x) switch(x, a = 1, b = 2))".to_string(),
         _ => format!("switch({n} + 1, {}, {}, {})", si(r), si(r), si(r)),
@@ -1022,7 +1136,10 @@ fn gen_regexflags(seed: u64) -> Vec<String> {
         1 => format!("gsub(\"{p}\", \"X\", \"{s}\", ignore.case = TRUE)"),
         2 => format!("sub(\"{p}\", \"X\", \"{s}\", ignore.case = TRUE)"),
         3 => format!("grepl(\"{}\", \"{s}\", fixed = TRUE)", &s[..1.min(s.len())]),
-        4 => format!("grep(\"{p}\", c(\"{s}\", \"{}\"), ignore.case = TRUE)", ww(r)),
+        4 => format!(
+            "grep(\"{p}\", c(\"{s}\", \"{}\"), ignore.case = TRUE)",
+            ww(r)
+        ),
         _ => format!("gsub(\"[aeiou]\", \"_\", \"{s}\", ignore.case = TRUE)"),
     })
 }
@@ -1033,7 +1150,12 @@ fn gen_factorx(seed: u64) -> Vec<String> {
     one(match r.below(8) {
         0 => format!("as.integer(cut(1:{}, c(0, 2, 4, 6, 8)))", r.range(3, 8)),
         1 => format!("nlevels(cut(1:{}, c(0, 5, 10)))", r.range(2, 10)),
-        2 => format!("cut(c({}, {}, {}), c(0, 3, 6, 9))", r.range(1, 8), r.range(1, 8), r.range(1, 8)),
+        2 => format!(
+            "cut(c({}, {}, {}), c(0, 3, 6, 9))",
+            r.range(1, 8),
+            r.range(1, 8),
+            r.range(1, 8)
+        ),
         3 => "levels(cut(1:9, c(0, 3, 6, 9)))".to_string(),
         4 => format!("as.integer(droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\"))))"),
         5 => format!("droplevels(factor({s}, levels = c(\"a\", \"b\", \"c\", \"d\", \"e\")))"),
@@ -1051,7 +1173,13 @@ fn gen_deparsex(seed: u64) -> Vec<String> {
         3 => format!("deparse({}L)", si(r)),
         4 => "deparse(c(TRUE, FALSE, NA))".to_string(),
         5 => format!("deparse({})", si(r)),
-        6 => format!("diff(c({}, {}, {}, {}), differences = 2)", si(r), si(r), si(r), si(r)),
+        6 => format!(
+            "diff(c({}, {}, {}, {}), differences = 2)",
+            si(r),
+            si(r),
+            si(r),
+            si(r)
+        ),
         _ => format!("diff(1:{}, lag = {})", r.range(5, 10), r.range(1, 3)),
     })
 }
@@ -1063,10 +1191,30 @@ fn gen_fmtx(seed: u64) -> Vec<String> {
         1 => format!("format(c({}, {}, {}))", ff(r), ff(r), ff(r)),
         2 => format!("format(c(\"{}\", \"{}\", \"{}\"))", ww(r), ww(r), ww(r)),
         3 => format!("sprintf(\"%o\", {})", r.range(0, 999)),
-        4 => format!("sprintf(\"%o %x %X\", {}, {}, {})", r.range(0, 500), r.range(0, 500), r.range(0, 500)),
-        5 => format!("format(c({}, {}), nsmall = {})", ff(r), ff(r), r.range(1, 4)),
-        6 => format!("format(c({}, {}, {}), big.mark = \",\")", r.range(1000, 99999), r.range(1000, 99999), r.range(1000, 99999)),
-        _ => format!("format(seq({}, {}, {}))", r.range(0, 3), r.range(8, 20), ff(r)),
+        4 => format!(
+            "sprintf(\"%o %x %X\", {}, {}, {})",
+            r.range(0, 500),
+            r.range(0, 500),
+            r.range(0, 500)
+        ),
+        5 => format!(
+            "format(c({}, {}), nsmall = {})",
+            ff(r),
+            ff(r),
+            r.range(1, 4)
+        ),
+        6 => format!(
+            "format(c({}, {}, {}), big.mark = \",\")",
+            r.range(1000, 99999),
+            r.range(1000, 99999),
+            r.range(1000, 99999)
+        ),
+        _ => format!(
+            "format(seq({}, {}, {}))",
+            r.range(0, 3),
+            r.range(8, 20),
+            ff(r)
+        ),
     })
 }
 
@@ -1074,13 +1222,33 @@ fn gen_seqx2(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     one(match r.below(9) {
         0 => format!("rep_len(1:{}, {})", r.range(2, 4), r.range(1, 9)),
-        1 => format!("seq.int({}, {}, {})", r.range(0, 3), r.range(8, 16), r.range(2, 4)),
+        1 => format!(
+            "seq.int({}, {}, {})",
+            r.range(0, 3),
+            r.range(8, 16),
+            r.range(2, 4)
+        ),
         2 => format!("rev(c(a = {}, b = {}, c = {}))", si(r), si(r), si(r)),
         3 => format!("unname(c(x = {}, y = {}))", si(r), si(r)),
-        4 => format!("isTRUE(all.equal({}, {} + 1e-10))", r.range(1, 9), r.range(1, 9)),
+        4 => format!(
+            "isTRUE(all.equal({}, {} + 1e-10))",
+            r.range(1, 9),
+            r.range(1, 9)
+        ),
         5 => format!("isTRUE(all.equal({}, {}))", si(r), si(r)),
-        6 => format!("all.equal(c({}, {}), c({}, {}))", ff(r), ff(r), ff(r), ff(r)),
-        7 => format!("rep_len(c(\"{}\", \"{}\"), {})", ww(r), ww(r), r.range(1, 7)),
+        6 => format!(
+            "all.equal(c({}, {}), c({}, {}))",
+            ff(r),
+            ff(r),
+            ff(r),
+            ff(r)
+        ),
+        7 => format!(
+            "rep_len(c(\"{}\", \"{}\"), {})",
+            ww(r),
+            ww(r),
+            r.range(1, 7)
+        ),
         _ => "rev(setNames(1:3, c(\"a\", \"b\", \"c\")))".to_string(),
     })
 }
@@ -1090,13 +1258,24 @@ fn gen_combinator(seed: u64) -> Vec<String> {
     let v = vec_int(r);
     one(match r.below(8) {
         0 => format!("Negate(is.na)(c({}, NA, {}))", si(r), si(r)),
-        1 => format!("Filter(Negate(is.na), c({}, NA, {}, NA, {}))", si(r), si(r), si(r)),
+        1 => format!(
+            "Filter(Negate(is.na), c({}, NA, {}, NA, {}))",
+            si(r),
+            si(r),
+            si(r)
+        ),
         2 => format!("Negate(function(x) x > 0)({v})"),
         3 => format!("Vectorize(function(x) x ^ 2)(1:{})", r.range(2, 6)),
-        4 => format!("Vectorize(function(x, y) x + y)(1:{n}, {n}:1)", n = r.range(2, 5)),
+        4 => format!(
+            "Vectorize(function(x, y) x + y)(1:{n}, {n}:1)",
+            n = r.range(2, 5)
+        ),
         5 => format!("sapply({v}, Negate(function(x) x > 0))"),
         6 => "is.function(Negate(is.null))".to_string(),
-        _ => format!("Filter(Negate(function(x) x %% 2 == 0), 1:{})", r.range(3, 9)),
+        _ => format!(
+            "Filter(Negate(function(x) x %% 2 == 0), 1:{})",
+            r.range(3, 9)
+        ),
     })
 }
 
@@ -1106,12 +1285,23 @@ fn gen_arrays(seed: u64) -> Vec<String> {
     let (d0, d1, d2) = (r.range(2, 3), r.range(2, 3), r.range(2, 4));
     let n = d0 * d1 * d2;
     one(match r.below(9) {
-        0 => format!("array(1:{n}, c({d0}, {d1}, {d2}))[{}, {}, {}]", r.range(1, d0), r.range(1, d1), r.range(1, d2)),
+        0 => format!(
+            "array(1:{n}, c({d0}, {d1}, {d2}))[{}, {}, {}]",
+            r.range(1, d0),
+            r.range(1, d1),
+            r.range(1, d2)
+        ),
         1 => format!("dim(array(1:{n}, c({d0}, {d1}, {d2})))"),
         2 => format!("apply(array(1:{n}, c({d0}, {d1}, {d2})), 3, sum)"),
         3 => format!("apply(array(1:{n}, c({d0}, {d1}, {d2})), 1, max)"),
-        4 => format!("a <- array(1:{n}, c({d0}, {d1}, {d2})); a[, , {}]", r.range(1, d2)),
-        5 => format!("a <- array(1:{n}, c({d0}, {d1}, {d2})); a[{}, , ]", r.range(1, d0)),
+        4 => format!(
+            "a <- array(1:{n}, c({d0}, {d1}, {d2})); a[, , {}]",
+            r.range(1, d2)
+        ),
+        5 => format!(
+            "a <- array(1:{n}, c({d0}, {d1}, {d2})); a[{}, , ]",
+            r.range(1, d0)
+        ),
         6 => format!("array(1:{n}, c({d0}, {d1}, {d2}))"),
         7 => format!("aperm(matrix(1:{}, {d0}))", d0 * d1),
         _ => format!("length(array(0, c({d0}, {d1}, {d2})))"),
@@ -1122,12 +1312,36 @@ fn gen_stat2(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let v = vec_int(r);
     one(match r.below(9) {
-        0 => format!("quantile(1:{}, {})", r.range(4, 20), *r.pick(&["0.25", "0.5", "0.75", "0.1"])),
+        0 => format!(
+            "quantile(1:{}, {})",
+            r.range(4, 20),
+            *r.pick(&["0.25", "0.5", "0.75", "0.1"])
+        ),
         1 => format!("quantile(1:{})", r.range(4, 20)),
         2 => format!("cor(1:{n}, (1:{n}) * {})", r.range(2, 5), n = r.range(3, 8)),
-        3 => format!("rle(c({}, {}, {}, {}, {}))$lengths", r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3)),
-        4 => format!("rle(c({}, {}, {}, {}, {}))", r.range(1,2), r.range(1,2), r.range(1,2), r.range(1,2), r.range(1,2)),
-        5 => format!("inverse.rle(rle(c({}, {}, {}, {})))", r.range(1,3), r.range(1,3), r.range(1,3), r.range(1,3)),
+        3 => format!(
+            "rle(c({}, {}, {}, {}, {}))$lengths",
+            r.range(1, 3),
+            r.range(1, 3),
+            r.range(1, 3),
+            r.range(1, 3),
+            r.range(1, 3)
+        ),
+        4 => format!(
+            "rle(c({}, {}, {}, {}, {}))",
+            r.range(1, 2),
+            r.range(1, 2),
+            r.range(1, 2),
+            r.range(1, 2),
+            r.range(1, 2)
+        ),
+        5 => format!(
+            "inverse.rle(rle(c({}, {}, {}, {})))",
+            r.range(1, 3),
+            r.range(1, 3),
+            r.range(1, 3),
+            r.range(1, 3)
+        ),
         6 => format!("sort({v}, index.return = TRUE)$ix"),
         7 => format!("quantile({v})"),
         _ => format!("cor({v}, rev({v}))"),

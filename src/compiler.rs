@@ -47,13 +47,55 @@ struct Compiler {
 /// Builtins that reach into an environment by name; their presence makes it
 /// unsafe to keep any local in a native slot instead of the string environment.
 const DYNAMIC_ENV_FNS: &[&str] = &[
-    "get", "get0", "mget", "assign", "exists", "environment", "environmentName",
-    "eval", "evalq", "local", "with", "within", "do.call", "Recall", "sys.call",
-    "sys.function", "sys.frame", "match.call", "match.arg", "parent.frame",
-    "parent.env", "ls", "rm", "remove", "attach", "detach", "substitute", "quote",
-    "bquote", "missing", "on.exit", "delayedAssign", "makeActiveBinding", "new.env",
-    "globalenv", "as.environment", "list2env", "eapply", "Reduce", "Filter", "Map",
-    "do.call", "apply", "sapply", "lapply", "vapply", "mapply", "tapply", "outer",
+    "get",
+    "get0",
+    "mget",
+    "assign",
+    "exists",
+    "environment",
+    "environmentName",
+    "eval",
+    "evalq",
+    "local",
+    "with",
+    "within",
+    "do.call",
+    "Recall",
+    "sys.call",
+    "sys.function",
+    "sys.frame",
+    "match.call",
+    "match.arg",
+    "parent.frame",
+    "parent.env",
+    "ls",
+    "rm",
+    "remove",
+    "attach",
+    "detach",
+    "substitute",
+    "quote",
+    "bquote",
+    "missing",
+    "on.exit",
+    "delayedAssign",
+    "makeActiveBinding",
+    "new.env",
+    "globalenv",
+    "as.environment",
+    "list2env",
+    "eapply",
+    "Reduce",
+    "Filter",
+    "Map",
+    "do.call",
+    "apply",
+    "sapply",
+    "lapply",
+    "vapply",
+    "mapply",
+    "tapply",
+    "outer",
 ];
 
 /// The names in a whole-program top level that are safe to bind to native frame
@@ -83,7 +125,10 @@ fn root_ident(e: &Expr) -> Option<&str> {
     match e {
         Expr::Ident(n) | Expr::Str(n) => Some(n),
         Expr::Index { obj, .. } => root_ident(obj),
-        Expr::Call { args, .. } => args.first().and_then(|a| a.value.as_ref()).and_then(root_ident),
+        Expr::Call { args, .. } => args
+            .first()
+            .and_then(|a| a.value.as_ref())
+            .and_then(root_ident),
         _ => None,
     }
 }
@@ -100,7 +145,11 @@ fn scan_slots(
     let mut go = |x: &Expr, s: &mut bool| scan_slots(x, s, targets, blocked);
     match e {
         Expr::Function { .. } | Expr::Formula { .. } => *safe = false,
-        Expr::Assign { target, value, super_assign } => {
+        Expr::Assign {
+            target,
+            value,
+            super_assign,
+        } => {
             if *super_assign {
                 *safe = false;
                 return;
@@ -298,7 +347,12 @@ impl Compiler {
     /// no `Dup`/`Pop`, saving two ops per statement: this is the hot path of a
     /// `for`/`while` body like `s <- s + i`.
     fn stmt(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
-        if let Expr::Assign { target, value, super_assign: false } = e {
+        if let Expr::Assign {
+            target,
+            value,
+            super_assign: false,
+        } = e
+        {
             if let Expr::Ident(n) | Expr::Str(n) = target.as_ref() {
                 if self.locals.contains(n) {
                     self.expr(b, value)?;
@@ -401,7 +455,11 @@ impl Compiler {
                         "library" | "require" | "requireNamespace" | "loadNamespace")
                 );
                 if pkg_nse {
-                    if let Some(Arg { name, value: Some(Expr::Ident(sym)) }) = args.first() {
+                    if let Some(Arg {
+                        name,
+                        value: Some(Expr::Ident(sym)),
+                    }) = args.first()
+                    {
                         let mut rewritten = args.clone();
                         rewritten[0] = Arg {
                             name: name.clone(),
@@ -592,7 +650,12 @@ impl Compiler {
         // counter and computes `i = from + c*step` with native ops — no
         // per-element builtin call, so `--aot` can lower the whole loop.
         if self.locals.contains(var) {
-            if let Expr::Binary { op: BinOp::Colon, lhs, rhs } = seq {
+            if let Expr::Binary {
+                op: BinOp::Colon,
+                lhs,
+                rhs,
+            } = seq
+            {
                 return self.for_range(b, var, lhs, rhs, body);
             }
         }
@@ -1093,7 +1156,12 @@ pub(crate) fn deparse_ast(e: &Expr) -> String {
             None => format!("~ {}", deparse_ast(rhs)),
         },
         Expr::Binary { op, lhs, rhs } => {
-            format!("{} {} {}", deparse_ast(lhs), binop_name(op), deparse_ast(rhs))
+            format!(
+                "{} {} {}",
+                deparse_ast(lhs),
+                binop_name(op),
+                deparse_ast(rhs)
+            )
         }
         Expr::Special { name, lhs, rhs } => {
             format!("{} %{}% {}", deparse_ast(lhs), name, deparse_ast(rhs))
@@ -1125,8 +1193,12 @@ pub(crate) fn deparse_ast(e: &Expr) -> String {
                 .map(|a| a.value.as_ref().map(deparse_ast).unwrap_or_default())
                 .collect();
             match kind {
-                crate::ast::IndexKind::Single => format!("{}[{}]", deparse_ast(obj), inner.join(", ")),
-                crate::ast::IndexKind::Double => format!("{}[[{}]]", deparse_ast(obj), inner.join(", ")),
+                crate::ast::IndexKind::Single => {
+                    format!("{}[{}]", deparse_ast(obj), inner.join(", "))
+                }
+                crate::ast::IndexKind::Double => {
+                    format!("{}[[{}]]", deparse_ast(obj), inner.join(", "))
+                }
                 crate::ast::IndexKind::Dollar => format!("{}${}", deparse_ast(obj), inner.join("")),
                 crate::ast::IndexKind::At => format!("{}@{}", deparse_ast(obj), inner.join("")),
             }
@@ -1199,7 +1271,11 @@ fn collect_num_assigns<'a>(
     assigns: &mut Vec<(String, &'a Expr)>,
 ) {
     match e {
-        Expr::Assign { target, value, super_assign: false } => {
+        Expr::Assign {
+            target,
+            value,
+            super_assign: false,
+        } => {
             if let Expr::Ident(n) | Expr::Str(n) = target.as_ref() {
                 cand.insert(n.clone());
                 assigns.push((n.clone(), value));
@@ -1237,7 +1313,11 @@ fn collect_num_assigns<'a>(
 /// The `lhs` of a `seq` that is a `:` range (else the expr itself).
 fn seq_start(seq: &Expr) -> &Expr {
     match seq {
-        Expr::Binary { op: BinOp::Colon, lhs, .. } => lhs,
+        Expr::Binary {
+            op: BinOp::Colon,
+            lhs,
+            ..
+        } => lhs,
         other => other,
     }
 }

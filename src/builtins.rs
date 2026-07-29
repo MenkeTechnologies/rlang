@@ -327,8 +327,18 @@ fn base_constant(name: &str) -> Option<Value> {
         "letters" => Some(letters(false)),
         "month.name" => Some(mk_str(
             [
-                "January", "February", "March", "April", "May", "June", "July", "August",
-                "September", "October", "November", "December",
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
             ]
             .into_iter()
             .map(|m| Some(m.to_string()))
@@ -620,9 +630,10 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // skipping the vector engine's data_of clones, as_dbl allocations, output
     // Vec, and carry_attrs — a single result allocation remains. This is the
     // common case in tight loops (`s <- s + i`).
-    if let (Some((x, xi)), Some((y, yi))) =
-        (with_host(|h| h.scalar_real(lhs)), with_host(|h| h.scalar_real(rhs)))
-    {
+    if let (Some((x, xi)), Some((y, yi))) = (
+        with_host(|h| h.scalar_real(lhs)),
+        with_host(|h| h.scalar_real(rhs)),
+    ) {
         let r = match op {
             "+" => x + y,
             "-" => x - y,
@@ -694,14 +705,17 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
 fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // Scalar fast path (see `arith`): two length-1 unattributed numerics compare
     // directly. NaN on either side yields NA, matching the vector path.
-    if let (Some((x, _)), Some((y, _))) =
-        (with_host(|h| h.scalar_real(lhs)), with_host(|h| h.scalar_real(rhs)))
-    {
-        return Ok(match (!x.is_nan() && !y.is_nan()).then(|| cmp_result(op, x.partial_cmp(&y).unwrap())) {
-            Some(b) => Value::Bool(b),
-            // NaN on either side is NA, which an unboxed `Value::Bool` can't hold.
-            None => mk_lgl(vec![None]),
-        });
+    if let (Some((x, _)), Some((y, _))) = (
+        with_host(|h| h.scalar_real(lhs)),
+        with_host(|h| h.scalar_real(rhs)),
+    ) {
+        return Ok(
+            match (!x.is_nan() && !y.is_nan()).then(|| cmp_result(op, x.partial_cmp(&y).unwrap())) {
+                Some(b) => Value::Bool(b),
+                // NaN on either side is NA, which an unboxed `Value::Bool` can't hold.
+                None => mk_lgl(vec![None]),
+            },
+        );
     }
     let n = recycle_len(len(lhs), len(rhs));
     let as_text = matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_));
@@ -1049,7 +1063,10 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     // array's `dim` rank (covers 2-D matrices and 3-D+ arrays alike).
     if args.len() >= 2 {
         if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
-            let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
+            let d: Vec<usize> = as_int(&dim)
+                .iter()
+                .map(|e| e.unwrap_or(0) as usize)
+                .collect();
             if d.len() == args.len() {
                 return array_index(x, args, &d);
             }
@@ -1150,7 +1167,11 @@ fn array_index(
 ) -> Result<Value, String> {
     let (pos, shape) = array_positions(args, dims)?;
     let out = take_positions(x, &pos);
-    let kept: Vec<i64> = shape.iter().filter(|&&d| d != 1).map(|&d| d as i64).collect();
+    let kept: Vec<i64> = shape
+        .iter()
+        .filter(|&&d| d != 1)
+        .map(|&d| d as i64)
+        .collect();
     if kept.len() >= 2 {
         let dim = mk_int(kept.into_iter().map(Some).collect());
         with_host(|h| h.set_attr(&out, "dim", dim));
@@ -1250,10 +1271,14 @@ fn assign_index(
     // `dim` attribute through `copy_of`). Mirrors `array_index` for reads.
     if args.len() >= 2 {
         if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
-            let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
+            let d: Vec<usize> = as_int(&dim)
+                .iter()
+                .map(|e| e.unwrap_or(0) as usize)
+                .collect();
             if d.len() == args.len() {
                 let (pos, _) = array_positions(args, &d)?;
-                let lin: Vec<Option<i64>> = pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
+                let lin: Vec<Option<i64>> =
+                    pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
                 return assign_index(x, &[(None, mk_int(lin))], value, false);
             }
         }
@@ -2322,10 +2347,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── ordering and sets ───────────────────────────────────────────
         "sort" => {
             let x = a.req(0, "x")?;
-            let decreasing = a.named("decreasing").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let decreasing = a
+                .named("decreasing")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(false);
             let sorted = sort_value(&x, decreasing);
             // `index.return = TRUE` also returns the ordering as `$ix`.
-            if a.named("index.return").and_then(|v| lgl1(&v)).unwrap_or(false) {
+            if a.named("index.return")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(false)
+            {
                 let ix = order_value(&x, decreasing);
                 let out = mk_list(vec![sorted, ix]);
                 set_names(&out, vec![Some("x".into()), Some("ix".into())]);
@@ -2586,7 +2617,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "cor" => {
             // Pearson correlation of two equal-length numeric vectors.
             let x = numeric_arg(&a, 0, "x")?;
-            let y = as_dbl(&a.req(1, "y")?).into_iter().flatten().collect::<Vec<_>>();
+            let y = as_dbl(&a.req(1, "y")?)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
             let n = x.len().min(y.len());
             if n < 2 {
                 return Ok(mk_dbl(vec![None]));
@@ -2753,7 +2787,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `cumsum` of an integer/logical vector stays integer (R's rule);
             // `cumprod` is always double.
             if name == "cumsum" && matches!(data(&x), RData::Int(_) | RData::Lgl(_)) {
-                Ok(mk_int(out.into_iter().map(|e| e.map(|v| v as i64)).collect()))
+                Ok(mk_int(
+                    out.into_iter().map(|e| e.map(|v| v as i64)).collect(),
+                ))
             } else {
                 Ok(mk_dbl(out))
             }
@@ -2761,9 +2797,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "diff" => {
             let x = a.req(0, "x")?;
             let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
-            let lag = a.get(1, "lag").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
-            let differences =
-                a.get(2, "differences").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
+            let lag = a
+                .get(1, "lag")
+                .and_then(|v| num1(&v))
+                .unwrap_or(1.0)
+                .max(1.0) as usize;
+            let differences = a
+                .get(2, "differences")
+                .and_then(|v| num1(&v))
+                .unwrap_or(1.0)
+                .max(1.0) as usize;
             // Apply the lag-`lag` difference `differences` times.
             let mut cur = as_dbl(&x);
             for _ in 0..differences {
@@ -2780,7 +2823,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             // `diff` of an integer vector stays integer.
             if is_int {
-                Ok(mk_int(cur.into_iter().map(|e| e.map(|v| v as i64)).collect()))
+                Ok(mk_int(
+                    cur.into_iter().map(|e| e.map(|v| v as i64)).collect(),
+                ))
             } else {
                 Ok(mk_dbl(cur))
             }
@@ -2788,8 +2833,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         // ── elementwise math ────────────────────────────────────────────
         "abs" | "sqrt" | "exp" | "log2" | "log10" | "floor" | "ceiling" | "trunc" | "sign"
-        | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh"
-        | "expm1" | "log1p" | "gamma" | "lgamma" | "factorial" | "lfactorial" => {
+        | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "expm1"
+        | "log1p" | "gamma" | "lgamma" | "factorial" | "lfactorial" => {
             let x = a.req(0, "x")?;
             let f: fn(f64) -> f64 = match name {
                 "abs" => f64::abs,
@@ -2863,10 +2908,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = ns.len().max(ks.len());
             Ok(mk_dbl(
                 (0..n)
-                    .map(|i| match (ns[i % ns.len().max(1)], ks[i % ks.len().max(1)]) {
-                        (Some(nn), Some(kk)) => Some(choose(nn, kk)),
-                        _ => None,
-                    })
+                    .map(
+                        |i| match (ns[i % ns.len().max(1)], ks[i % ks.len().max(1)]) {
+                            (Some(nn), Some(kk)) => Some(choose(nn, kk)),
+                            _ => None,
+                        },
+                    )
                     .collect(),
             ))
         }
@@ -2876,18 +2923,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = av.len().max(bv.len());
             Ok(mk_dbl(
                 (0..n)
-                    .map(|i| match (av[i % av.len().max(1)], bv[i % bv.len().max(1)]) {
-                        (Some(x), Some(y)) => Some({
-                            // beta(a,b) = Γ(a)Γ(b)/Γ(a+b); via lgamma to stay finite.
-                            let lb = r_lgamma(x) + r_lgamma(y) - r_lgamma(x + y);
-                            if name == "lbeta" {
-                                lb
-                            } else {
-                                lb.exp()
-                            }
-                        }),
-                        _ => None,
-                    })
+                    .map(
+                        |i| match (av[i % av.len().max(1)], bv[i % bv.len().max(1)]) {
+                            (Some(x), Some(y)) => Some({
+                                // beta(a,b) = Γ(a)Γ(b)/Γ(a+b); via lgamma to stay finite.
+                                let lb = r_lgamma(x) + r_lgamma(y) - r_lgamma(x + y);
+                                if name == "lbeta" {
+                                    lb
+                                } else {
+                                    lb.exp()
+                                }
+                            }),
+                            _ => None,
+                        },
+                    )
                     .collect(),
             ))
         }
@@ -2974,9 +3023,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let vec = as_dbl(&a.req(1, "vec")?);
             Ok(mk_int(
                 x.iter()
-                    .map(|e| {
-                        e.map(|v| vec.iter().flatten().filter(|&&b| b <= v).count() as i64)
-                    })
+                    .map(|e| e.map(|v| vec.iter().flatten().filter(|&&b| b <= v).count() as i64))
                     .collect(),
             ))
         }
@@ -2984,14 +3031,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "x")?;
             let digits = a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(0.0) as i32;
             Ok(mk_dbl(
-                as_dbl(&x).iter().map(|e| e.map(|v| r_round(v, digits))).collect(),
+                as_dbl(&x)
+                    .iter()
+                    .map(|e| e.map(|v| r_round(v, digits)))
+                    .collect(),
             ))
         }
         "signif" => {
             let x = a.req(0, "x")?;
             let digits = (a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(6.0) as i32).max(1);
             Ok(mk_dbl(
-                as_dbl(&x).iter().map(|e| e.map(|v| signif(v, digits))).collect(),
+                as_dbl(&x)
+                    .iter()
+                    .map(|e| e.map(|v| signif(v, digits)))
+                    .collect(),
             ))
         }
 
@@ -3026,7 +3079,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.finite" => {
             let x = a.req(0, "x")?;
             Ok(mk_lgl(match data(&x) {
-                RData::Dbl(v) => v.iter().map(|e| Some(e.is_some_and(f64::is_finite))).collect(),
+                RData::Dbl(v) => v
+                    .iter()
+                    .map(|e| Some(e.is_some_and(f64::is_finite)))
+                    .collect(),
                 RData::Int(v) => v.iter().map(|e| Some(e.is_some())).collect(),
                 RData::Lgl(v) => v.iter().map(|e| Some(e.is_some())).collect(),
                 _ => vec![Some(false); len(&x)],
@@ -3035,7 +3091,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.infinite" => {
             let x = a.req(0, "x")?;
             Ok(mk_lgl(match data(&x) {
-                RData::Dbl(v) => v.iter().map(|e| Some(e.is_some_and(f64::is_infinite))).collect(),
+                RData::Dbl(v) => v
+                    .iter()
+                    .map(|e| Some(e.is_some_and(f64::is_infinite)))
+                    .collect(),
                 _ => vec![Some(false); len(&x)],
             }))
         }
@@ -3046,7 +3105,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 RData::Int(v) => v.iter().any(|e| e.is_none()),
                 RData::Lgl(v) => v.iter().any(|e| e.is_none()),
                 RData::Str(v) => v.iter().any(|e| e.is_none()),
-                RData::List(items) => items.iter().any(|e| len(e) == 1 && as_dbl(e).first() == Some(&None)),
+                RData::List(items) => items
+                    .iter()
+                    .any(|e| len(e) == 1 && as_dbl(e).first() == Some(&None)),
                 _ => false,
             };
             Ok(scalar_lgl(any))
@@ -3054,7 +3115,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "complete.cases" => {
             let x = a.req(0, "x")?;
             let na = match data(&x) {
-                RData::Dbl(v) => v.iter().map(|e| e.map(f64::is_nan).unwrap_or(true)).collect(),
+                RData::Dbl(v) => v
+                    .iter()
+                    .map(|e| e.map(f64::is_nan).unwrap_or(true))
+                    .collect(),
                 RData::Int(v) => v.iter().map(|e| e.is_none()).collect(),
                 RData::Lgl(v) => v.iter().map(|e| e.is_none()).collect(),
                 RData::Str(v) => v.iter().map(|e| e.is_none()).collect(),
@@ -3114,11 +3178,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = x.len().max(y.len());
             Ok(mk_lgl(
                 (0..n)
-                    .map(|i| {
-                        match (x[i % x.len().max(1)], y[i % y.len().max(1)]) {
-                            (Some(a), Some(b)) => Some(a != b),
-                            _ => None,
-                        }
+                    .map(|i| match (x[i % x.len().max(1)], y[i % y.len().max(1)]) {
+                        (Some(a), Some(b)) => Some(a != b),
+                        _ => None,
                     })
                     .collect(),
             ))
@@ -3144,7 +3206,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             ))
         }
         "bitwNot" => Ok(mk_int(
-            as_int(&a.req(0, "a")?).iter().map(|e| e.map(|v| !v)).collect(),
+            as_int(&a.req(0, "a")?)
+                .iter()
+                .map(|e| e.map(|v| !v))
+                .collect(),
         )),
         "identical" => {
             let x = a.req(0, "x")?;
@@ -3333,9 +3398,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(mk_str(
                 x.iter()
                     .map(|s| {
-                        s.as_ref().map(|s| {
-                            s.chars().map(|c| *map.get(&c).unwrap_or(&c)).collect()
-                        })
+                        s.as_ref()
+                            .map(|s| s.chars().map(|c| *map.get(&c).unwrap_or(&c)).collect())
                     })
                     .collect(),
             ))
@@ -3351,7 +3415,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                             // C strtol semantics: base 16 accepts an optional
                             // `0x`/`0X` prefix (which Rust's from_str_radix rejects).
                             let t = if base == 16 {
-                                t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t)
+                                t.strip_prefix("0x")
+                                    .or_else(|| t.strip_prefix("0X"))
+                                    .unwrap_or(t)
                             } else {
                                 t
                             };
@@ -3776,10 +3842,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
             // `dimnames = list(rownames, colnames)`, either element possibly NULL.
-            if let Some(dn) = a.get(4, "dimnames").filter(|v| !matches!(data(v), RData::Null)) {
+            if let Some(dn) = a
+                .get(4, "dimnames")
+                .filter(|v| !matches!(data(v), RData::Null))
+            {
                 let parts = elements(&dn);
                 let pick = |i: usize| -> Option<Vec<Option<String>>> {
-                    parts.get(i).filter(|e| !matches!(data(e), RData::Null)).map(as_str)
+                    parts
+                        .get(i)
+                        .filter(|e| !matches!(data(e), RData::Null))
+                        .map(as_str)
                 };
                 set_dimnames(&out, pick(0), pick(1));
             }
@@ -3808,7 +3880,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "array" => {
             let data = a.get(0, "data").unwrap_or_else(|| mk_lgl(vec![None]));
             let dims: Vec<usize> = match a.get(1, "dim") {
-                Some(d) => as_int(&d).into_iter().map(|e| e.unwrap_or(0) as usize).collect(),
+                Some(d) => as_int(&d)
+                    .into_iter()
+                    .map(|e| e.unwrap_or(0) as usize)
+                    .collect(),
                 None => vec![len(&data)],
             };
             let total: usize = dims.iter().product();
@@ -3825,7 +3900,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let dims = dims_of(&x);
             let k = dims.len();
             let perm: Vec<usize> = match a.get(1, "perm") {
-                Some(p) => as_int(&p).into_iter().flatten().map(|m| (m - 1) as usize).collect(),
+                Some(p) => as_int(&p)
+                    .into_iter()
+                    .flatten()
+                    .map(|m| (m - 1) as usize)
+                    .collect(),
                 None => (0..k).rev().collect(),
             };
             let mut stride = vec![1usize; k];
@@ -3879,12 +3958,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let mut out = Vec::with_capacity(ktotal);
             let mut kidx = vec![0usize; keep.len()];
             for _ in 0..ktotal {
-                let base: usize = keep.iter().enumerate().map(|(i, &d)| kidx[i] * stride[d]).sum();
+                let base: usize = keep
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &d)| kidx[i] * stride[d])
+                    .sum();
                 let mut acc = 0.0;
                 let mut ridx = vec![0usize; reduce.len()];
                 for _ in 0..rtotal {
-                    let off: usize =
-                        reduce.iter().enumerate().map(|(i, &d)| ridx[i] * stride[d]).sum();
+                    let off: usize = reduce
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &d)| ridx[i] * stride[d])
+                        .sum();
                     acc += data.get(base + off).and_then(|e| *e).unwrap_or(f64::NAN);
                     for i in 0..reduce.len() {
                         ridx[i] += 1;
@@ -3936,12 +4022,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let mut results = Vec::with_capacity(mtotal);
             let mut midx = vec![0usize; margins.len()];
             for _ in 0..mtotal {
-                let base: usize = margins.iter().enumerate().map(|(k, &d)| midx[k] * stride[d]).sum();
+                let base: usize = margins
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &d)| midx[k] * stride[d])
+                    .sum();
                 let mut slice_pos = Vec::with_capacity(ototal);
                 let mut oidx = vec![0usize; others.len()];
                 for _ in 0..ototal {
-                    let off: usize =
-                        others.iter().enumerate().map(|(k, &d)| oidx[k] * stride[d]).sum();
+                    let off: usize = others
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &d)| oidx[k] * stride[d])
+                        .sum();
                     slice_pos.push(Some(base + off));
                     for k in 0..others.len() {
                         oidx[k] += 1;
@@ -4482,8 +4575,7 @@ fn simplify(list: &Value) -> Value {
     // results become a k×n matrix, each result a column — R's sapply/vapply
     // rule. Ragged results stay a list.
     if k >= 1 && items.iter().all(|v| len(v) == k) {
-        let parts: Vec<(Option<String>, Value)> =
-            items.iter().map(|v| (None, v.clone())).collect();
+        let parts: Vec<(Option<String>, Value)> = items.iter().map(|v| (None, v.clone())).collect();
         let out = concat(&Args::new(parts));
         if k == 1 {
             let nm = names_of(list);
@@ -4815,7 +4907,10 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
     let mut cross = 0usize; // the length along the binding seam
     for (_, v) in a.all.iter() {
         let (nr, nc) = mat_dim(v);
-        let data: Vec<f64> = as_dbl(v).into_iter().map(|e| e.unwrap_or(f64::NAN)).collect();
+        let data: Vec<f64> = as_dbl(v)
+            .into_iter()
+            .map(|e| e.unwrap_or(f64::NAN))
+            .collect();
         if with_host(|h| h.attr(v, "dim")).is_some() {
             // Split a matrix into its columns/rows.
             let (outer, inner) = if by_col { (nc, nr) } else { (nr, nc) };
@@ -4914,7 +5009,12 @@ fn factor_levels(x: &Value) -> Vec<String> {
 /// A value's `dim` as a `Vec<usize>`, or `[length]` for a plain vector.
 fn dims_of(x: &Value) -> Vec<usize> {
     with_host(|h| h.attr(x, "dim"))
-        .map(|d| as_int(&d).into_iter().map(|e| e.unwrap_or(0) as usize).collect())
+        .map(|d| {
+            as_int(&d)
+                .into_iter()
+                .map(|e| e.unwrap_or(0) as usize)
+                .collect()
+        })
         .unwrap_or_else(|| vec![len(x)])
 }
 
@@ -5133,7 +5233,10 @@ fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<regex::Re
 fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
     let pattern = str1(&a.req(0, "pattern")?).unwrap_or_default();
     let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
-    let ignore_case = a.named("ignore.case").and_then(|v| lgl1(&v)).unwrap_or(false);
+    let ignore_case = a
+        .named("ignore.case")
+        .and_then(|v| lgl1(&v))
+        .unwrap_or(false);
     let (subject_idx, subject_name) = if name == "sub" || name == "gsub" {
         (2, "x")
     } else {
@@ -5313,10 +5416,13 @@ fn format_c(a: &Args) -> Result<Value, String> {
     let digits = a.named("digits").and_then(|v| num1(&v));
     let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
     let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
-    let format = a
-        .named("format")
-        .and_then(|v| str1(&v))
-        .unwrap_or_else(|| if is_int { "d".into() } else { "g".into() });
+    let format = a.named("format").and_then(|v| str1(&v)).unwrap_or_else(|| {
+        if is_int {
+            "d".into()
+        } else {
+            "g".into()
+        }
+    });
     let mut spec = String::from("%");
     spec.push_str(&flag);
     if let Some(w) = width {
@@ -5361,7 +5467,6 @@ fn insert_big_mark(s: &str, mark: &str) -> String {
     }
 }
 
-
 /// Character offset of byte position `byte` within `s` (R indexes by character,
 /// not byte).
 fn char_pos(s: &str, byte: usize) -> usize {
@@ -5372,7 +5477,10 @@ fn char_pos(s: &str, byte: usize) -> usize {
 /// `substring` rule (out-of-range bounds clamp, not error).
 fn substr_of(s: &str, start: usize, stop: usize) -> String {
     let skip = start.saturating_sub(1);
-    s.chars().skip(skip).take(stop.saturating_sub(skip)).collect()
+    s.chars()
+        .skip(skip)
+        .take(stop.saturating_sub(skip))
+        .collect()
 }
 
 /// Expand `a-c`-style character ranges the way `chartr` does: `"a-cx"` becomes
@@ -5634,7 +5742,10 @@ pub fn format_value(v: &Value) -> Vec<String> {
         RData::List(_) => format_list(v),
         _ => {
             if let Some(dim) = with_host(|h| h.attr(v, "dim")) {
-                let d: Vec<usize> = as_int(&dim).iter().map(|e| e.unwrap_or(0) as usize).collect();
+                let d: Vec<usize> = as_int(&dim)
+                    .iter()
+                    .map(|e| e.unwrap_or(0) as usize)
+                    .collect();
                 if d.len() == 2 {
                     return format_matrix(v, d[0], d[1]);
                 }
@@ -5857,7 +5968,11 @@ fn layout_indexed(cells: &[String], left_align: bool) -> Vec<String> {
                 }
             })
             .collect();
-        out.push(format!("{:>idx_w$} {}", format!("[{}]", i + 1), cells_row.join(" ")));
+        out.push(format!(
+            "{:>idx_w$} {}",
+            format!("[{}]", i + 1),
+            cells_row.join(" ")
+        ));
         i += take;
     }
     out
@@ -5947,7 +6062,9 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     let cells = format_elements(v);
     let dn = dimnames_of(v);
     let dn_at = |dim: usize, k: usize| -> Option<String> {
-        dn.get(dim).and_then(|o| o.as_ref()).and_then(|names| names.get(k).cloned().flatten())
+        dn.get(dim)
+            .and_then(|o| o.as_ref())
+            .and_then(|names| names.get(k).cloned().flatten())
     };
     let row_labels: Vec<String> = (0..nr)
         .map(|r| dn_at(0, r).unwrap_or_else(|| format!("[{},]", r + 1)))
@@ -5988,7 +6105,12 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     out.push(format!("{:w$} {header}", "", w = label_w));
     for (r, label) in row_labels.iter().enumerate() {
         let row = (0..nc)
-            .map(|c| just(&cells.get(c * nr + r).cloned().unwrap_or_default(), widths[c]))
+            .map(|c| {
+                just(
+                    &cells.get(c * nr + r).cloned().unwrap_or_default(),
+                    widths[c],
+                )
+            })
             .collect::<Vec<_>>()
             .join(" ");
         out.push(format!("{label:<label_w$} {row}"));

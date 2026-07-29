@@ -174,7 +174,11 @@ pub fn available() -> bool {
 pub fn has_function(name: &str) -> bool {
     let Some(api) = api() else { return false };
     // Reject obvious non-identifiers cheaply without touching R.
-    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_')) {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_'))
+    {
         return false;
     }
     unsafe {
@@ -298,7 +302,11 @@ impl RApi {
                 (0..(api.xlength)(nm))
                     .map(|i| {
                         let c = (api.string_elt)(nm, i);
-                        Some(CStr::from_ptr((api.r_char)(c)).to_string_lossy().into_owned())
+                        Some(
+                            CStr::from_ptr((api.r_char)(c))
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
                     })
                     .collect()
             } else {
@@ -356,7 +364,11 @@ impl RApi {
                 (0..n)
                     .map(|i| {
                         let c = (self.string_elt)(s, i as isize);
-                        Some(CStr::from_ptr((self.r_char)(c)).to_string_lossy().into_owned())
+                        Some(
+                            CStr::from_ptr((self.r_char)(c))
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
                     })
                     .collect(),
             ),
@@ -457,7 +469,9 @@ pub fn print_foreign(ptr: usize) -> Vec<String> {
             Ok(s) if (api.typeof_)(s) == STRSXP => (0..(api.xlength)(s))
                 .map(|i| {
                     let c = (api.string_elt)(s, i);
-                    CStr::from_ptr((api.r_char)(c)).to_string_lossy().into_owned()
+                    CStr::from_ptr((api.r_char)(c))
+                        .to_string_lossy()
+                        .into_owned()
                 })
                 .collect(),
             _ => vec!["<R object>".to_string()],
@@ -470,7 +484,8 @@ pub fn print_foreign(ptr: usize) -> Vec<String> {
 /// can't run a program (typically non-standard evaluation — `dplyr::filter(df,
 /// x > 2)`, `data.table` `[`), so such scripts still execute correctly.
 pub fn run_script(src: &str) -> Result<(), String> {
-    let api = api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
+    let api =
+        api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
     unsafe {
         api.eval(&format!(
             "invisible(source(textConnection({src:?}), echo = FALSE, print.eval = TRUE, spaced = FALSE, keep.source = FALSE))"
@@ -481,7 +496,8 @@ pub fn run_script(src: &str) -> Result<(), String> {
 
 /// Evaluate R source in the embedded interpreter, marshalling the result back.
 pub fn eval_source(code: &str) -> Result<Value, String> {
-    let api = api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
+    let api =
+        api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
     unsafe {
         let s = api.eval(code)?;
         let s = (api.protect)(s);
@@ -520,7 +536,10 @@ pub fn call(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, Strin
             });
         }
         // Operator/`[[`-style names must be back-quoted to call by name in R.
-        let fname = if name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_')) {
+        let fname = if name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_'))
+        {
             name.to_string()
         } else {
             format!("`{name}`")

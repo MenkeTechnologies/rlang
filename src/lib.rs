@@ -25,8 +25,6 @@ pub mod aot;
 pub mod aot_runtime;
 // The CRAN bridge embeds GNU R over FFI; native-only (no libR on wasm).
 #[cfg(not(target_arch = "wasm32"))]
-pub mod rembed;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod banner;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
@@ -36,6 +34,8 @@ pub mod cli;
 pub mod dap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rembed;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;
 pub mod tiers;

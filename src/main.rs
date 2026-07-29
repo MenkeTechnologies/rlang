@@ -113,7 +113,10 @@ fn run_source(src: &str) -> ExitCode {
 /// embedded R is available, run the whole script in R instead. rlang's own
 /// stdout is captured during the attempt and discarded on fallback, so nothing
 /// prints twice.
-fn eval_with_cran_fallback(src: &str, run: impl FnOnce() -> Result<rlang::Value, String>) -> ExitCode {
+fn eval_with_cran_fallback(
+    src: &str,
+    run: impl FnOnce() -> Result<rlang::Value, String>,
+) -> ExitCode {
     let (result, captured) = capture_stdout(run);
     match result {
         Ok(_) => {

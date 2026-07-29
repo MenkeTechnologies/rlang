@@ -93,7 +93,8 @@ pub fn compile_executable(file: &str, out: &Path) -> Result<PathBuf, String> {
     let stub = out.with_extension("aot_main.c");
     std::fs::write(
         &stub,
-        b"extern long rlang_aot_main(void);\nint main(void){return (int)rlang_aot_main();}\n" as &[u8],
+        b"extern long rlang_aot_main(void);\nint main(void){return (int)rlang_aot_main();}\n"
+            as &[u8],
     )
     .map_err(|e| format!("Rscript --aot: write entry stub: {e}"))?;
 

@@ -208,7 +208,9 @@ mod tests {
         let mut chunk = crate::compile("1 + 1").unwrap().main;
         assert_eq!(embedded_source(&chunk), None);
         let b64 = base64::engine::general_purpose::STANDARD.encode(src.as_bytes());
-        chunk.names.push(format!("{}{b64}", crate::aot::AOT_SOURCE_TAG));
+        chunk
+            .names
+            .push(format!("{}{b64}", crate::aot::AOT_SOURCE_TAG));
         assert_eq!(embedded_source(&chunk).as_deref(), Some(src));
     }
 }

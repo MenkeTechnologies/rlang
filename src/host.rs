@@ -686,9 +686,9 @@ impl RHost {
             Some(RData::Dbl(_)) => "numeric",
             Some(RData::Str(_)) => "character",
             Some(RData::List(_)) => "list",
-            Some(RData::Closure { .. }) | Some(RData::Builtin(_)) | Some(RData::Combinator { .. }) => {
-                "function"
-            }
+            Some(RData::Closure { .. })
+            | Some(RData::Builtin(_))
+            | Some(RData::Combinator { .. }) => "function",
             Some(RData::Environment(_)) => "environment",
             Some(RData::Args(_)) => "list",
             // A foreign R object's real class is only known to R.
