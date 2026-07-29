@@ -52,6 +52,18 @@ fn run() -> ExitCode {
                 Err(e) => fail(&e),
             };
         }
+        if cli.tiers {
+            return match std::fs::read_to_string(&file)
+                .map_err(|e| format!("cannot read {file}: {e}"))
+                .and_then(|src| rlang::tiers::report(&src))
+            {
+                Ok(r) => {
+                    println!("{r}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&e),
+            };
+        }
         if cli.aot {
             let out = cli
                 .output

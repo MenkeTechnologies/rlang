@@ -38,6 +38,7 @@ pub mod dap;
 pub mod lsp;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;
+pub mod tiers;
 
 // wasm-only: the `rlang_eval` C-ABI export for the web-worker host.
 #[cfg(target_arch = "wasm32")]

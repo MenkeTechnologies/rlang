@@ -239,6 +239,7 @@ Implemented and checked against the reference `Rscript`:
 | `--dump-tokens FILE` | Print the lexer token stream. |
 | `--dump-ast FILE` | Print the parsed AST. |
 | `--disasm FILE` | Disassemble the lowered fusevm chunk. |
+| `--tiers FILE` | Run it, then report which fusevm execution tier took each of its chunks. |
 
 ---
 
