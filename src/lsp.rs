@@ -21,98 +21,13 @@ use lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 
-/// Short documentation for the primitives worth describing; everything else in
-/// `builtins::PRIMITIVES` is still completed, just without a blurb.
-const DOCS: &[(&str, &str)] = &[
-    (
-        ".rust",
-        ".rust(code) — compile a self-contained inline Rust block (its `pub extern \"C\"` exports) to a cached cdylib via fusevm's FFI bridge.",
-    ),
-    (
-        ".Call",
-        ".Call(name, ...) — invoke a `.rust()`-registered native routine, marshalling length-1 vectors to i64/f64/string and back.",
-    ),
-    (
-        "c",
-        "c(...) — combine values into a vector, promoting to the widest type.",
-    ),
-    ("length", "length(x) — the number of elements."),
-    ("names", "names(x) — the `names` attribute, or NULL."),
-    (
-        "class",
-        "class(x) — the class vector (explicit attribute or implicit type).",
-    ),
-    ("print", "print(x) — print a value in R's default layout."),
-    (
-        "cat",
-        "cat(...) — write values with no quotes and no newline.",
-    ),
-    (
-        "paste",
-        "paste(..., sep = \" \", collapse = NULL) — elementwise string join.",
-    ),
-    (
-        "sprintf",
-        "sprintf(fmt, ...) — C-style formatting, vectorized.",
-    ),
-    (
-        "seq",
-        "seq(from, to, by =, length.out =) — build a sequence.",
-    ),
-    ("seq_len", "seq_len(n) — 1..n as an integer vector."),
-    ("rep", "rep(x, times =, each =) — repeat elements."),
-    (
-        "sapply",
-        "sapply(X, FUN, ...) — lapply, simplified to a vector when possible.",
-    ),
-    (
-        "lapply",
-        "lapply(X, FUN, ...) — apply FUN to each element, returning a list.",
-    ),
-    (
-        "Reduce",
-        "Reduce(f, x, init) — fold a list with a binary function.",
-    ),
-    (
-        "Filter",
-        "Filter(f, x) — keep elements for which f is TRUE.",
-    ),
-    (
-        "do.call",
-        "do.call(what, args) — call a function with an argument list.",
-    ),
-    (
-        "gsub",
-        "gsub(pattern, replacement, x) — replace every regex match.",
-    ),
-    ("grepl", "grepl(pattern, x) — TRUE where the regex matches."),
-    (
-        "matrix",
-        "matrix(data, nrow, ncol) — build a matrix (column-major).",
-    ),
-    (
-        "UseMethod",
-        "UseMethod(generic) — dispatch on the class of the first argument.",
-    ),
-    ("stop", "stop(...) — signal an error and abort."),
-    (
-        "invisible",
-        "invisible(x) — return x without the top-level echo.",
-    ),
-];
-
-/// The corpus offered for completion: every primitive, documented where known.
-pub fn corpus() -> Vec<(&'static str, &'static str)> {
+/// The corpus offered for completion: every primitive in `builtins::PRIMITIVES`
+/// with the signature and description `docs` carries for it. `docs` is checked
+/// against `PRIMITIVES` by its own tests, so the lookup below cannot miss.
+pub fn corpus() -> Vec<&'static crate::docs::Entry> {
     crate::builtins::PRIMITIVES
         .iter()
-        .map(|name| {
-            let doc = DOCS
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, d)| *d)
-                .unwrap_or("R primitive.");
-            (*name, doc)
-        })
+        .filter_map(|name| crate::docs::find(name))
         .collect()
 }
 
@@ -238,10 +153,10 @@ fn dispatch_notification(conn: &Connection, docs: &mut Docs, not: lsp_server::No
 fn completions() -> CompletionResponse {
     let items = corpus()
         .into_iter()
-        .map(|(name, doc)| CompletionItem {
+        .map(|(name, signature, doc)| CompletionItem {
             label: name.to_string(),
             kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(doc.to_string()),
+            detail: Some(format!("{signature} — {doc}")),
             ..Default::default()
         })
         .collect();

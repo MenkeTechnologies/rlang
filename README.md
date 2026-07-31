@@ -335,7 +335,8 @@ Factors, `table`, `%*%`, and `apply` over matrix margins now work. See
 - **[Engineering Report](https://menketechnologies.github.io/rlang/report.html)**
   — architecture, value model, roadmap, dependency posture.
 - **[Primitive Reference](https://menketechnologies.github.io/rlang/reference.html)**
-  — the primitive library, generated from the language-server corpus.
+  — every primitive and operator with its signature and what it does,
+  generated from the same corpus the language server completes from.
 - **[`BUGS.md`](BUGS.md)** — the honest known-gaps list.
 
 ---

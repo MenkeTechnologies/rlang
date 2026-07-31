@@ -11,6 +11,9 @@
 pub mod ast;
 pub mod builtins;
 pub mod compiler;
+// The reference corpus is plain data (no OS, no host), so it builds everywhere
+// the primitives it documents do.
+pub mod docs;
 pub mod ffi;
 pub mod host;
 pub mod intercepts;

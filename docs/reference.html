@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. The 133 primitive functions available in the current rlang build, generated from the language-server corpus. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 233 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,19 +12,88 @@
   <link rel="stylesheet" href="hud-static.css">
   <link rel="stylesheet" href="tutorial.css">
   <style>
-    .tutorial-main { max-width: 76rem; }
-    .file-table { width:100%;border-collapse:collapse;margin:0.6rem 0;font-size:12px; }
-    .file-table th { background:var(--bg-secondary);color:var(--cyan);font-family:'Orbitron',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;text-align:left;padding:7px 10px;border:1px solid var(--border); }
-    .file-table td { padding:6px 10px;border:1px solid var(--border);color:var(--text-dim);vertical-align:middle; }
-    .file-table tr:hover td { background:var(--bg-hover); }
-    .file-table td:first-child { font-family:'Share Tech Mono',monospace;color:var(--accent-light);font-weight:600;white-space:nowrap; }
-    .file-table code { font-size:11px;color:var(--accent-light);background:var(--bg-primary);padding:1px 4px;border-radius:2px; }
-    .stat-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:0.75rem;margin:1.2rem 0; }
-    .stat-card { border:1px solid var(--border);border-top:3px solid var(--cyan);background:var(--bg-card);padding:1rem 1.2rem;border-radius:2px;text-align:center; }
-    .stat-card .stat-val { font-family:'Orbitron',sans-serif;font-size:28px;font-weight:900;color:var(--cyan);line-height:1.1;text-shadow:0 0 20px var(--cyan-glow); }
-    .stat-card .stat-val.accent { color:var(--accent);text-shadow:0 0 20px var(--accent-glow); }
-    .stat-card .stat-label { font-family:'Orbitron',sans-serif;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-top:0.5rem; }
-    .docs-build-line { margin:0.35rem 0 0;font-family:'Share Tech Mono',ui-monospace,monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;max-width:42rem;opacity:0.75; }
+    .tutorial-main { max-width: 72rem; }
+    .docs-build-line {
+      margin: 0.35rem 0 0;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px; color: var(--text-dim);
+      letter-spacing: 0.03em; max-width: 42rem; opacity: 0.75;
+    }
+    .ref-intro { font-size: 13px; line-height: 1.65; color: var(--text-dim); max-width: 56rem; }
+
+    .chapter-index {
+      list-style: none; padding: 0; margin: 0;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+      gap: 0.3rem;
+    }
+    .chapter-index li {
+      border: 1px solid var(--border); padding: 0.45rem 0.65rem; border-radius: 2px;
+      background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .chapter-index li a {
+      color: var(--cyan); text-decoration: none; font-size: 13px;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-index li a:hover { color: var(--accent-light); }
+    .chapter-count {
+      font-size: 10px; color: var(--text-muted);
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+    .chapter-meta {
+      font-size: 11px; color: var(--text-muted); margin: -0.3rem 0 0.8rem;
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+    }
+
+    .doc-entry {
+      margin: 1rem 0 1.4rem;
+      padding: 0.75rem 0.9rem 0.5rem;
+      border-left: 2px solid var(--cyan);
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      border-radius: 2px;
+    }
+    .doc-entry h3 {
+      margin: 0 0 0.45rem;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 13px; font-weight: 700; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--cyan);
+    }
+    .doc-entry h3 code {
+      color: var(--accent-light); background: transparent; border: none;
+      padding: 0; font-size: 1em; letter-spacing: 0.5px;
+    }
+    .doc-entry .doc-anchor {
+      color: var(--text-muted); font-size: 0.85em; margin-right: 0.25rem;
+      text-decoration: none;
+    }
+    .doc-entry .doc-anchor:hover { color: var(--accent); }
+    .doc-entry p {
+      font-size: 13px; line-height: 1.6; color: var(--text-dim);
+      margin: 0.35rem 0;
+    }
+    .doc-entry p code { color: var(--accent-light); font-size: 12px; }
+    .doc-entry pre {
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 12px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 0.7rem 0.9rem; overflow-x: auto;
+      color: var(--text); margin: 0.5rem 0;
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.35);
+    }
+    .doc-entry pre code { color: var(--text); background: transparent; border: none; padding: 0; }
+    [data-theme="light"] .doc-entry pre { box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.05); }
+
+    kbd {
+      font-family: 'Share Tech Mono', ui-monospace, monospace;
+      font-size: 11px;
+      padding: 1px 6px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      color: var(--cyan);
+    }
   </style>
 </head>
 <body>
@@ -45,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; generated from the language-server corpus &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 253 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -59,162 +128,1618 @@
     </header>
 
     <main class="tutorial-main">
-      <section>
-        <p>Every primitive the current build implements. The table is generated
-        from the same corpus the language server completes from, so a function
-        listed here exists in the runtime and a function missing here raises
-        <code>could not find function</code> rather than failing silently.</p>
-
-        <div class="stat-grid">
-          <div class="stat-card">
-            <div class="stat-val">133</div>
-            <div class="stat-label">Primitives</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-val accent">v0.1.1</div>
-            <div class="stat-label">Build</div>
-          </div>
-        </div>
-
-        <table class="file-table">
-          <thead><tr><th>function</th><th>description</th></tr></thead>
-          <tbody>
-        <tr><td><code>c</code></td><td>c(...) — combine values into a vector, promoting to the widest type.</td></tr>
-        <tr><td><code>length</code></td><td>length(x) — the number of elements.</td></tr>
-        <tr><td><code>names</code></td><td>names(x) — the `names` attribute, or NULL.</td></tr>
-        <tr><td><code>attr</code></td><td>R primitive.</td></tr>
-        <tr><td><code>attributes</code></td><td>R primitive.</td></tr>
-        <tr><td><code>class</code></td><td>class(x) — the class vector (explicit attribute or implicit type).</td></tr>
-        <tr><td><code>inherits</code></td><td>R primitive.</td></tr>
-        <tr><td><code>unclass</code></td><td>R primitive.</td></tr>
-        <tr><td><code>structure</code></td><td>R primitive.</td></tr>
-        <tr><td><code>print</code></td><td>print(x) — print a value in R's default layout.</td></tr>
-        <tr><td><code>cat</code></td><td>cat(...) — write values with no quotes and no newline.</td></tr>
-        <tr><td><code>paste</code></td><td>paste(..., sep = " ", collapse = NULL) — elementwise string join.</td></tr>
-        <tr><td><code>paste0</code></td><td>R primitive.</td></tr>
-        <tr><td><code>format</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sprintf</code></td><td>sprintf(fmt, ...) — C-style formatting, vectorized.</td></tr>
-        <tr><td><code>message</code></td><td>R primitive.</td></tr>
-        <tr><td><code>warning</code></td><td>R primitive.</td></tr>
-        <tr><td><code>stop</code></td><td>stop(...) — signal an error and abort.</td></tr>
-        <tr><td><code>invisible</code></td><td>invisible(x) — return x without the top-level echo.</td></tr>
-        <tr><td><code>identity</code></td><td>R primitive.</td></tr>
-        <tr><td><code>seq</code></td><td>seq(from, to, by =, length.out =) — build a sequence.</td></tr>
-        <tr><td><code>seq_len</code></td><td>seq_len(n) — 1..n as an integer vector.</td></tr>
-        <tr><td><code>seq_along</code></td><td>R primitive.</td></tr>
-        <tr><td><code>rep</code></td><td>rep(x, times =, each =) — repeat elements.</td></tr>
-        <tr><td><code>rev</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sort</code></td><td>R primitive.</td></tr>
-        <tr><td><code>order</code></td><td>R primitive.</td></tr>
-        <tr><td><code>unique</code></td><td>R primitive.</td></tr>
-        <tr><td><code>which</code></td><td>R primitive.</td></tr>
-        <tr><td><code>which.max</code></td><td>R primitive.</td></tr>
-        <tr><td><code>which.min</code></td><td>R primitive.</td></tr>
-        <tr><td><code>any</code></td><td>R primitive.</td></tr>
-        <tr><td><code>all</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sum</code></td><td>R primitive.</td></tr>
-        <tr><td><code>prod</code></td><td>R primitive.</td></tr>
-        <tr><td><code>mean</code></td><td>R primitive.</td></tr>
-        <tr><td><code>median</code></td><td>R primitive.</td></tr>
-        <tr><td><code>var</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sd</code></td><td>R primitive.</td></tr>
-        <tr><td><code>min</code></td><td>R primitive.</td></tr>
-        <tr><td><code>max</code></td><td>R primitive.</td></tr>
-        <tr><td><code>range</code></td><td>R primitive.</td></tr>
-        <tr><td><code>abs</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sqrt</code></td><td>R primitive.</td></tr>
-        <tr><td><code>exp</code></td><td>R primitive.</td></tr>
-        <tr><td><code>log</code></td><td>R primitive.</td></tr>
-        <tr><td><code>log2</code></td><td>R primitive.</td></tr>
-        <tr><td><code>log10</code></td><td>R primitive.</td></tr>
-        <tr><td><code>floor</code></td><td>R primitive.</td></tr>
-        <tr><td><code>ceiling</code></td><td>R primitive.</td></tr>
-        <tr><td><code>round</code></td><td>R primitive.</td></tr>
-        <tr><td><code>trunc</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sign</code></td><td>R primitive.</td></tr>
-        <tr><td><code>cumsum</code></td><td>R primitive.</td></tr>
-        <tr><td><code>cumprod</code></td><td>R primitive.</td></tr>
-        <tr><td><code>diff</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.null</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.na</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.numeric</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.character</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.logical</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.function</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.list</code></td><td>R primitive.</td></tr>
-        <tr><td><code>is.vector</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.numeric</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.double</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.integer</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.character</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.logical</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.vector</code></td><td>R primitive.</td></tr>
-        <tr><td><code>as.list</code></td><td>R primitive.</td></tr>
-        <tr><td><code>list</code></td><td>R primitive.</td></tr>
-        <tr><td><code>unlist</code></td><td>R primitive.</td></tr>
-        <tr><td><code>lapply</code></td><td>lapply(X, FUN, ...) — apply FUN to each element, returning a list.</td></tr>
-        <tr><td><code>sapply</code></td><td>sapply(X, FUN, ...) — lapply, simplified to a vector when possible.</td></tr>
-        <tr><td><code>vapply</code></td><td>R primitive.</td></tr>
-        <tr><td><code>Map</code></td><td>R primitive.</td></tr>
-        <tr><td><code>Reduce</code></td><td>Reduce(f, x, init) — fold a list with a binary function.</td></tr>
-        <tr><td><code>Filter</code></td><td>Filter(f, x) — keep elements for which f is TRUE.</td></tr>
-        <tr><td><code>do.call</code></td><td>do.call(what, args) — call a function with an argument list.</td></tr>
-        <tr><td><code>nchar</code></td><td>R primitive.</td></tr>
-        <tr><td><code>substr</code></td><td>R primitive.</td></tr>
-        <tr><td><code>substring</code></td><td>R primitive.</td></tr>
-        <tr><td><code>toupper</code></td><td>R primitive.</td></tr>
-        <tr><td><code>tolower</code></td><td>R primitive.</td></tr>
-        <tr><td><code>strsplit</code></td><td>R primitive.</td></tr>
-        <tr><td><code>sub</code></td><td>R primitive.</td></tr>
-        <tr><td><code>gsub</code></td><td>gsub(pattern, replacement, x) — replace every regex match.</td></tr>
-        <tr><td><code>grepl</code></td><td>grepl(pattern, x) — TRUE where the regex matches.</td></tr>
-        <tr><td><code>grep</code></td><td>R primitive.</td></tr>
-        <tr><td><code>trimws</code></td><td>R primitive.</td></tr>
-        <tr><td><code>startsWith</code></td><td>R primitive.</td></tr>
-        <tr><td><code>endsWith</code></td><td>R primitive.</td></tr>
-        <tr><td><code>matrix</code></td><td>matrix(data, nrow, ncol) — build a matrix (column-major).</td></tr>
-        <tr><td><code>dim</code></td><td>R primitive.</td></tr>
-        <tr><td><code>nrow</code></td><td>R primitive.</td></tr>
-        <tr><td><code>ncol</code></td><td>R primitive.</td></tr>
-        <tr><td><code>t</code></td><td>R primitive.</td></tr>
-        <tr><td><code>head</code></td><td>R primitive.</td></tr>
-        <tr><td><code>tail</code></td><td>R primitive.</td></tr>
-        <tr><td><code>append</code></td><td>R primitive.</td></tr>
-        <tr><td><code>setdiff</code></td><td>R primitive.</td></tr>
-        <tr><td><code>union</code></td><td>R primitive.</td></tr>
-        <tr><td><code>intersect</code></td><td>R primitive.</td></tr>
-        <tr><td><code>identical</code></td><td>R primitive.</td></tr>
-        <tr><td><code>isTRUE</code></td><td>R primitive.</td></tr>
-        <tr><td><code>isFALSE</code></td><td>R primitive.</td></tr>
-        <tr><td><code>ifelse</code></td><td>R primitive.</td></tr>
-        <tr><td><code>stopifnot</code></td><td>R primitive.</td></tr>
-        <tr><td><code>numeric</code></td><td>R primitive.</td></tr>
-        <tr><td><code>character</code></td><td>R primitive.</td></tr>
-        <tr><td><code>logical</code></td><td>R primitive.</td></tr>
-        <tr><td><code>integer</code></td><td>R primitive.</td></tr>
-        <tr><td><code>vector</code></td><td>R primitive.</td></tr>
-        <tr><td><code>setNames</code></td><td>R primitive.</td></tr>
-        <tr><td><code>exists</code></td><td>R primitive.</td></tr>
-        <tr><td><code>get</code></td><td>R primitive.</td></tr>
-        <tr><td><code>assign</code></td><td>R primitive.</td></tr>
-        <tr><td><code>environment</code></td><td>R primitive.</td></tr>
-        <tr><td><code>new.env</code></td><td>R primitive.</td></tr>
-        <tr><td><code>missing</code></td><td>R primitive.</td></tr>
-        <tr><td><code>return</code></td><td>R primitive.</td></tr>
-        <tr><td><code>UseMethod</code></td><td>UseMethod(generic) — dispatch on the class of the first argument.</td></tr>
-        <tr><td><code>nlevels</code></td><td>R primitive.</td></tr>
-        <tr><td><code>typeof</code></td><td>R primitive.</td></tr>
-        <tr><td><code>mode</code></td><td>R primitive.</td></tr>
-        <tr><td><code>Recall</code></td><td>R primitive.</td></tr>
-        <tr><td><code>Negate</code></td><td>R primitive.</td></tr>
-        <tr><td><code>toString</code></td><td>R primitive.</td></tr>
-        <tr><td><code>rownames</code></td><td>R primitive.</td></tr>
-        <tr><td><code>colnames</code></td><td>R primitive.</td></tr>
-        <tr><td><code>.rust</code></td><td>.rust(code) — compile a self-contained inline Rust block (its `pub extern "C"` exports) to a cached cdylib via fusevm's FFI bridge.</td></tr>
-        <tr><td><code>.Call</code></td><td>.Call(name, ...) — invoke a `.rust()`-registered native routine, marshalling length-1 vectors to i64/f64/string and back.</td></tr>
-          </tbody>
-        </table>
-      </section>
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
+      <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
+      <p class="ref-intro">The 233 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+    <section class="tutorial-section">
+      <h2>Chapters</h2>
+      <ul class="chapter-index">
+        <li><a href="#ch-construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
+        <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
+        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">18</span></li>
+        <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">13</span></li>
+        <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
+        <li><a href="#ch-elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
+        <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">26</span></li>
+        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">21</span></li>
+        <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
+        <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">23</span></li>
+        <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
+      </ul>
+    </section>
+    <section class="tutorial-section" id="ch-construction-and-coercion">
+      <h2>Construction and coercion</h2>
+      <p class="chapter-meta">15 entries</p>
+      <article class="doc-entry" id="doc-c">
+        <h3><a class="doc-anchor" href="#doc-c">#</a> <code>c</code></h3>
+        <pre><code class="lang-r r">c(...)
+</code></pre>
+        <p>Combine the arguments into one vector, promoting every element to the widest type present (logical, integer, double, character, list). NULL arguments are dropped and argument tags become names, so c(a = 1, b = 2) is a named vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-list">
+        <h3><a class="doc-anchor" href="#doc-list">#</a> <code>list</code></h3>
+        <pre><code class="lang-r r">list(...)
+</code></pre>
+        <p>Build a list holding the arguments unchanged. Tagged arguments name the elements.</p>
+      </article>
+      <article class="doc-entry" id="doc-vector">
+        <h3><a class="doc-anchor" href="#doc-vector">#</a> <code>vector</code></h3>
+        <pre><code class="lang-r r">vector(mode = "logical", length = 0)
+</code></pre>
+        <p>A zero-filled vector of the named mode: "numeric" or "double" gives 0, "integer" gives 0L, "character" gives "", "list" gives NULLs, and any other mode gives FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-numeric">
+        <h3><a class="doc-anchor" href="#doc-numeric">#</a> <code>numeric</code></h3>
+        <pre><code class="lang-r r">numeric(length = 0)
+</code></pre>
+        <p>A double vector of `length` zeros — the usual way to preallocate a numeric result.</p>
+      </article>
+      <article class="doc-entry" id="doc-integer">
+        <h3><a class="doc-anchor" href="#doc-integer">#</a> <code>integer</code></h3>
+        <pre><code class="lang-r r">integer(length = 0)
+</code></pre>
+        <p>An integer vector of `length` zeros, for preallocating an integer result.</p>
+      </article>
+      <article class="doc-entry" id="doc-character">
+        <h3><a class="doc-anchor" href="#doc-character">#</a> <code>character</code></h3>
+        <pre><code class="lang-r r">character(length = 0)
+</code></pre>
+        <p>A character vector of `length` empty strings, for preallocating a character result.</p>
+      </article>
+      <article class="doc-entry" id="doc-logical">
+        <h3><a class="doc-anchor" href="#doc-logical">#</a> <code>logical</code></h3>
+        <pre><code class="lang-r r">logical(length = 0)
+</code></pre>
+        <p>A logical vector of `length` FALSE values, for preallocating a logical result.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-numeric">
+        <h3><a class="doc-anchor" href="#doc-as-numeric">#</a> <code>as.numeric</code></h3>
+        <pre><code class="lang-r r">as.numeric(x)
+</code></pre>
+        <p>Coerce to double. Strings are parsed as numbers and become NA when they do not parse; TRUE and FALSE become 1 and 0; a list is flattened elementwise.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-double">
+        <h3><a class="doc-anchor" href="#doc-as-double">#</a> <code>as.double</code></h3>
+        <pre><code class="lang-r r">as.double(x)
+</code></pre>
+        <p>The same coercion as as.numeric — rlang has one double type, so the two names share an implementation.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-integer">
+        <h3><a class="doc-anchor" href="#doc-as-integer">#</a> <code>as.integer</code></h3>
+        <pre><code class="lang-r r">as.integer(x)
+</code></pre>
+        <p>Coerce to integer, truncating doubles toward zero. Non-finite values and unparseable strings become NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-character">
+        <h3><a class="doc-anchor" href="#doc-as-character">#</a> <code>as.character</code></h3>
+        <pre><code class="lang-r r">as.character(x)
+</code></pre>
+        <p>Coerce to character using R's own 7-significant-digit number formatting. A factor yields its level labels rather than its integer codes.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-logical">
+        <h3><a class="doc-anchor" href="#doc-as-logical">#</a> <code>as.logical</code></h3>
+        <pre><code class="lang-r r">as.logical(x)
+</code></pre>
+        <p>Coerce to logical: any nonzero number is TRUE, and only "TRUE", "true", "T", "FALSE", "false" and "F" convert from character — every other string is NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-vector">
+        <h3><a class="doc-anchor" href="#doc-as-vector">#</a> <code>as.vector</code></h3>
+        <pre><code class="lang-r r">as.vector(x)
+</code></pre>
+        <p>A copy of x with names, dim, dimnames, class and levels stripped, so a table collapses to its plain counts. R's `mode` argument is accepted and ignored: the result keeps x's own type.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-list">
+        <h3><a class="doc-anchor" href="#doc-as-list">#</a> <code>as.list</code></h3>
+        <pre><code class="lang-r r">as.list(x)
+</code></pre>
+        <p>A list of x's elements, keeping the names. An atomic vector becomes a list of length-1 vectors.</p>
+      </article>
+      <article class="doc-entry" id="doc-unlist">
+        <h3><a class="doc-anchor" href="#doc-unlist">#</a> <code>unlist</code></h3>
+        <pre><code class="lang-r r">unlist(x)
+</code></pre>
+        <p>Flatten a list recursively into an atomic vector of the widest type, composing names the way R does: list(a = 1, b = list(2, 3)) unlists to names a, b1, b2.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-attributes-and-metadata">
+      <h2>Attributes and metadata</h2>
+      <p class="chapter-meta">19 entries</p>
+      <article class="doc-entry" id="doc-length">
+        <h3><a class="doc-anchor" href="#doc-length">#</a> <code>length</code></h3>
+        <pre><code class="lang-r r">length(x)
+</code></pre>
+        <p>The number of elements: 0 for NULL, the element count for a vector or list, and the number of bindings for an environment.</p>
+      </article>
+      <article class="doc-entry" id="doc-lengths">
+        <h3><a class="doc-anchor" href="#doc-lengths">#</a> <code>lengths</code></h3>
+        <pre><code class="lang-r r">lengths(x)
+</code></pre>
+        <p>An integer vector of the length of each element of x, keeping x's names.</p>
+      </article>
+      <article class="doc-entry" id="doc-names">
+        <h3><a class="doc-anchor" href="#doc-names">#</a> <code>names</code></h3>
+        <pre><code class="lang-r r">names(x)
+</code></pre>
+        <p>The `names` attribute, or NULL when x has none.</p>
+      </article>
+      <article class="doc-entry" id="doc-setnames">
+        <h3><a class="doc-anchor" href="#doc-setnames">#</a> <code>setNames</code></h3>
+        <pre><code class="lang-r r">setNames(object, nm)
+</code></pre>
+        <p>A copy of `object` carrying `nm` as its names. Assigning all-NA names removes the attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-attr">
+        <h3><a class="doc-anchor" href="#doc-attr">#</a> <code>attr</code></h3>
+        <pre><code class="lang-r r">attr(x, which)
+</code></pre>
+        <p>One attribute of x by name, or NULL when it is not set. Partial matching of `which` is not performed.</p>
+      </article>
+      <article class="doc-entry" id="doc-attributes">
+        <h3><a class="doc-anchor" href="#doc-attributes">#</a> <code>attributes</code></h3>
+        <pre><code class="lang-r r">attributes(x)
+</code></pre>
+        <p>Every attribute of x as a named list, or NULL when x carries none.</p>
+      </article>
+      <article class="doc-entry" id="doc-class">
+        <h3><a class="doc-anchor" href="#doc-class">#</a> <code>class</code></h3>
+        <pre><code class="lang-r r">class(x)
+</code></pre>
+        <p>The `class` attribute when set; otherwise the implicit class — c("matrix", "array") for a length-2 dim, else "numeric", "integer", "character", "logical", "list", "function", "environment" or "NULL".</p>
+      </article>
+      <article class="doc-entry" id="doc-inherits">
+        <h3><a class="doc-anchor" href="#doc-inherits">#</a> <code>inherits</code></h3>
+        <pre><code class="lang-r r">inherits(x, what)
+</code></pre>
+        <p>TRUE when any string in `what` appears in class(x). R's `which` argument is accepted and ignored — the result is always a single logical.</p>
+      </article>
+      <article class="doc-entry" id="doc-unclass">
+        <h3><a class="doc-anchor" href="#doc-unclass">#</a> <code>unclass</code></h3>
+        <pre><code class="lang-r r">unclass(x)
+</code></pre>
+        <p>A copy of x with the `class` attribute removed; every other attribute survives.</p>
+      </article>
+      <article class="doc-entry" id="doc-structure">
+        <h3><a class="doc-anchor" href="#doc-structure">#</a> <code>structure</code></h3>
+        <pre><code class="lang-r r">structure(.Data, ...)
+</code></pre>
+        <p>A copy of `.Data` with each tagged argument set as an attribute. The legacy spelling `.Names` is stored as `names`.</p>
+      </article>
+      <article class="doc-entry" id="doc-typeof">
+        <h3><a class="doc-anchor" href="#doc-typeof">#</a> <code>typeof</code></h3>
+        <pre><code class="lang-r r">typeof(x)
+</code></pre>
+        <p>The internal type: "logical", "integer", "double", "character", "list", "closure", "builtin", "environment", "externalptr" for a foreign R object, or "NULL".</p>
+      </article>
+      <article class="doc-entry" id="doc-mode">
+        <h3><a class="doc-anchor" href="#doc-mode">#</a> <code>mode</code></h3>
+        <pre><code class="lang-r r">mode(x)
+</code></pre>
+        <p>Like typeof with integer and double collapsed to "numeric" and closure and builtin collapsed to "function".</p>
+      </article>
+      <article class="doc-entry" id="doc-storage-mode">
+        <h3><a class="doc-anchor" href="#doc-storage-mode">#</a> <code>storage.mode</code></h3>
+        <pre><code class="lang-r r">storage.mode(x)
+</code></pre>
+        <p>The same string typeof returns; rlang stores no distinct storage mode.</p>
+      </article>
+      <article class="doc-entry" id="doc-dim">
+        <h3><a class="doc-anchor" href="#doc-dim">#</a> <code>dim</code></h3>
+        <pre><code class="lang-r r">dim(x)
+</code></pre>
+        <p>The `dim` attribute of a matrix or array, or NULL for a plain vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-nrow">
+        <h3><a class="doc-anchor" href="#doc-nrow">#</a> <code>nrow</code></h3>
+        <pre><code class="lang-r r">nrow(x)
+</code></pre>
+        <p>The first element of dim(x), or NULL when x has no dim.</p>
+      </article>
+      <article class="doc-entry" id="doc-ncol">
+        <h3><a class="doc-anchor" href="#doc-ncol">#</a> <code>ncol</code></h3>
+        <pre><code class="lang-r r">ncol(x)
+</code></pre>
+        <p>The second element of dim(x), or NULL when x has no dim.</p>
+      </article>
+      <article class="doc-entry" id="doc-rownames">
+        <h3><a class="doc-anchor" href="#doc-rownames">#</a> <code>rownames</code></h3>
+        <pre><code class="lang-r r">rownames(x)
+</code></pre>
+        <p>The first component of dimnames(x), or NULL when there are no row labels.</p>
+      </article>
+      <article class="doc-entry" id="doc-colnames">
+        <h3><a class="doc-anchor" href="#doc-colnames">#</a> <code>colnames</code></h3>
+        <pre><code class="lang-r r">colnames(x)
+</code></pre>
+        <p>The second component of dimnames(x), or NULL when there are no column labels.</p>
+      </article>
+      <article class="doc-entry" id="doc-dimnames">
+        <h3><a class="doc-anchor" href="#doc-dimnames">#</a> <code>dimnames</code></h3>
+        <pre><code class="lang-r r">dimnames(x)
+</code></pre>
+        <p>The `dimnames` attribute — a list of one label vector per dimension — or NULL. Labels are stored for 2-D only, and there is no dimnames&lt;- replacement: matrix(dimnames = ) and the cbind/rbind seam labels are the ways to attach them.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-output-and-the-inlineminusrust-ffi">
+      <h2>Output and the inline-Rust FFI</h2>
+      <p class="chapter-meta">18 entries</p>
+      <article class="doc-entry" id="doc-rust">
+        <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>.rust</code></h3>
+        <pre><code class="lang-r r">.rust(code)
+</code></pre>
+        <p>Compile a self-contained inline Rust block — its `pub extern "C"` exports — to a cached cdylib through fusevm's FFI bridge, and register the exports for .Call. Returns NULL invisibly; the compile happens once per distinct source hash.</p>
+      </article>
+      <article class="doc-entry" id="doc-call">
+        <h3><a class="doc-anchor" href="#doc-call">#</a> <code>.Call</code></h3>
+        <pre><code class="lang-r r">.Call(.NAME, ...)
+</code></pre>
+        <p>Invoke a routine registered by .rust(). Arguments must be length-1 numeric, integer or character and are marshalled to f64, i64 and string; the returned scalar is marshalled back to a length-1 vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-print">
+        <h3><a class="doc-anchor" href="#doc-print">#</a> <code>print</code></h3>
+        <pre><code class="lang-r r">print(x, digits)
+</code></pre>
+        <p>Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call. This is the internal print: a user-defined print.myclass method is never reached.</p>
+      </article>
+      <article class="doc-entry" id="doc-cat">
+        <h3><a class="doc-anchor" href="#doc-cat">#</a> <code>cat</code></h3>
+        <pre><code class="lang-r r">cat(..., sep = " ")
+</code></pre>
+        <p>Write every argument's elements with no quotes and no trailing newline, joined by `sep`. A separator containing a newline also ends the output with one, matching R.</p>
+      </article>
+      <article class="doc-entry" id="doc-message">
+        <h3><a class="doc-anchor" href="#doc-message">#</a> <code>message</code></h3>
+        <pre><code class="lang-r r">message(...)
+</code></pre>
+        <p>Write the concatenated arguments to stderr and return NULL invisibly. No condition is signalled — nothing can catch a message.</p>
+      </article>
+      <article class="doc-entry" id="doc-warning">
+        <h3><a class="doc-anchor" href="#doc-warning">#</a> <code>warning</code></h3>
+        <pre><code class="lang-r r">warning(...)
+</code></pre>
+        <p>Write "Warning message:" and the concatenated text to stderr and continue. Warnings are never collected or deferred.</p>
+      </article>
+      <article class="doc-entry" id="doc-stop">
+        <h3><a class="doc-anchor" href="#doc-stop">#</a> <code>stop</code></h3>
+        <pre><code class="lang-r r">stop(...)
+</code></pre>
+        <p>Abort with the concatenated arguments as the error message. Without a condition system there is nothing to catch it: the script exits with `Rscript: &lt;message&gt;` on stderr and status 1.</p>
+      </article>
+      <article class="doc-entry" id="doc-stopifnot">
+        <h3><a class="doc-anchor" href="#doc-stopifnot">#</a> <code>stopifnot</code></h3>
+        <pre><code class="lang-r r">stopifnot(...)
+</code></pre>
+        <p>Raise "not all arguments are TRUE" unless every argument is non-empty and all-TRUE. The message does not name the failing expression, because builtins receive values rather than expressions.</p>
+      </article>
+      <article class="doc-entry" id="doc-invisible">
+        <h3><a class="doc-anchor" href="#doc-invisible">#</a> <code>invisible</code></h3>
+        <pre><code class="lang-r r">invisible(x)
+</code></pre>
+        <p>Return x with the top-level echo suppressed for this value.</p>
+      </article>
+      <article class="doc-entry" id="doc-identity">
+        <h3><a class="doc-anchor" href="#doc-identity">#</a> <code>identity</code></h3>
+        <pre><code class="lang-r r">identity(x)
+</code></pre>
+        <p>Return the argument unchanged — useful as a default FUN in the apply family.</p>
+      </article>
+      <article class="doc-entry" id="doc-paste">
+        <h3><a class="doc-anchor" href="#doc-paste">#</a> <code>paste</code></h3>
+        <pre><code class="lang-r r">paste(..., sep = " ", collapse = NULL)
+</code></pre>
+        <p>Join the arguments elementwise with recycling to the longest, separated by `sep`. A non-NULL `collapse` then joins the result into a single string. NA elements render as "NA".</p>
+      </article>
+      <article class="doc-entry" id="doc-paste0">
+        <h3><a class="doc-anchor" href="#doc-paste0">#</a> <code>paste0</code></h3>
+        <pre><code class="lang-r r">paste0(..., collapse = NULL)
+</code></pre>
+        <p>paste with an empty separator: the arguments are joined elementwise with nothing between them.</p>
+      </article>
+      <article class="doc-entry" id="doc-tostring">
+        <h3><a class="doc-anchor" href="#doc-tostring">#</a> <code>toString</code></h3>
+        <pre><code class="lang-r r">toString(x)
+</code></pre>
+        <p>A single string of x's elements joined by ", " — the inline form R uses when a vector has to fit in one line.</p>
+      </article>
+      <article class="doc-entry" id="doc-deparse">
+        <h3><a class="doc-anchor" href="#doc-deparse">#</a> <code>deparse</code></h3>
+        <pre><code class="lang-r r">deparse(expr)
+</code></pre>
+        <p>R source text for a value: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, and longer vectors are wrapped in c(). Because arguments are evaluated eagerly, this deparses the value, never the unevaluated expression.</p>
+      </article>
+      <article class="doc-entry" id="doc-format">
+        <h3><a class="doc-anchor" href="#doc-format">#</a> <code>format</code></h3>
+        <pre><code class="lang-r r">format(x, nsmall = 0, digits, big.mark = "")
+</code></pre>
+        <p>Format to character with a common decimal count across the vector, then pad to a common width — numbers right-justified, strings left. `digits` is the minimum significant digits, `nsmall` the minimum decimals. R's `width`, `justify` and per-call scientific control are not implemented.</p>
+      </article>
+      <article class="doc-entry" id="doc-formatc">
+        <h3><a class="doc-anchor" href="#doc-formatc">#</a> <code>formatC</code></h3>
+        <pre><code class="lang-r r">formatC(x, width, digits, format, flag)
+</code></pre>
+        <p>Build the equivalent printf spec and route it through sprintf, so sign, zero-padding and exponent rules are shared. `format` defaults to "d" for integer input and "g" for real.</p>
+      </article>
+      <article class="doc-entry" id="doc-prettynum">
+        <h3><a class="doc-anchor" href="#doc-prettynum">#</a> <code>prettyNum</code></h3>
+        <pre><code class="lang-r r">prettyNum(x, big.mark = "")
+</code></pre>
+        <p>Insert `big.mark` between every third digit of the integer part of each formatted number, preserving sign and fraction.</p>
+      </article>
+      <article class="doc-entry" id="doc-sprintf">
+        <h3><a class="doc-anchor" href="#doc-sprintf">#</a> <code>sprintf</code></h3>
+        <pre><code class="lang-r r">sprintf(fmt, ...)
+</code></pre>
+        <p>C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-sequences">
+      <h2>Sequences</h2>
+      <p class="chapter-meta">12 entries</p>
+      <article class="doc-entry" id="doc-seq-len">
+        <h3><a class="doc-anchor" href="#doc-seq-len">#</a> <code>seq_len</code></h3>
+        <pre><code class="lang-r r">seq_len(n)
+</code></pre>
+        <p>The integer vector running from 1 to n, empty when n is 0 or negative.</p>
+      </article>
+      <article class="doc-entry" id="doc-seq-along">
+        <h3><a class="doc-anchor" href="#doc-seq-along">#</a> <code>seq_along</code></h3>
+        <pre><code class="lang-r r">seq_along(along.with)
+</code></pre>
+        <p>The integer vector running from 1 to the length of the argument, whatever its type.</p>
+      </article>
+      <article class="doc-entry" id="doc-seq">
+        <h3><a class="doc-anchor" href="#doc-seq">#</a> <code>seq</code></h3>
+        <pre><code class="lang-r r">seq(from, to, by, length.out)
+</code></pre>
+        <p>Build a sequence. With one argument it is seq_len(from). The third positional argument is `by`, so seq(0, 1, 0.25) steps by a quarter; `length.out` computes the step instead. The result stays integer when every element and the step are whole.</p>
+      </article>
+      <article class="doc-entry" id="doc-seq-int">
+        <h3><a class="doc-anchor" href="#doc-seq-int">#</a> <code>seq.int</code></h3>
+        <pre><code class="lang-r r">seq.int(from, to, by, length.out)
+</code></pre>
+        <p>The same implementation as seq — rlang draws no distinction between the two.</p>
+      </article>
+      <article class="doc-entry" id="doc-rep">
+        <h3><a class="doc-anchor" href="#doc-rep">#</a> <code>rep</code></h3>
+        <pre><code class="lang-r r">rep(x, times = 1, each = 1)
+</code></pre>
+        <p>Repeat x: each element `each` times, the whole sequence `times` times. A vector-valued `times` — R's per-element repeat count — is not supported; only its first element is read.</p>
+      </article>
+      <article class="doc-entry" id="doc-rep-len">
+        <h3><a class="doc-anchor" href="#doc-rep-len">#</a> <code>rep_len</code></h3>
+        <pre><code class="lang-r r">rep_len(x, length.out)
+</code></pre>
+        <p>Recycle x to exactly `length.out` elements, truncating or repeating as needed.</p>
+      </article>
+      <article class="doc-entry" id="doc-rev">
+        <h3><a class="doc-anchor" href="#doc-rev">#</a> <code>rev</code></h3>
+        <pre><code class="lang-r r">rev(x)
+</code></pre>
+        <p>Reverse the elements, reversing the names with them.</p>
+      </article>
+      <article class="doc-entry" id="doc-unname">
+        <h3><a class="doc-anchor" href="#doc-unname">#</a> <code>unname</code></h3>
+        <pre><code class="lang-r r">unname(obj)
+</code></pre>
+        <p>A copy of obj with the `names` attribute removed.</p>
+      </article>
+      <article class="doc-entry" id="doc-all-equal">
+        <h3><a class="doc-anchor" href="#doc-all-equal">#</a> <code>all.equal</code></h3>
+        <pre><code class="lang-r r">all.equal(target, current)
+</code></pre>
+        <p>TRUE when two numeric vectors agree within a mean relative difference of 1.5e-8, else the string "Mean relative difference: &lt;d&gt;". Only differing elements enter the scale, matching R's default countEQ = FALSE. Non-numeric arguments compare with identical.</p>
+      </article>
+      <article class="doc-entry" id="doc-head">
+        <h3><a class="doc-anchor" href="#doc-head">#</a> <code>head</code></h3>
+        <pre><code class="lang-r r">head(x, n = 6)
+</code></pre>
+        <p>The first n elements; a negative n drops the last |n| instead.</p>
+      </article>
+      <article class="doc-entry" id="doc-tail">
+        <h3><a class="doc-anchor" href="#doc-tail">#</a> <code>tail</code></h3>
+        <pre><code class="lang-r r">tail(x, n = 6)
+</code></pre>
+        <p>The last n elements; a negative n drops the first |n| instead.</p>
+      </article>
+      <article class="doc-entry" id="doc-append">
+        <h3><a class="doc-anchor" href="#doc-append">#</a> <code>append</code></h3>
+        <pre><code class="lang-r r">append(x, values)
+</code></pre>
+        <p>Concatenate values onto the end of x, with c()'s type promotion. R's `after` argument is accepted and ignored — insertion is always at the end.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-ordering-and-sets">
+      <h2>Ordering and sets</h2>
+      <p class="chapter-meta">13 entries</p>
+      <article class="doc-entry" id="doc-sort">
+        <h3><a class="doc-anchor" href="#doc-sort">#</a> <code>sort</code></h3>
+        <pre><code class="lang-r r">sort(x, decreasing = FALSE, index.return = FALSE)
+</code></pre>
+        <p>The sorted values with NA and NaN dropped, names carried along. With index.return = TRUE the result is a list of $x and the ordering $ix.</p>
+      </article>
+      <article class="doc-entry" id="doc-order">
+        <h3><a class="doc-anchor" href="#doc-order">#</a> <code>order</code></h3>
+        <pre><code class="lang-r r">order(x, decreasing = FALSE)
+</code></pre>
+        <p>The 1-based permutation that sorts x, with NA positions dropped. Only one sort key is supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-unique">
+        <h3><a class="doc-anchor" href="#doc-unique">#</a> <code>unique</code></h3>
+        <pre><code class="lang-r r">unique(x)
+</code></pre>
+        <p>The first occurrence of each distinct value, keeping the original order. Values are compared by their character form, so 1 and "1" are the same key.</p>
+      </article>
+      <article class="doc-entry" id="doc-setdiff">
+        <h3><a class="doc-anchor" href="#doc-setdiff">#</a> <code>setdiff</code></h3>
+        <pre><code class="lang-r r">setdiff(x, y)
+</code></pre>
+        <p>The de-duplicated elements of x that do not occur in y.</p>
+      </article>
+      <article class="doc-entry" id="doc-union">
+        <h3><a class="doc-anchor" href="#doc-union">#</a> <code>union</code></h3>
+        <pre><code class="lang-r r">union(x, y)
+</code></pre>
+        <p>The de-duplicated elements of x followed by the elements of y not already present.</p>
+      </article>
+      <article class="doc-entry" id="doc-intersect">
+        <h3><a class="doc-anchor" href="#doc-intersect">#</a> <code>intersect</code></h3>
+        <pre><code class="lang-r r">intersect(x, y)
+</code></pre>
+        <p>The de-duplicated elements of x that also occur in y.</p>
+      </article>
+      <article class="doc-entry" id="doc-match">
+        <h3><a class="doc-anchor" href="#doc-match">#</a> <code>match</code></h3>
+        <pre><code class="lang-r r">match(x, table)
+</code></pre>
+        <p>The first 1-based position of each element of x within `table`, NA where absent. Comparison is by character form, which makes it type-agnostic.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-element">
+        <h3><a class="doc-anchor" href="#doc-is-element">#</a> <code>is.element</code></h3>
+        <pre><code class="lang-r r">is.element(el, table)
+</code></pre>
+        <p>TRUE for each element of `el` that occurs in `table` — match(el, table) reduced to a logical.</p>
+      </article>
+      <article class="doc-entry" id="doc-duplicated">
+        <h3><a class="doc-anchor" href="#doc-duplicated">#</a> <code>duplicated</code></h3>
+        <pre><code class="lang-r r">duplicated(x)
+</code></pre>
+        <p>TRUE at each position whose value has already appeared earlier in x.</p>
+      </article>
+      <article class="doc-entry" id="doc-rank">
+        <h3><a class="doc-anchor" href="#doc-rank">#</a> <code>rank</code></h3>
+        <pre><code class="lang-r r">rank(x)
+</code></pre>
+        <p>Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = "average". The result is always a double vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-which">
+        <h3><a class="doc-anchor" href="#doc-which">#</a> <code>which</code></h3>
+        <pre><code class="lang-r r">which(x)
+</code></pre>
+        <p>The 1-based positions where x is TRUE, carrying the names of the selected elements. `arr.ind` is not supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-which-max">
+        <h3><a class="doc-anchor" href="#doc-which-max">#</a> <code>which.max</code></h3>
+        <pre><code class="lang-r r">which.max(x)
+</code></pre>
+        <p>The position of the first maximum, ignoring NA. An all-NA or empty vector yields an empty integer vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-which-min">
+        <h3><a class="doc-anchor" href="#doc-which-min">#</a> <code>which.min</code></h3>
+        <pre><code class="lang-r r">which.min(x)
+</code></pre>
+        <p>The position of the first minimum, ignoring NA.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-numeric-summaries">
+      <h2>Numeric summaries</h2>
+      <p class="chapter-meta">16 entries</p>
+      <article class="doc-entry" id="doc-sum">
+        <h3><a class="doc-anchor" href="#doc-sum">#</a> <code>sum</code></h3>
+        <pre><code class="lang-r r">sum(..., na.rm = FALSE)
+</code></pre>
+        <p>The total over every element of every argument. The result stays integer when all arguments are integer or logical, otherwise it is a double. Integer overflow widens to a double instead of producing NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-prod">
+        <h3><a class="doc-anchor" href="#doc-prod">#</a> <code>prod</code></h3>
+        <pre><code class="lang-r r">prod(..., na.rm = FALSE)
+</code></pre>
+        <p>The product of every element of every argument, always a double.</p>
+      </article>
+      <article class="doc-entry" id="doc-mean">
+        <h3><a class="doc-anchor" href="#doc-mean">#</a> <code>mean</code></h3>
+        <pre><code class="lang-r r">mean(x, na.rm = FALSE)
+</code></pre>
+        <p>The arithmetic mean of one vector. An empty vector gives NaN, and without na.rm a single NA or NaN makes the whole result NA. R's `trim` argument is accepted and ignored.</p>
+      </article>
+      <article class="doc-entry" id="doc-median">
+        <h3><a class="doc-anchor" href="#doc-median">#</a> <code>median</code></h3>
+        <pre><code class="lang-r r">median(x, na.rm = FALSE)
+</code></pre>
+        <p>The middle value of the sorted data, or the mean of the two middle values at even length.</p>
+      </article>
+      <article class="doc-entry" id="doc-quantile">
+        <h3><a class="doc-anchor" href="#doc-quantile">#</a> <code>quantile</code></h3>
+        <pre><code class="lang-r r">quantile(x, probs = c(0, 0.25, 0.5, 0.75, 1), names = TRUE)
+</code></pre>
+        <p>Sample quantiles by R's default type 7 — linear interpolation at h = (n-1)p — named with the percent labels unless names = FALSE. Other `type` values are not supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-cor">
+        <h3><a class="doc-anchor" href="#doc-cor">#</a> <code>cor</code></h3>
+        <pre><code class="lang-r r">cor(x, y)
+</code></pre>
+        <p>The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.</p>
+      </article>
+      <article class="doc-entry" id="doc-rle">
+        <h3><a class="doc-anchor" href="#doc-rle">#</a> <code>rle</code></h3>
+        <pre><code class="lang-r r">rle(x)
+</code></pre>
+        <p>Run-length encoding: a list of $lengths and $values for each run of equal consecutive elements, classed "rle" so it prints in R's layout.</p>
+      </article>
+      <article class="doc-entry" id="doc-inverse-rle">
+        <h3><a class="doc-anchor" href="#doc-inverse-rle">#</a> <code>inverse.rle</code></h3>
+        <pre><code class="lang-r r">inverse.rle(x)
+</code></pre>
+        <p>Expand an rle list back into the original vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-var">
+        <h3><a class="doc-anchor" href="#doc-var">#</a> <code>var</code></h3>
+        <pre><code class="lang-r r">var(x, na.rm = FALSE)
+</code></pre>
+        <p>The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. A covariance matrix from two arguments is not supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-sd">
+        <h3><a class="doc-anchor" href="#doc-sd">#</a> <code>sd</code></h3>
+        <pre><code class="lang-r r">sd(x, na.rm = FALSE)
+</code></pre>
+        <p>The square root of var(x) — the sample standard deviation.</p>
+      </article>
+      <article class="doc-entry" id="doc-min">
+        <h3><a class="doc-anchor" href="#doc-min">#</a> <code>min</code></h3>
+        <pre><code class="lang-r r">min(..., na.rm = FALSE)
+</code></pre>
+        <p>The smallest value across every argument. Character arguments compare lexically. With no values at all the answer is Inf, as in R, but the accompanying warning is not raised.</p>
+      </article>
+      <article class="doc-entry" id="doc-max">
+        <h3><a class="doc-anchor" href="#doc-max">#</a> <code>max</code></h3>
+        <pre><code class="lang-r r">max(..., na.rm = FALSE)
+</code></pre>
+        <p>The largest value across every argument; -Inf when there are no values. NA dominates NaN, so max(c(1, NA, NaN)) is NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-range">
+        <h3><a class="doc-anchor" href="#doc-range">#</a> <code>range</code></h3>
+        <pre><code class="lang-r r">range(..., na.rm = FALSE)
+</code></pre>
+        <p>c(min, max) over every argument; c(Inf, -Inf) when there are no values.</p>
+      </article>
+      <article class="doc-entry" id="doc-cumsum">
+        <h3><a class="doc-anchor" href="#doc-cumsum">#</a> <code>cumsum</code></h3>
+        <pre><code class="lang-r r">cumsum(x)
+</code></pre>
+        <p>The running total. Integer and logical input stays integer. An NA poisons every later element, since the accumulated value is no longer known.</p>
+      </article>
+      <article class="doc-entry" id="doc-cumprod">
+        <h3><a class="doc-anchor" href="#doc-cumprod">#</a> <code>cumprod</code></h3>
+        <pre><code class="lang-r r">cumprod(x)
+</code></pre>
+        <p>The running product, always a double, with the same NA propagation as cumsum.</p>
+      </article>
+      <article class="doc-entry" id="doc-diff">
+        <h3><a class="doc-anchor" href="#doc-diff">#</a> <code>diff</code></h3>
+        <pre><code class="lang-r r">diff(x, lag = 1, differences = 1)
+</code></pre>
+        <p>The lag-`lag` differences, applied `differences` times. Integer input stays integer; a vector shorter than the lag yields an empty result.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-elementwise-math">
+      <h2>Elementwise math</h2>
+      <p class="chapter-meta">37 entries</p>
+      <article class="doc-entry" id="doc-abs">
+        <h3><a class="doc-anchor" href="#doc-abs">#</a> <code>abs</code></h3>
+        <pre><code class="lang-r r">abs(x)
+</code></pre>
+        <p>Absolute value, elementwise. An integer vector stays integer; names and dim are carried through.</p>
+      </article>
+      <article class="doc-entry" id="doc-sqrt">
+        <h3><a class="doc-anchor" href="#doc-sqrt">#</a> <code>sqrt</code></h3>
+        <pre><code class="lang-r r">sqrt(x)
+</code></pre>
+        <p>Square root, elementwise. A negative argument gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-exp">
+        <h3><a class="doc-anchor" href="#doc-exp">#</a> <code>exp</code></h3>
+        <pre><code class="lang-r r">exp(x)
+</code></pre>
+        <p>e raised to the power of each element, computed elementwise.</p>
+      </article>
+      <article class="doc-entry" id="doc-log">
+        <h3><a class="doc-anchor" href="#doc-log">#</a> <code>log</code></h3>
+        <pre><code class="lang-r r">log(x, base)
+</code></pre>
+        <p>The natural logarithm, or the logarithm to `base` when a second argument is given.</p>
+      </article>
+      <article class="doc-entry" id="doc-log2">
+        <h3><a class="doc-anchor" href="#doc-log2">#</a> <code>log2</code></h3>
+        <pre><code class="lang-r r">log2(x)
+</code></pre>
+        <p>The base-2 logarithm of each element; zero gives -Inf and a negative gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-log10">
+        <h3><a class="doc-anchor" href="#doc-log10">#</a> <code>log10</code></h3>
+        <pre><code class="lang-r r">log10(x)
+</code></pre>
+        <p>The base-10 logarithm of each element; zero gives -Inf and a negative gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-log1p">
+        <h3><a class="doc-anchor" href="#doc-log1p">#</a> <code>log1p</code></h3>
+        <pre><code class="lang-r r">log1p(x)
+</code></pre>
+        <p>log(1 + x) computed to full precision for small x.</p>
+      </article>
+      <article class="doc-entry" id="doc-expm1">
+        <h3><a class="doc-anchor" href="#doc-expm1">#</a> <code>expm1</code></h3>
+        <pre><code class="lang-r r">expm1(x)
+</code></pre>
+        <p>exp(x) - 1 computed to full precision for small x.</p>
+      </article>
+      <article class="doc-entry" id="doc-floor">
+        <h3><a class="doc-anchor" href="#doc-floor">#</a> <code>floor</code></h3>
+        <pre><code class="lang-r r">floor(x)
+</code></pre>
+        <p>The largest integer value not greater than each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-ceiling">
+        <h3><a class="doc-anchor" href="#doc-ceiling">#</a> <code>ceiling</code></h3>
+        <pre><code class="lang-r r">ceiling(x)
+</code></pre>
+        <p>The smallest integer value not less than each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-trunc">
+        <h3><a class="doc-anchor" href="#doc-trunc">#</a> <code>trunc</code></h3>
+        <pre><code class="lang-r r">trunc(x)
+</code></pre>
+        <p>Each element truncated toward zero, so trunc(-1.7) is -1 where floor gives -2.</p>
+      </article>
+      <article class="doc-entry" id="doc-round">
+        <h3><a class="doc-anchor" href="#doc-round">#</a> <code>round</code></h3>
+        <pre><code class="lang-r r">round(x, digits = 0)
+</code></pre>
+        <p>Round half to even on the true decimal value rather than on x * 10^digits, so round(0.15, 1) is 0.1 and round(2.675, 2) is 2.67 exactly as in R. Negative digits round to tens, hundreds and so on.</p>
+      </article>
+      <article class="doc-entry" id="doc-signif">
+        <h3><a class="doc-anchor" href="#doc-signif">#</a> <code>signif</code></h3>
+        <pre><code class="lang-r r">signif(x, digits = 6)
+</code></pre>
+        <p>Round to `digits` significant figures, half to even: signif(123.456, 2) is 120 and signif(0.0034219, 3) is 0.00342.</p>
+      </article>
+      <article class="doc-entry" id="doc-sign">
+        <h3><a class="doc-anchor" href="#doc-sign">#</a> <code>sign</code></h3>
+        <pre><code class="lang-r r">sign(x)
+</code></pre>
+        <p>-1, 0 or 1 according to the sign of each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-sin">
+        <h3><a class="doc-anchor" href="#doc-sin">#</a> <code>sin</code></h3>
+        <pre><code class="lang-r r">sin(x)
+</code></pre>
+        <p>The sine of each element, with the argument taken in radians.</p>
+      </article>
+      <article class="doc-entry" id="doc-cos">
+        <h3><a class="doc-anchor" href="#doc-cos">#</a> <code>cos</code></h3>
+        <pre><code class="lang-r r">cos(x)
+</code></pre>
+        <p>The cosine of each element, with the argument taken in radians.</p>
+      </article>
+      <article class="doc-entry" id="doc-tan">
+        <h3><a class="doc-anchor" href="#doc-tan">#</a> <code>tan</code></h3>
+        <pre><code class="lang-r r">tan(x)
+</code></pre>
+        <p>The tangent of each element, with the argument taken in radians.</p>
+      </article>
+      <article class="doc-entry" id="doc-asin">
+        <h3><a class="doc-anchor" href="#doc-asin">#</a> <code>asin</code></h3>
+        <pre><code class="lang-r r">asin(x)
+</code></pre>
+        <p>The arc sine of each element, in radians; an argument outside [-1, 1] gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-acos">
+        <h3><a class="doc-anchor" href="#doc-acos">#</a> <code>acos</code></h3>
+        <pre><code class="lang-r r">acos(x)
+</code></pre>
+        <p>The arc cosine of each element, in radians; an argument outside [-1, 1] gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-atan">
+        <h3><a class="doc-anchor" href="#doc-atan">#</a> <code>atan</code></h3>
+        <pre><code class="lang-r r">atan(x)
+</code></pre>
+        <p>The arc tangent of each element, in radians; use atan2 when the quadrant matters.</p>
+      </article>
+      <article class="doc-entry" id="doc-atan2">
+        <h3><a class="doc-anchor" href="#doc-atan2">#</a> <code>atan2</code></h3>
+        <pre><code class="lang-r r">atan2(y, x)
+</code></pre>
+        <p>The angle in radians from the positive x-axis to the point (x, y), with the arguments recycled to the longer length.</p>
+      </article>
+      <article class="doc-entry" id="doc-sinh">
+        <h3><a class="doc-anchor" href="#doc-sinh">#</a> <code>sinh</code></h3>
+        <pre><code class="lang-r r">sinh(x)
+</code></pre>
+        <p>The hyperbolic sine of each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-cosh">
+        <h3><a class="doc-anchor" href="#doc-cosh">#</a> <code>cosh</code></h3>
+        <pre><code class="lang-r r">cosh(x)
+</code></pre>
+        <p>The hyperbolic cosine of each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-tanh">
+        <h3><a class="doc-anchor" href="#doc-tanh">#</a> <code>tanh</code></h3>
+        <pre><code class="lang-r r">tanh(x)
+</code></pre>
+        <p>The hyperbolic tangent of each element.</p>
+      </article>
+      <article class="doc-entry" id="doc-gamma">
+        <h3><a class="doc-anchor" href="#doc-gamma">#</a> <code>gamma</code></h3>
+        <pre><code class="lang-r r">gamma(x)
+</code></pre>
+        <p>The gamma function, computed through the same system libm that R links, so the printed result matches digit for digit.</p>
+      </article>
+      <article class="doc-entry" id="doc-lgamma">
+        <h3><a class="doc-anchor" href="#doc-lgamma">#</a> <code>lgamma</code></h3>
+        <pre><code class="lang-r r">lgamma(x)
+</code></pre>
+        <p>The natural logarithm of the absolute value of the gamma function.</p>
+      </article>
+      <article class="doc-entry" id="doc-factorial">
+        <h3><a class="doc-anchor" href="#doc-factorial">#</a> <code>factorial</code></h3>
+        <pre><code class="lang-r r">factorial(x)
+</code></pre>
+        <p>gamma(x + 1), so non-integer arguments are defined too.</p>
+      </article>
+      <article class="doc-entry" id="doc-lfactorial">
+        <h3><a class="doc-anchor" href="#doc-lfactorial">#</a> <code>lfactorial</code></h3>
+        <pre><code class="lang-r r">lfactorial(x)
+</code></pre>
+        <p>lgamma(x + 1) — the log factorial, finite far past the point where factorial overflows.</p>
+      </article>
+      <article class="doc-entry" id="doc-choose">
+        <h3><a class="doc-anchor" href="#doc-choose">#</a> <code>choose</code></h3>
+        <pre><code class="lang-r r">choose(n, k)
+</code></pre>
+        <p>The binomial coefficient, computed through lgamma and recycled over both arguments. A negative k gives 0.</p>
+      </article>
+      <article class="doc-entry" id="doc-beta">
+        <h3><a class="doc-anchor" href="#doc-beta">#</a> <code>beta</code></h3>
+        <pre><code class="lang-r r">beta(a, b)
+</code></pre>
+        <p>The beta function gamma(a)gamma(b)/gamma(a+b), computed through lgamma so intermediate values stay finite. Arguments recycle.</p>
+      </article>
+      <article class="doc-entry" id="doc-lbeta">
+        <h3><a class="doc-anchor" href="#doc-lbeta">#</a> <code>lbeta</code></h3>
+        <pre><code class="lang-r r">lbeta(a, b)
+</code></pre>
+        <p>The natural logarithm of beta(a, b), which stays finite for large arguments.</p>
+      </article>
+      <article class="doc-entry" id="doc-cummax">
+        <h3><a class="doc-anchor" href="#doc-cummax">#</a> <code>cummax</code></h3>
+        <pre><code class="lang-r r">cummax(x)
+</code></pre>
+        <p>The running maximum; an NA makes every later element NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-cummin">
+        <h3><a class="doc-anchor" href="#doc-cummin">#</a> <code>cummin</code></h3>
+        <pre><code class="lang-r r">cummin(x)
+</code></pre>
+        <p>The running minimum, with the same NA propagation.</p>
+      </article>
+      <article class="doc-entry" id="doc-pmax">
+        <h3><a class="doc-anchor" href="#doc-pmax">#</a> <code>pmax</code></h3>
+        <pre><code class="lang-r r">pmax(..., na.rm = FALSE)
+</code></pre>
+        <p>The elementwise maximum across the arguments, recycled to the longest. The result is always a double.</p>
+      </article>
+      <article class="doc-entry" id="doc-pmin">
+        <h3><a class="doc-anchor" href="#doc-pmin">#</a> <code>pmin</code></h3>
+        <pre><code class="lang-r r">pmin(..., na.rm = FALSE)
+</code></pre>
+        <p>The elementwise minimum across the arguments, recycled to the longest.</p>
+      </article>
+      <article class="doc-entry" id="doc-tabulate">
+        <h3><a class="doc-anchor" href="#doc-tabulate">#</a> <code>tabulate</code></h3>
+        <pre><code class="lang-r r">tabulate(bin, nbins = max(bin))
+</code></pre>
+        <p>The count of each integer 1..nbins occurring in `bin`. Values outside the range are ignored.</p>
+      </article>
+      <article class="doc-entry" id="doc-findinterval">
+        <h3><a class="doc-anchor" href="#doc-findinterval">#</a> <code>findInterval</code></h3>
+        <pre><code class="lang-r r">findInterval(x, vec)
+</code></pre>
+        <p>For each element of x, how many breakpoints in `vec` are less than or equal to it — the index of the interval it falls in.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-predicates">
+      <h2>Predicates</h2>
+      <p class="chapter-meta">26 entries</p>
+      <article class="doc-entry" id="doc-is-null">
+        <h3><a class="doc-anchor" href="#doc-is-null">#</a> <code>is.null</code></h3>
+        <pre><code class="lang-r r">is.null(x)
+</code></pre>
+        <p>TRUE when x is NULL. A zero-length vector is not NULL and answers FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-na">
+        <h3><a class="doc-anchor" href="#doc-is-na">#</a> <code>is.na</code></h3>
+        <pre><code class="lang-r r">is.na(x)
+</code></pre>
+        <p>TRUE at each missing element. NaN counts as missing in a double vector, and a list element counts when it is itself a length-1 NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-nan">
+        <h3><a class="doc-anchor" href="#doc-is-nan">#</a> <code>is.nan</code></h3>
+        <pre><code class="lang-r r">is.nan(x)
+</code></pre>
+        <p>TRUE at each NaN. Only doubles can carry NaN, so every other type answers all-FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-finite">
+        <h3><a class="doc-anchor" href="#doc-is-finite">#</a> <code>is.finite</code></h3>
+        <pre><code class="lang-r r">is.finite(x)
+</code></pre>
+        <p>TRUE where the element is a finite number — never for character or list input.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-infinite">
+        <h3><a class="doc-anchor" href="#doc-is-infinite">#</a> <code>is.infinite</code></h3>
+        <pre><code class="lang-r r">is.infinite(x)
+</code></pre>
+        <p>TRUE at each Inf or -Inf; FALSE everywhere else, including NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-anyna">
+        <h3><a class="doc-anchor" href="#doc-anyna">#</a> <code>anyNA</code></h3>
+        <pre><code class="lang-r r">anyNA(x)
+</code></pre>
+        <p>TRUE when any element is NA or NaN, checked without building the full is.na vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-complete-cases">
+        <h3><a class="doc-anchor" href="#doc-complete-cases">#</a> <code>complete.cases</code></h3>
+        <pre><code class="lang-r r">complete.cases(x)
+</code></pre>
+        <p>TRUE at each non-missing element. Over a plain vector this is the negation of is.na; data-frame input is not supported natively.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-numeric">
+        <h3><a class="doc-anchor" href="#doc-is-numeric">#</a> <code>is.numeric</code></h3>
+        <pre><code class="lang-r r">is.numeric(x)
+</code></pre>
+        <p>TRUE for a double or integer vector. A factor is stored as an integer vector with attributes, so this answers TRUE for one where GNU R answers FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-character">
+        <h3><a class="doc-anchor" href="#doc-is-character">#</a> <code>is.character</code></h3>
+        <pre><code class="lang-r r">is.character(x)
+</code></pre>
+        <p>TRUE for a character vector, whatever attributes it carries.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-logical">
+        <h3><a class="doc-anchor" href="#doc-is-logical">#</a> <code>is.logical</code></h3>
+        <pre><code class="lang-r r">is.logical(x)
+</code></pre>
+        <p>TRUE for a logical vector, whatever attributes it carries.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-list">
+        <h3><a class="doc-anchor" href="#doc-is-list">#</a> <code>is.list</code></h3>
+        <pre><code class="lang-r r">is.list(x)
+</code></pre>
+        <p>TRUE for a list, including a list carrying a class attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-function">
+        <h3><a class="doc-anchor" href="#doc-is-function">#</a> <code>is.function</code></h3>
+        <pre><code class="lang-r r">is.function(x)
+</code></pre>
+        <p>TRUE for a closure, a primitive used as a value, or a Negate/Vectorize combinator.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-vector">
+        <h3><a class="doc-anchor" href="#doc-is-vector">#</a> <code>is.vector</code></h3>
+        <pre><code class="lang-r r">is.vector(x)
+</code></pre>
+        <p>TRUE for any atomic vector or list. Attributes are not inspected, so an object carrying a class still answers TRUE where GNU R answers FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-any">
+        <h3><a class="doc-anchor" href="#doc-any">#</a> <code>any</code></h3>
+        <pre><code class="lang-r r">any(..., na.rm = FALSE)
+</code></pre>
+        <p>TRUE when any element of any argument is TRUE. Three-valued: an NA with no TRUE present gives NA unless na.rm is set.</p>
+      </article>
+      <article class="doc-entry" id="doc-all">
+        <h3><a class="doc-anchor" href="#doc-all">#</a> <code>all</code></h3>
+        <pre><code class="lang-r r">all(..., na.rm = FALSE)
+</code></pre>
+        <p>TRUE when no element is FALSE. An NA with no FALSE present gives NA unless na.rm is set.</p>
+      </article>
+      <article class="doc-entry" id="doc-istrue">
+        <h3><a class="doc-anchor" href="#doc-istrue">#</a> <code>isTRUE</code></h3>
+        <pre><code class="lang-r r">isTRUE(x)
+</code></pre>
+        <p>TRUE when x is a length-1 TRUE. The argument is coerced first, so isTRUE(1) answers TRUE here where GNU R — which demands an actual logical — answers FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-isfalse">
+        <h3><a class="doc-anchor" href="#doc-isfalse">#</a> <code>isFALSE</code></h3>
+        <pre><code class="lang-r r">isFALSE(x)
+</code></pre>
+        <p>TRUE when x is a length-1 FALSE, with the same coercion caveat as isTRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-xor">
+        <h3><a class="doc-anchor" href="#doc-xor">#</a> <code>xor</code></h3>
+        <pre><code class="lang-r r">xor(x, y)
+</code></pre>
+        <p>Elementwise exclusive or, recycled to the longer argument; NA on either side gives NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwand">
+        <h3><a class="doc-anchor" href="#doc-bitwand">#</a> <code>bitwAnd</code></h3>
+        <pre><code class="lang-r r">bitwAnd(a, b)
+</code></pre>
+        <p>Bitwise AND, recycled. rlang computes on 64-bit integers, so values beyond R's 32-bit range keep their bits instead of becoming NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwor">
+        <h3><a class="doc-anchor" href="#doc-bitwor">#</a> <code>bitwOr</code></h3>
+        <pre><code class="lang-r r">bitwOr(a, b)
+</code></pre>
+        <p>Bitwise OR of each pair, with the arguments recycled to the longer one.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwxor">
+        <h3><a class="doc-anchor" href="#doc-bitwxor">#</a> <code>bitwXor</code></h3>
+        <pre><code class="lang-r r">bitwXor(a, b)
+</code></pre>
+        <p>Bitwise exclusive OR, recycled over both arguments.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwnot">
+        <h3><a class="doc-anchor" href="#doc-bitwnot">#</a> <code>bitwNot</code></h3>
+        <pre><code class="lang-r r">bitwNot(a)
+</code></pre>
+        <p>The bitwise complement of each element, computed on 64-bit integers.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwshiftl">
+        <h3><a class="doc-anchor" href="#doc-bitwshiftl">#</a> <code>bitwShiftL</code></h3>
+        <pre><code class="lang-r r">bitwShiftL(a, b)
+</code></pre>
+        <p>Shift each element left by b bits, on 64-bit integers rather than R 32-bit ones.</p>
+      </article>
+      <article class="doc-entry" id="doc-bitwshiftr">
+        <h3><a class="doc-anchor" href="#doc-bitwshiftr">#</a> <code>bitwShiftR</code></h3>
+        <pre><code class="lang-r r">bitwShiftR(a, b)
+</code></pre>
+        <p>Shift each element right by b bits — an arithmetic shift, so the sign bit is preserved.</p>
+      </article>
+      <article class="doc-entry" id="doc-identical">
+        <h3><a class="doc-anchor" href="#doc-identical">#</a> <code>identical</code></h3>
+        <pre><code class="lang-r r">identical(x, y)
+</code></pre>
+        <p>TRUE when both values have the same internal type, the same names and the same elements, comparing lists recursively. Attributes other than names are not compared, so a classed value can be identical to a bare one.</p>
+      </article>
+      <article class="doc-entry" id="doc-ifelse">
+        <h3><a class="doc-anchor" href="#doc-ifelse">#</a> <code>ifelse</code></h3>
+        <pre><code class="lang-r r">ifelse(test, yes, no)
+</code></pre>
+        <p>Elementwise selection: the matching element of `yes` where test is TRUE, of `no` where it is FALSE, and NA where test is NA. Both branches recycle.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-strings-and-regular-expressions">
+      <h2>Strings and regular expressions</h2>
+      <p class="chapter-meta">21 entries</p>
+      <article class="doc-entry" id="doc-nchar">
+        <h3><a class="doc-anchor" href="#doc-nchar">#</a> <code>nchar</code></h3>
+        <pre><code class="lang-r r">nchar(x)
+</code></pre>
+        <p>The number of characters in each string — Unicode code points, not bytes.</p>
+      </article>
+      <article class="doc-entry" id="doc-substr">
+        <h3><a class="doc-anchor" href="#doc-substr">#</a> <code>substr</code></h3>
+        <pre><code class="lang-r r">substr(x, start, stop)
+</code></pre>
+        <p>The characters of each element from `start` to `stop` inclusive, 1-based. start and stop are read as single numbers; use substring to vary them per element.</p>
+      </article>
+      <article class="doc-entry" id="doc-substring">
+        <h3><a class="doc-anchor" href="#doc-substring">#</a> <code>substring</code></h3>
+        <pre><code class="lang-r r">substring(text, first = 1, last = 1000000)
+</code></pre>
+        <p>Like substr, but text, first and last all recycle to the longest, so substring("hello", 1:3) returns three pieces.</p>
+      </article>
+      <article class="doc-entry" id="doc-toupper">
+        <h3><a class="doc-anchor" href="#doc-toupper">#</a> <code>toupper</code></h3>
+        <pre><code class="lang-r r">toupper(x)
+</code></pre>
+        <p>Each string converted to upper case, using Unicode case mapping.</p>
+      </article>
+      <article class="doc-entry" id="doc-tolower">
+        <h3><a class="doc-anchor" href="#doc-tolower">#</a> <code>tolower</code></h3>
+        <pre><code class="lang-r r">tolower(x)
+</code></pre>
+        <p>Each string converted to lower case, using Unicode case mapping.</p>
+      </article>
+      <article class="doc-entry" id="doc-casefold">
+        <h3><a class="doc-anchor" href="#doc-casefold">#</a> <code>casefold</code></h3>
+        <pre><code class="lang-r r">casefold(x, upper = FALSE)
+</code></pre>
+        <p>tolower by default, toupper when upper = TRUE — one function behind a flag.</p>
+      </article>
+      <article class="doc-entry" id="doc-chartr">
+        <h3><a class="doc-anchor" href="#doc-chartr">#</a> <code>chartr</code></h3>
+        <pre><code class="lang-r r">chartr(old, new, x)
+</code></pre>
+        <p>Translate the characters of `old` to the matching characters of `new`, expanding a-c ranges in both. An `old` longer than `new` is an error; a character repeated in `old` takes its last mapping.</p>
+      </article>
+      <article class="doc-entry" id="doc-strtoi">
+        <h3><a class="doc-anchor" href="#doc-strtoi">#</a> <code>strtoi</code></h3>
+        <pre><code class="lang-r r">strtoi(x, base = 10)
+</code></pre>
+        <p>Parse each string as an integer in the given base, accepting an optional 0x or 0X prefix at base 16. Unparseable strings become NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-strrep">
+        <h3><a class="doc-anchor" href="#doc-strrep">#</a> <code>strrep</code></h3>
+        <pre><code class="lang-r r">strrep(x, times)
+</code></pre>
+        <p>Repeat each string `times` times, with both arguments recycled.</p>
+      </article>
+      <article class="doc-entry" id="doc-encodestring">
+        <h3><a class="doc-anchor" href="#doc-encodestring">#</a> <code>encodeString</code></h3>
+        <pre><code class="lang-r r">encodeString(x)
+</code></pre>
+        <p>Escape each string the way R prints it — backslash escapes for quotes, tabs and newlines.</p>
+      </article>
+      <article class="doc-entry" id="doc-strsplit">
+        <h3><a class="doc-anchor" href="#doc-strsplit">#</a> <code>strsplit</code></h3>
+        <pre><code class="lang-r r">strsplit(x, split, fixed = FALSE)
+</code></pre>
+        <p>Split each string by a regular expression, returning one character vector per element in a list. An empty pattern splits into single characters; fixed = TRUE splits on the literal text.</p>
+      </article>
+      <article class="doc-entry" id="doc-sub">
+        <h3><a class="doc-anchor" href="#doc-sub">#</a> <code>sub</code></h3>
+        <pre><code class="lang-r r">sub(pattern, replacement, x, fixed = FALSE, ignore.case = FALSE)
+</code></pre>
+        <p>Replace the first match of `pattern` in each element. Back-references are written R's way, as \1..\9.</p>
+      </article>
+      <article class="doc-entry" id="doc-gsub">
+        <h3><a class="doc-anchor" href="#doc-gsub">#</a> <code>gsub</code></h3>
+        <pre><code class="lang-r r">gsub(pattern, replacement, x, fixed = FALSE, ignore.case = FALSE)
+</code></pre>
+        <p>Replace every match of `pattern` in each element, with the same back-reference and flag handling as sub.</p>
+      </article>
+      <article class="doc-entry" id="doc-grepl">
+        <h3><a class="doc-anchor" href="#doc-grepl">#</a> <code>grepl</code></h3>
+        <pre><code class="lang-r r">grepl(pattern, x, fixed = FALSE, ignore.case = FALSE)
+</code></pre>
+        <p>TRUE at each element of x the pattern matches, and NA where the element is NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-grep">
+        <h3><a class="doc-anchor" href="#doc-grep">#</a> <code>grep</code></h3>
+        <pre><code class="lang-r r">grep(pattern, x, value = FALSE, fixed = FALSE, ignore.case = FALSE)
+</code></pre>
+        <p>The 1-based positions of the matching elements, or the matching strings themselves when value = TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-regexpr">
+        <h3><a class="doc-anchor" href="#doc-regexpr">#</a> <code>regexpr</code></h3>
+        <pre><code class="lang-r r">regexpr(pattern, text)
+</code></pre>
+        <p>The 1-based character position of the first match in each element, or -1 for no match, carrying the width of each match on the `match.length` attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-gregexpr">
+        <h3><a class="doc-anchor" href="#doc-gregexpr">#</a> <code>gregexpr</code></h3>
+        <pre><code class="lang-r r">gregexpr(pattern, text)
+</code></pre>
+        <p>A list with every match position for each element, each vector carrying its own `match.length`.</p>
+      </article>
+      <article class="doc-entry" id="doc-regmatches">
+        <h3><a class="doc-anchor" href="#doc-regmatches">#</a> <code>regmatches</code></h3>
+        <pre><code class="lang-r r">regmatches(x, m)
+</code></pre>
+        <p>The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter.</p>
+      </article>
+      <article class="doc-entry" id="doc-trimws">
+        <h3><a class="doc-anchor" href="#doc-trimws">#</a> <code>trimws</code></h3>
+        <pre><code class="lang-r r">trimws(x, which = "both")
+</code></pre>
+        <p>Strip whitespace from both ends, or only the left or right end.</p>
+      </article>
+      <article class="doc-entry" id="doc-startswith">
+        <h3><a class="doc-anchor" href="#doc-startswith">#</a> <code>startsWith</code></h3>
+        <pre><code class="lang-r r">startsWith(x, prefix)
+</code></pre>
+        <p>TRUE where the element begins with the prefix; both arguments recycle.</p>
+      </article>
+      <article class="doc-entry" id="doc-endswith">
+        <h3><a class="doc-anchor" href="#doc-endswith">#</a> <code>endsWith</code></h3>
+        <pre><code class="lang-r r">endsWith(x, suffix)
+</code></pre>
+        <p>TRUE where the element ends with the suffix; both arguments recycle.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-the-apply-family">
+      <h2>The apply family</h2>
+      <p class="chapter-meta">16 entries</p>
+      <article class="doc-entry" id="doc-lapply">
+        <h3><a class="doc-anchor" href="#doc-lapply">#</a> <code>lapply</code></h3>
+        <pre><code class="lang-r r">lapply(X, FUN, ...)
+</code></pre>
+        <p>Apply FUN to each element of X and return a list carrying X's names. Extra arguments are passed on to FUN.</p>
+      </article>
+      <article class="doc-entry" id="doc-sapply">
+        <h3><a class="doc-anchor" href="#doc-sapply">#</a> <code>sapply</code></h3>
+        <pre><code class="lang-r r">sapply(X, FUN, ...)
+</code></pre>
+        <p>lapply followed by simplification: results that are all length 1 collapse to a vector, results that are all length k become a k-by-n matrix, and ragged results stay a list. A character X supplies the names.</p>
+      </article>
+      <article class="doc-entry" id="doc-vapply">
+        <h3><a class="doc-anchor" href="#doc-vapply">#</a> <code>vapply</code></h3>
+        <pre><code class="lang-r r">vapply(X, FUN, FUN.VALUE)
+</code></pre>
+        <p>Apply FUN to each element and simplify like sapply. FUN.VALUE is accepted but the result is not type-checked against it, and extra arguments are not forwarded to FUN.</p>
+      </article>
+      <article class="doc-entry" id="doc-map">
+        <h3><a class="doc-anchor" href="#doc-map">#</a> <code>Map</code></h3>
+        <pre><code class="lang-r r">Map(f, ...)
+</code></pre>
+        <p>Apply f elementwise across several lists, stopping at the shortest, and return a list.</p>
+      </article>
+      <article class="doc-entry" id="doc-mapply">
+        <h3><a class="doc-anchor" href="#doc-mapply">#</a> <code>mapply</code></h3>
+        <pre><code class="lang-r r">mapply(FUN, ...)
+</code></pre>
+        <p>Like Map, but the arguments recycle to the longest and the result is simplified, matching R's default SIMPLIFY = TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-reduce">
+        <h3><a class="doc-anchor" href="#doc-reduce">#</a> <code>Reduce</code></h3>
+        <pre><code class="lang-r r">Reduce(f, x, init, right = FALSE, accumulate = FALSE)
+</code></pre>
+        <p>Fold x with the binary function f, left to right by default. `init` seeds the accumulator, `right = TRUE` folds as f(element, acc), and `accumulate = TRUE` returns every intermediate value in original order.</p>
+      </article>
+      <article class="doc-entry" id="doc-filter">
+        <h3><a class="doc-anchor" href="#doc-filter">#</a> <code>Filter</code></h3>
+        <pre><code class="lang-r r">Filter(f, x)
+</code></pre>
+        <p>The elements of x for which f returns TRUE, keeping the corresponding names.</p>
+      </article>
+      <article class="doc-entry" id="doc-find">
+        <h3><a class="doc-anchor" href="#doc-find">#</a> <code>Find</code></h3>
+        <pre><code class="lang-r r">Find(f, x)
+</code></pre>
+        <p>The first element for which f returns TRUE, or NULL when none does.</p>
+      </article>
+      <article class="doc-entry" id="doc-position">
+        <h3><a class="doc-anchor" href="#doc-position">#</a> <code>Position</code></h3>
+        <pre><code class="lang-r r">Position(f, x)
+</code></pre>
+        <p>The 1-based position of the first element for which f returns TRUE, or integer NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-split">
+        <h3><a class="doc-anchor" href="#doc-split">#</a> <code>split</code></h3>
+        <pre><code class="lang-r r">split(x, f)
+</code></pre>
+        <p>Split x into a list of groups, one per distinct value of f, named by the sorted levels.</p>
+      </article>
+      <article class="doc-entry" id="doc-tapply">
+        <h3><a class="doc-anchor" href="#doc-tapply">#</a> <code>tapply</code></h3>
+        <pre><code class="lang-r r">tapply(X, INDEX, FUN)
+</code></pre>
+        <p>Apply FUN to each group of X defined by INDEX, returning one simplified value per level, named by level.</p>
+      </article>
+      <article class="doc-entry" id="doc-modifylist">
+        <h3><a class="doc-anchor" href="#doc-modifylist">#</a> <code>modifyList</code></h3>
+        <pre><code class="lang-r r">modifyList(x, val)
+</code></pre>
+        <p>Replace the elements of x whose names appear in `val` and append the names that do not.</p>
+      </article>
+      <article class="doc-entry" id="doc-rapply">
+        <h3><a class="doc-anchor" href="#doc-rapply">#</a> <code>rapply</code></h3>
+        <pre><code class="lang-r r">rapply(object, f)
+</code></pre>
+        <p>Apply f to every leaf of a nested list and flatten the result. Only R's how = "unlist" behaviour is implemented.</p>
+      </article>
+      <article class="doc-entry" id="doc-do-call">
+        <h3><a class="doc-anchor" href="#doc-do-call">#</a> <code>do.call</code></h3>
+        <pre><code class="lang-r r">do.call(what, args)
+</code></pre>
+        <p>Call a function — given as a value or as a name — with the elements of `args` as its arguments; the list's names become argument tags.</p>
+      </article>
+      <article class="doc-entry" id="doc-negate">
+        <h3><a class="doc-anchor" href="#doc-negate">#</a> <code>Negate</code></h3>
+        <pre><code class="lang-r r">Negate(f)
+</code></pre>
+        <p>A new function returning the logical negation of f's result. It is a runtime combinator, not a closure, so it has no body to print.</p>
+      </article>
+      <article class="doc-entry" id="doc-vectorize">
+        <h3><a class="doc-anchor" href="#doc-vectorize">#</a> <code>Vectorize</code></h3>
+        <pre><code class="lang-r r">Vectorize(FUN)
+</code></pre>
+        <p>A new function that applies FUN elementwise over its recycled arguments and simplifies the result.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-matrices-and-arrays">
+      <h2>Matrices and arrays</h2>
+      <p class="chapter-meta">17 entries</p>
+      <article class="doc-entry" id="doc-matrix">
+        <h3><a class="doc-anchor" href="#doc-matrix">#</a> <code>matrix</code></h3>
+        <pre><code class="lang-r r">matrix(data = NA, nrow, ncol, dimnames = NULL, byrow = FALSE)
+</code></pre>
+        <p>Build a matrix, filling column-major and recycling `data` to nrow*ncol. Only one of nrow and ncol is needed. `byrow` must be passed by name — a fourth positional argument is not read as byrow.</p>
+      </article>
+      <article class="doc-entry" id="doc-t">
+        <h3><a class="doc-anchor" href="#doc-t">#</a> <code>t</code></h3>
+        <pre><code class="lang-r r">t(x)
+</code></pre>
+        <p>Transpose a matrix. A dimensionless vector is treated as a one-row matrix, which means t() of a plain vector returns an n-by-1 column where GNU R returns a 1-by-n row.</p>
+      </article>
+      <article class="doc-entry" id="doc-array">
+        <h3><a class="doc-anchor" href="#doc-array">#</a> <code>array</code></h3>
+        <pre><code class="lang-r r">array(data = NA, dim = length(data))
+</code></pre>
+        <p>Build an N-dimensional array, recycling `data` column-major to fill the shape. dimnames are not stored for rank 3 and above.</p>
+      </article>
+      <article class="doc-entry" id="doc-aperm">
+        <h3><a class="doc-anchor" href="#doc-aperm">#</a> <code>aperm</code></h3>
+        <pre><code class="lang-r r">aperm(a, perm)
+</code></pre>
+        <p>Permute the dimensions of an array; the default reverses them, which transposes a matrix.</p>
+      </article>
+      <article class="doc-entry" id="doc-apply">
+        <h3><a class="doc-anchor" href="#doc-apply">#</a> <code>apply</code></h3>
+        <pre><code class="lang-r r">apply(X, MARGIN, FUN)
+</code></pre>
+        <p>Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A slice of rank 2 or more keeps its dim, so FUN sees a matrix. Several margins with scalar results reshape into an array.</p>
+      </article>
+      <article class="doc-entry" id="doc-diag">
+        <h3><a class="doc-anchor" href="#doc-diag">#</a> <code>diag</code></h3>
+        <pre><code class="lang-r r">diag(x)
+</code></pre>
+        <p>Three behaviours, as in R: the main diagonal of a matrix, the n-by-n identity for a length-1 number, and the diagonal matrix built from a longer vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-pctstarpct">
+        <h3><a class="doc-anchor" href="#doc-pctstarpct">#</a> <code>%*%</code></h3>
+        <pre><code class="lang-r r">x %*% y
+</code></pre>
+        <p>The matrix product, column-major. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.</p>
+      </article>
+      <article class="doc-entry" id="doc-crossprod">
+        <h3><a class="doc-anchor" href="#doc-crossprod">#</a> <code>crossprod</code></h3>
+        <pre><code class="lang-r r">crossprod(x, y = x)
+</code></pre>
+        <p>t(x) %*% y, computed through the same matrix product.</p>
+      </article>
+      <article class="doc-entry" id="doc-tcrossprod">
+        <h3><a class="doc-anchor" href="#doc-tcrossprod">#</a> <code>tcrossprod</code></h3>
+        <pre><code class="lang-r r">tcrossprod(x, y = x)
+</code></pre>
+        <p>x %*% t(y), computed through the same matrix product; y defaults to x.</p>
+      </article>
+      <article class="doc-entry" id="doc-outer">
+        <h3><a class="doc-anchor" href="#doc-outer">#</a> <code>outer</code></h3>
+        <pre><code class="lang-r r">outer(X, Y, FUN = "*")
+</code></pre>
+        <p>The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator.</p>
+      </article>
+      <article class="doc-entry" id="doc-pctopct">
+        <h3><a class="doc-anchor" href="#doc-pctopct">#</a> <code>%o%</code></h3>
+        <pre><code class="lang-r r">X %o% Y
+</code></pre>
+        <p>The infix spelling of outer(X, Y), with the default multiplication.</p>
+      </article>
+      <article class="doc-entry" id="doc-cbind">
+        <h3><a class="doc-anchor" href="#doc-cbind">#</a> <code>cbind</code></h3>
+        <pre><code class="lang-r r">cbind(...)
+</code></pre>
+        <p>Bind the arguments as columns, recycling each to the tallest. Argument tags become column names. Every input is coerced to double, so character arguments do not survive — that differs from R, which would build a character matrix.</p>
+      </article>
+      <article class="doc-entry" id="doc-rbind">
+        <h3><a class="doc-anchor" href="#doc-rbind">#</a> <code>rbind</code></h3>
+        <pre><code class="lang-r r">rbind(...)
+</code></pre>
+        <p>Bind the arguments as rows, with the same recycling, naming and double-coercion rules as cbind. Deparse-derived row labels are not synthesised, because builtins receive values rather than expressions.</p>
+      </article>
+      <article class="doc-entry" id="doc-rowsums">
+        <h3><a class="doc-anchor" href="#doc-rowsums">#</a> <code>rowSums</code></h3>
+        <pre><code class="lang-r r">rowSums(x)
+</code></pre>
+        <p>Sum along every dimension but the first, keeping the first. A 1-D result takes that margin's dimnames as its names.</p>
+      </article>
+      <article class="doc-entry" id="doc-colsums">
+        <h3><a class="doc-anchor" href="#doc-colsums">#</a> <code>colSums</code></h3>
+        <pre><code class="lang-r r">colSums(x)
+</code></pre>
+        <p>Sum along the first dimension, keeping the rest — a vector for a matrix, a matrix for a 3-D array.</p>
+      </article>
+      <article class="doc-entry" id="doc-rowmeans">
+        <h3><a class="doc-anchor" href="#doc-rowmeans">#</a> <code>rowMeans</code></h3>
+        <pre><code class="lang-r r">rowMeans(x)
+</code></pre>
+        <p>The mean along every dimension but the first — one value per row of a matrix.</p>
+      </article>
+      <article class="doc-entry" id="doc-colmeans">
+        <h3><a class="doc-anchor" href="#doc-colmeans">#</a> <code>colMeans</code></h3>
+        <pre><code class="lang-r r">colMeans(x)
+</code></pre>
+        <p>The mean along the first dimension — one value per column of a matrix.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-environments-and-dispatch">
+      <h2>Environments and dispatch</h2>
+      <p class="chapter-meta">23 entries</p>
+      <article class="doc-entry" id="doc-exists">
+        <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
+        <pre><code class="lang-r r">exists(x)
+</code></pre>
+        <p>TRUE when the name is bound in the current environment chain or names a primitive. R's `where`, `envir` and `inherits` arguments are not accepted.</p>
+      </article>
+      <article class="doc-entry" id="doc-get">
+        <h3><a class="doc-anchor" href="#doc-get">#</a> <code>get</code></h3>
+        <pre><code class="lang-r r">get(x)
+</code></pre>
+        <p>The value bound to the name, or the primitive of that name as a function value. An unbound name raises "object 'x' not found".</p>
+      </article>
+      <article class="doc-entry" id="doc-assign">
+        <h3><a class="doc-anchor" href="#doc-assign">#</a> <code>assign</code></h3>
+        <pre><code class="lang-r r">assign(x, value)
+</code></pre>
+        <p>Bind `value` to the name in the current environment and return it invisibly. Assignment into another environment is not supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-environment">
+        <h3><a class="doc-anchor" href="#doc-environment">#</a> <code>environment</code></h3>
+        <pre><code class="lang-r r">environment()
+</code></pre>
+        <p>The current environment as a value. An argument is accepted and ignored — the environment of a given closure cannot be asked for.</p>
+      </article>
+      <article class="doc-entry" id="doc-new-env">
+        <h3><a class="doc-anchor" href="#doc-new-env">#</a> <code>new.env</code></h3>
+        <pre><code class="lang-r r">new.env()
+</code></pre>
+        <p>A fresh environment whose parent is the global environment. Read and write it with $ and [[.</p>
+      </article>
+      <article class="doc-entry" id="doc-missing">
+        <h3><a class="doc-anchor" href="#doc-missing">#</a> <code>missing</code></h3>
+        <pre><code class="lang-r r">missing(x)
+</code></pre>
+        <p>TRUE when the name is not bound in the current call frame. The argument is evaluated first, so missing(v) on an unsupplied parameter raises "object 'v' not found"; the quoted form missing("v") is the portable spelling and works in both engines.</p>
+      </article>
+      <article class="doc-entry" id="doc-return">
+        <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>
+        <pre><code class="lang-r r">return(value = NULL)
+</code></pre>
+        <p>Signal a return from the enclosing closure with the given value.</p>
+      </article>
+      <article class="doc-entry" id="doc-usemethod">
+        <h3><a class="doc-anchor" href="#doc-usemethod">#</a> <code>UseMethod</code></h3>
+        <pre><code class="lang-r r">UseMethod(generic, object)
+</code></pre>
+        <p>S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns. NextMethod does not exist, so dispatch stops at the first match.</p>
+      </article>
+      <article class="doc-entry" id="doc-recall">
+        <h3><a class="doc-anchor" href="#doc-recall">#</a> <code>Recall</code></h3>
+        <pre><code class="lang-r r">Recall(...)
+</code></pre>
+        <p>Re-invoke the closure currently executing, which lets an anonymous recursive function call itself.</p>
+      </article>
+      <article class="doc-entry" id="doc-factor">
+        <h3><a class="doc-anchor" href="#doc-factor">#</a> <code>factor</code></h3>
+        <pre><code class="lang-r r">factor(x, levels, ordered = FALSE)
+</code></pre>
+        <p>Integer codes plus a `levels` attribute and class "factor" — c("ordered", "factor") when ordered. Levels default to the sorted distinct values; values outside `levels` become NA. R's `labels` argument is not accepted.</p>
+      </article>
+      <article class="doc-entry" id="doc-levels">
+        <h3><a class="doc-anchor" href="#doc-levels">#</a> <code>levels</code></h3>
+        <pre><code class="lang-r r">levels(x)
+</code></pre>
+        <p>The `levels` attribute of a factor, or NULL for a value that carries none.</p>
+      </article>
+      <article class="doc-entry" id="doc-nlevels">
+        <h3><a class="doc-anchor" href="#doc-nlevels">#</a> <code>nlevels</code></h3>
+        <pre><code class="lang-r r">nlevels(x)
+</code></pre>
+        <p>The number of levels a factor carries; 0 for a value with no levels attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-droplevels">
+        <h3><a class="doc-anchor" href="#doc-droplevels">#</a> <code>droplevels</code></h3>
+        <pre><code class="lang-r r">droplevels(x)
+</code></pre>
+        <p>Drop the levels that no longer occur and renumber the codes to match.</p>
+      </article>
+      <article class="doc-entry" id="doc-cut">
+        <h3><a class="doc-anchor" href="#doc-cut">#</a> <code>cut</code></h3>
+        <pre><code class="lang-r r">cut(x, breaks, labels)
+</code></pre>
+        <p>Bin numeric x into a factor of right-closed intervals (a, b]. A single-number `breaks` means that many equal-width bins over the range widened by a thousandth, exactly as R computes them; default labels use R's dig.lab = 3.</p>
+      </article>
+      <article class="doc-entry" id="doc-table">
+        <h3><a class="doc-anchor" href="#doc-table">#</a> <code>table</code></h3>
+        <pre><code class="lang-r r">table(x)
+</code></pre>
+        <p>Counts of each level of a factor, or of each distinct value in sorted order, named and classed "table". Cross-tabulation of two or more arguments is not implemented — extra arguments are ignored.</p>
+      </article>
+      <article class="doc-entry" id="doc-library">
+        <h3><a class="doc-anchor" href="#doc-library">#</a> <code>library</code></h3>
+        <pre><code class="lang-r r">library(package)
+</code></pre>
+        <p>Load a CRAN package inside the embedded GNU R and return NULL invisibly. Needs an R installation; the package's functions then reach rlang through the bridge.</p>
+      </article>
+      <article class="doc-entry" id="doc-require">
+        <h3><a class="doc-anchor" href="#doc-require">#</a> <code>require</code></h3>
+        <pre><code class="lang-r r">require(package)
+</code></pre>
+        <p>Load a package like library, returning a logical rather than loading invisibly.</p>
+      </article>
+      <article class="doc-entry" id="doc-requirenamespace">
+        <h3><a class="doc-anchor" href="#doc-requirenamespace">#</a> <code>requireNamespace</code></h3>
+        <pre><code class="lang-r r">requireNamespace(package)
+</code></pre>
+        <p>Load the package's namespace in the embedded R, returning a logical.</p>
+      </article>
+      <article class="doc-entry" id="doc-loadnamespace">
+        <h3><a class="doc-anchor" href="#doc-loadnamespace">#</a> <code>loadNamespace</code></h3>
+        <pre><code class="lang-r r">loadNamespace(package)
+</code></pre>
+        <p>Load the package's namespace in the embedded R.</p>
+      </article>
+      <article class="doc-entry" id="doc-suppressmessages">
+        <h3><a class="doc-anchor" href="#doc-suppressmessages">#</a> <code>suppressMessages</code></h3>
+        <pre><code class="lang-r r">suppressMessages(expr)
+</code></pre>
+        <p>Return expr. Arguments are evaluated eagerly, so any message has already been written to stderr by the time this runs — the call is accepted for compatibility, not honoured.</p>
+      </article>
+      <article class="doc-entry" id="doc-suppresswarnings">
+        <h3><a class="doc-anchor" href="#doc-suppresswarnings">#</a> <code>suppressWarnings</code></h3>
+        <pre><code class="lang-r r">suppressWarnings(expr)
+</code></pre>
+        <p>Return expr, with the same eager-evaluation caveat as suppressMessages.</p>
+      </article>
+      <article class="doc-entry" id="doc-suppresspackagestartupmessages">
+        <h3><a class="doc-anchor" href="#doc-suppresspackagestartupmessages">#</a> <code>suppressPackageStartupMessages</code></h3>
+        <pre><code class="lang-r r">suppressPackageStartupMessages(expr)
+</code></pre>
+        <p>Return expr; package startup output is suppressed by the bridge's own suppressMessages wrapper around the load.</p>
+      </article>
+      <article class="doc-entry" id="doc-rlang-formula">
+        <h3><a class="doc-anchor" href="#doc-rlang-formula">#</a> <code>.rlang_formula</code></h3>
+        <pre><code class="lang-r r">.rlang_formula(src)
+</code></pre>
+        <p>Internal, not user surface: what the compiler emits for `lhs ~ rhs`. It takes the deparsed R source and builds a real formula object in the embedded R, so lm, glm and aggregate receive one intact.</p>
+      </article>
+    </section>
+    <section class="tutorial-section" id="ch-operators">
+      <h2>Operators</h2>
+      <p class="chapter-meta">20 entries</p>
+      <article class="doc-entry" id="doc-plus">
+        <h3><a class="doc-anchor" href="#doc-plus">#</a> <code>+</code></h3>
+        <pre><code class="lang-r r">x + y
+`+`(x, y)
+</code></pre>
+        <p>Addition, recycled elementwise to the longer operand. Two integer or logical operands give an integer; names and dim are carried from the longer side. Unary + returns its argument unchanged.</p>
+      </article>
+      <article class="doc-entry" id="doc-minus">
+        <h3><a class="doc-anchor" href="#doc-minus">#</a> <code>-</code></h3>
+        <pre><code class="lang-r r">x - y
+`-`(x, y)
+</code></pre>
+        <p>Subtraction, with the same recycling and integer rule as +. Called with one argument it negates.</p>
+      </article>
+      <article class="doc-entry" id="doc-star">
+        <h3><a class="doc-anchor" href="#doc-star">#</a> <code>*</code></h3>
+        <pre><code class="lang-r r">x * y
+`*`(x, y)
+</code></pre>
+        <p>Multiplication, recycled elementwise; integer times integer stays integer.</p>
+      </article>
+      <article class="doc-entry" id="doc-slash">
+        <h3><a class="doc-anchor" href="#doc-slash">#</a> <code>/</code></h3>
+        <pre><code class="lang-r r">x / y
+`/`(x, y)
+</code></pre>
+        <p>Division, always producing a double. Division by zero yields Inf, -Inf or NaN rather than an error.</p>
+      </article>
+      <article class="doc-entry" id="doc-caret">
+        <h3><a class="doc-anchor" href="#doc-caret">#</a> <code>^</code></h3>
+        <pre><code class="lang-r r">x ^ y
+`^`(x, y)
+</code></pre>
+        <p>Exponentiation, recycled elementwise and always producing a double.</p>
+      </article>
+      <article class="doc-entry" id="doc-pctpct">
+        <h3><a class="doc-anchor" href="#doc-pctpct">#</a> <code>%%</code></h3>
+        <pre><code class="lang-r r">x %% y
+`%%`(x, y)
+</code></pre>
+        <p>Remainder taking the sign of the divisor: -7 %% 3 is 2 and 7 %% -3 is -2. Computed as an exact fmod against the stored divisor, so 10 %% 0.04 is 0.04; a zero divisor gives NaN.</p>
+      </article>
+      <article class="doc-entry" id="doc-pctslashpct">
+        <h3><a class="doc-anchor" href="#doc-pctslashpct">#</a> <code>%/%</code></h3>
+        <pre><code class="lang-r r">x %/% y
+`%/%`(x, y)
+</code></pre>
+        <p>Integer division, kept consistent with %% as (x - x %% y) / y. A zero divisor or non-finite dividend gives x / y directly, so 49 %/% 0 is Inf.</p>
+      </article>
+      <article class="doc-entry" id="doc-eqeq">
+        <h3><a class="doc-anchor" href="#doc-eqeq">#</a> <code>==</code></h3>
+        <pre><code class="lang-r r">x == y
+`==`(x, y)
+</code></pre>
+        <p>Elementwise equality, recycled. If either side is character both compare as strings. NA or NaN on either side gives NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-noteq">
+        <h3><a class="doc-anchor" href="#doc-noteq">#</a> <code>!=</code></h3>
+        <pre><code class="lang-r r">x != y
+`!=`(x, y)
+</code></pre>
+        <p>Elementwise inequality, with the same recycling and NA rules as ==.</p>
+      </article>
+      <article class="doc-entry" id="doc-lt">
+        <h3><a class="doc-anchor" href="#doc-lt">#</a> <code>&lt;</code></h3>
+        <pre><code class="lang-r r">x &lt; y
+`&lt;`(x, y)
+</code></pre>
+        <p>Elementwise less-than; character operands compare lexically.</p>
+      </article>
+      <article class="doc-entry" id="doc-gt">
+        <h3><a class="doc-anchor" href="#doc-gt">#</a> <code>&gt;</code></h3>
+        <pre><code class="lang-r r">x &gt; y
+`&gt;`(x, y)
+</code></pre>
+        <p>Elementwise greater-than, with the same recycling and NA rules as the other comparisons.</p>
+      </article>
+      <article class="doc-entry" id="doc-lteq">
+        <h3><a class="doc-anchor" href="#doc-lteq">#</a> <code>&lt;=</code></h3>
+        <pre><code class="lang-r r">x &lt;= y
+`&lt;=`(x, y)
+</code></pre>
+        <p>Elementwise less-than-or-equal, with the same recycling and NA rules as the other comparisons.</p>
+      </article>
+      <article class="doc-entry" id="doc-gteq">
+        <h3><a class="doc-anchor" href="#doc-gteq">#</a> <code>&gt;=</code></h3>
+        <pre><code class="lang-r r">x &gt;= y
+`&gt;=`(x, y)
+</code></pre>
+        <p>Elementwise greater-than-or-equal, with the same recycling and NA rules as the other comparisons.</p>
+      </article>
+      <article class="doc-entry" id="doc-and">
+        <h3><a class="doc-anchor" href="#doc-and">#</a> <code>&amp;</code></h3>
+        <pre><code class="lang-r r">x &amp; y
+`&amp;`(x, y)
+</code></pre>
+        <p>Elementwise logical AND with R's three-valued logic: NA &amp; FALSE is FALSE, because the answer is decided regardless of the missing value.</p>
+      </article>
+      <article class="doc-entry" id="doc-or">
+        <h3><a class="doc-anchor" href="#doc-or">#</a> <code>|</code></h3>
+        <pre><code class="lang-r r">x | y
+`|`(x, y)
+</code></pre>
+        <p>Elementwise logical OR with three-valued logic: NA | TRUE is TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-not">
+        <h3><a class="doc-anchor" href="#doc-not">#</a> <code>!</code></h3>
+        <pre><code class="lang-r r">!x
+`!`(x)
+</code></pre>
+        <p>Elementwise logical negation, coercing its argument first; NA stays NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-colon">
+        <h3><a class="doc-anchor" href="#doc-colon">#</a> <code>:</code></h3>
+        <pre><code class="lang-r r">from:to
+`:`(from, to)
+</code></pre>
+        <p>The sequence from `from` to `to` stepping by one, descending when from is greater. The result is integer when both ends are whole numbers, otherwise a double.</p>
+      </article>
+      <article class="doc-entry" id="doc-bracket">
+        <h3><a class="doc-anchor" href="#doc-bracket">#</a> <code>[</code></h3>
+        <pre><code class="lang-r r">x[i]
+x[i, j]
+`[`(x, i)
+</code></pre>
+        <p>Subsetting, which keeps the container type and the names. Positive positions select, negative positions drop, a logical mask recycles, and a character subscript matches names. Given as many subscripts as an array has dimensions it selects a slice and drops the length-1 dimensions; a character subscript against dimnames selects nothing, unlike R.</p>
+      </article>
+      <article class="doc-entry" id="doc-bracketbracket">
+        <h3><a class="doc-anchor" href="#doc-bracketbracket">#</a> <code>[[</code></h3>
+        <pre><code class="lang-r r">x[[i]]
+`[[`(x, i)
+</code></pre>
+        <p>Extract exactly one element, by position or by name. A name that is not present yields NULL, an out-of-range position raises "subscript out of bounds", and on an environment it reads a binding.</p>
+      </article>
+      <article class="doc-entry" id="doc-dollar">
+        <h3><a class="doc-anchor" href="#doc-dollar">#</a> <code>$</code></h3>
+        <pre><code class="lang-r r">x$name
+`$`(x, name)
+</code></pre>
+        <p>The element of a named list or vector bound to `name`, or NULL when there is none. rlang also answers on an atomic vector, where R raises "$ operator is invalid for atomic vectors".</p>
+      </article>
+    </section>
     </main>
   </div>
   <script src="hud-theme.js"></script>
