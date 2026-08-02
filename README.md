@@ -114,6 +114,11 @@ no VM of its own. Highlights:
 ## [0x01] INSTALL
 
 ```sh
+# Via Homebrew tap (bumped by each release; formula is `rlang`)
+brew tap MenkeTechnologies/menketech
+brew install rlang
+
+# Or from source
 git clone https://github.com/MenkeTechnologies/rlang
 cd rlang
 cargo build
