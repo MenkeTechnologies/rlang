@@ -67,6 +67,37 @@ pub fn eval_str(src: &str) -> Result<Value, String> {
     run_compiled(compile(src)?)
 }
 
+/// Run R source with `vars` bound and the transcript captured, returning the
+/// program's outcome alongside everything it printed.
+///
+/// The entry point for an embedder rather than for `Rscript`. Variables are
+/// seeded *after* the host reset that starts every run, which is the whole
+/// reason this exists: setting them beforehand cannot work, because the reset
+/// wipes them. Each is bound as a length-1 character vector, so `("stdin", "…")`
+/// reads as an ordinary `stdin` in the program.
+///
+/// The outcome and the transcript are returned separately (rather than folding
+/// the error into the text, as [`eval_capture`] does) so a caller can tell a
+/// failed run from one that merely printed the word "Error".
+///
+/// ```no_run
+/// let (result, out) = rlang::eval_captured("cat(toupper(stdin))", &[("stdin", "hi")]);
+/// assert!(result.is_ok());
+/// assert_eq!(out, "HI");
+/// ```
+pub fn eval_captured(src: &str, vars: &[(&str, &str)]) -> (Result<Value, String>, String) {
+    host::reset_host();
+    host::with_host(|h| {
+        for (name, text) in vars {
+            let value = h.str_vec(vec![Some(text.to_string())]);
+            h.set_var(name, value);
+        }
+    });
+    host::start_capture();
+    let result = compile(src).and_then(run_compiled);
+    (result, host::take_capture())
+}
+
 /// Like [`eval_str`], but with the top-level echo off — for embedding and for
 /// tests that want the value, not the transcript.
 pub fn eval_quiet(src: &str) -> Result<Value, String> {
