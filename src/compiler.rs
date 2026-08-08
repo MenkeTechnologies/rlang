@@ -470,6 +470,26 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                // `table(z)` labels its dimension with the deparsed argument, so
+                // a bare symbol is passed along as `.dnn` (R's `deparse.level =
+                // 1`, which names the dimension only for symbol arguments).
+                let is_table = matches!(fun.as_ref(), Expr::Ident(n) if n == "table");
+                if is_table {
+                    if let Some(Arg {
+                        name: None,
+                        value: Some(Expr::Ident(sym)),
+                    }) = args.first()
+                    {
+                        let mut rewritten = args.clone();
+                        rewritten.push(Arg {
+                            name: Some(".dnn".into()),
+                            value: Some(Expr::Str(sym.clone())),
+                        });
+                        self.args(b, &rewritten)?;
+                        b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                        return Ok(());
+                    }
+                }
                 self.args(b, args)?;
                 b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
             }

@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 21
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 43
 surfaces. The fuzzer currently reports **zero** divergences across those
 surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
 remains below is structural — whole subsystems, not per-primitive gaps.
@@ -46,14 +46,15 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
   printing, `aperm`, `apply` over any margin) work; named-margin `apply` and
   array-specific helpers (`slice.index`, `arrayInd`) do not.
-- **Matrix `dimnames` work for the 2-D common cases**: `matrix(dimnames=)`,
+- **`dimnames` work at any rank**: `matrix(dimnames=)` and `array(dimnames=)`,
   `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
-  the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix
-  printing, and reductions that keep a dimension's labels as names
-  (`colSums`/`rowSums`/`colMeans`/`rowMeans`). Two gaps remain: `rbind(x, x)`
-  does not synthesise deparse-derived seam labels (`"x"`, `"x"`) because
-  builtins receive argument values, not expressions; and `dimnames` on N-D
-  arrays (3-D+) is not stored.
+  the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix and
+  `, , <label>` array printing, character subscripts (`m["r1", "c2"]`, read and
+  write) resolved per margin, labels carried onto a subset (as `dimnames` when a
+  rank ≥ 2 survives, as `names` when it drops to a vector), and reductions that
+  keep a dimension's labels as names (`colSums`/`rowSums`/`colMeans`/`rowMeans`).
+  One gap remains: `rbind(x, x)` does not synthesise deparse-derived seam labels
+  (`"x"`, `"x"`) because builtins receive argument values, not expressions.
 - **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
   `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
@@ -74,9 +75,15 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   default afterwards. The 7-significant-digit default and the `scipen = 0`
   fixed-vs-scientific rule are checked against R by the parity corpus; the global
   `options()` toggles are not configurable.
-- **`format()` handles `nsmall`, `digits`, `big.mark`, common decimals, and
-  common-width justification** (and `formatC`/`prettyNum`/`deparse` exist), but
-  not the `width`/`justify` arguments or per-call scientific control.
+- **`format()` handles `nsmall`, `digits`, `big.mark`, `width`, common decimals,
+  and common-width justification** (and `formatC`/`prettyNum`/`deparse` exist),
+  but not the `justify` argument or per-call scientific control.
+- **A closure does not print its body.** `print(f)` shows
+  `function (<params>) ...` rather than R's deparsed source, and `deparse(f)` /
+  `format(f)` do not return the source lines. `ClosureDef` keeps only the
+  parameter names and the compiled chunk, so neither the body AST nor the
+  default-argument expressions survive to be deparsed; matching R would need
+  both retained plus R's own line-breaking rules.
 - **No `str()`, `summary()`, or `dput()`.**
 
 ## Syntax

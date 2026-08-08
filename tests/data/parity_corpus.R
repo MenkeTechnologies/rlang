@@ -454,3 +454,81 @@ print(rowSums(array(1:8, c(2, 2, 2))))
 #==#
 print(cor(c(-2, -2, -2), c(1, 2, 3)))
 print(cor(c(5, 5, 5), c(5, 5, 5)))
+#==#
+print(rep(1:3, times = c(1, 2, 3)))
+print(rep(c("a", "b"), times = c(2, 3)))
+print(rep(1:3, length.out = 5))
+print(rep(1:3, times = 2, each = 2))
+#==#
+f <- factor(c("a", "b", "a", "c"))
+print(table(f))
+y <- c(1, 2, 2, 3)
+print(table(y))
+print(table(c(TRUE, FALSE, TRUE)))
+print(table(c("a", "b", "a")))
+print(levels(factor(c(TRUE, FALSE, TRUE))))
+#==#
+z <- c("x", "y", "x")
+t <- table(z)
+print(attributes(t))
+print(names(t))
+print(dim(t))
+print(dimnames(t))
+print(as.vector(t))
+#==#
+print(list(a = list(b = 1, c = 2)))
+print(list(1, list(2, 3)))
+print(list(p = list(q = list(r = 1))))
+#==#
+m <- matrix(1:6, nrow = 2, dimnames = list(c("r1", "r2"), c("c1", "c2", "c3")))
+print(m["r1", ])
+print(m[, "c1"])
+print(m["r2", "c2"])
+print(m[c("r1", "r2"), "c3"])
+print(m["r1", , drop = FALSE])
+print(m[, c("c1", "c3")])
+m["r1", "c2"] <- 99L
+print(m)
+#==#
+print(regexpr("an", c("apple", "banana", "cherry")))
+print(gregexpr("a", "banana"))
+print(regmatches("banana", regexpr("an", "banana")))
+#==#
+print(which(matrix(c(TRUE, FALSE, TRUE, TRUE), 2), arr.ind = TRUE))
+a <- array(c(TRUE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE), dim = c(2, 2, 2))
+print(which(a, arr.ind = TRUE))
+print(which(c(TRUE, FALSE, TRUE), arr.ind = TRUE))
+mn <- matrix(c(TRUE, FALSE, TRUE, TRUE), 2, dimnames = list(c("a", "b"), c("x", "y")))
+print(which(mn, arr.ind = TRUE))
+#==#
+print(format("a", width = 5))
+print(format(c("a", "bb"), width = 4))
+print(format(1.5, width = 8))
+print(format(42L, width = 6))
+print(format(c(TRUE, FALSE), width = 7))
+#==#
+x <- 1:3
+attr(x, "foo") <- "bar"
+print(x)
+m <- matrix(1:4, 2)
+attr(m, "k") <- "v"
+print(m)
+l <- list(1)
+attr(l, "q") <- "z"
+print(l)
+#==#
+print(sapply(1:3, function(i) c(a = i, b = i * 2)))
+print(sapply(list(p = 1, q = 2), function(i) c(a = i, b = i * 2)))
+print(sapply(c(p = 1, q = 2), function(i) c(i, i * 2)))
+print(vapply(1:2, function(i) c(a = i, b = i), c(a = 0, b = 0)))
+print(sapply(1:3, function(i) c(i, i * 2)))
+#==#
+a <- array(1:8, dim = c(2, 2, 2), dimnames = list(c("r1", "r2"), c("c1", "c2"), c("s1", "s2")))
+print(dimnames(a))
+print(a["r1", "c2", "s1"])
+print(a)
+print(a[, , "s2"])
+print(a["r1", , ])
+b <- array(1:8, dim = c(2, 2, 2))
+print(b)
+print(b[1, 2, 1])

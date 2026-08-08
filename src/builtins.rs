@@ -1067,8 +1067,20 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
                 .iter()
                 .map(|e| e.unwrap_or(0) as usize)
                 .collect();
-            if d.len() == args.len() {
-                return array_index(x, args, &d);
+            // `drop =` is an option, not a subscript: `m["r1", , drop = FALSE]`
+            // still indexes a 2-D matrix with exactly two subscripts.
+            let subs: Vec<(Option<String>, Value)> = args
+                .iter()
+                .filter(|(t, _)| t.as_deref() != Some("drop"))
+                .cloned()
+                .collect();
+            let drop = args
+                .iter()
+                .find(|(t, _)| t.as_deref() == Some("drop"))
+                .and_then(|(_, v)| as_lgl(v).first().copied().flatten())
+                .unwrap_or(true);
+            if d.len() == subs.len() {
+                return array_index(x, &subs, &d, drop);
             }
         }
     }
@@ -1121,18 +1133,27 @@ fn take_positions(x: &Value, pos: &[Option<usize>]) -> Value {
     }
 }
 
+/// The column-major linear positions an N-D subscript selects, paired with the
+/// indices each margin selected (which is what carries `dimnames` through).
+type ArraySelection = (Vec<Option<usize>>, Vec<Vec<usize>>);
+
 /// The column-major linear positions an N-D subscript `a[i, j, …]` selects, plus
-/// the shape of the selection (per-dimension counts). An empty subscript takes
-/// the whole margin. Shared by array read and array assignment.
+/// the indices each margin selected. An empty subscript takes the whole margin;
+/// a character subscript resolves against that margin's `dimnames`. Shared by
+/// array read and array assignment.
 fn array_positions(
     args: &[(Option<String>, Value)],
     dims: &[usize],
-) -> Result<(Vec<Option<usize>>, Vec<usize>), String> {
+    dimnames: &[Option<Vec<Option<String>>>],
+) -> Result<ArraySelection, String> {
     let k = dims.len();
     let sel: Vec<Vec<usize>> = (0..k)
         .map(|d| match &args[d].1 {
             Value::Undef => Ok((0..dims[d]).collect()),
-            v => resolve_index(v, dims[d], &[]).map(|p| p.into_iter().flatten().collect()),
+            v => {
+                let labels = dimnames.get(d).cloned().flatten().unwrap_or_default();
+                resolve_index(v, dims[d], &labels).map(|p| p.into_iter().flatten().collect())
+            }
         })
         .collect::<Result<_, String>>()?;
     // Column-major strides: the first subscript varies fastest.
@@ -1155,26 +1176,55 @@ fn array_positions(
             idx[d] = 0;
         }
     }
-    Ok((pos, shape))
+    Ok((pos, sel))
 }
 
-/// `a[i, j, …]` read over an N-D `dim`: gather the selected slice, then drop the
-/// length-1 dimensions (R's `drop = TRUE`); a rank ≥ 2 remainder keeps a `dim`.
+/// `a[i, j, …]` read over an N-D `dim`: gather the selected slice, then (with
+/// `drop = TRUE`) drop the length-1 dimensions. A rank ≥ 2 remainder keeps its
+/// `dim` and `dimnames`; a remainder dropped to a vector takes the surviving
+/// margin's labels as its `names`.
 fn array_index(
     x: &Value,
     args: &[(Option<String>, Value)],
     dims: &[usize],
+    drop: bool,
 ) -> Result<Value, String> {
-    let (pos, shape) = array_positions(args, dims)?;
+    let dn = dimnames_of(x);
+    let (pos, sel) = array_positions(args, dims, &dn)?;
     let out = take_positions(x, &pos);
-    let kept: Vec<i64> = shape
-        .iter()
-        .filter(|&&d| d != 1)
-        .map(|&d| d as i64)
+    let shape: Vec<usize> = sel.iter().map(|s| s.len()).collect();
+
+    // The labels a margin keeps are its own, taken in selection order.
+    let labels = |d: usize| -> Option<Vec<Option<String>>> {
+        let all = dn.get(d).cloned().flatten()?;
+        Some(
+            sel[d]
+                .iter()
+                .map(|&i| all.get(i).cloned().flatten())
+                .collect(),
+        )
+    };
+    let kept: Vec<usize> = (0..shape.len())
+        .filter(|&d| !drop || shape[d] != 1)
         .collect();
+
     if kept.len() >= 2 {
-        let dim = mk_int(kept.into_iter().map(Some).collect());
+        let dim = mk_int(kept.iter().map(|&d| Some(shape[d] as i64)).collect());
         with_host(|h| h.set_attr(&out, "dim", dim));
+        if kept.iter().any(|&d| labels(d).is_some()) {
+            let dnv = mk_list(
+                kept.iter()
+                    .map(|&d| labels(d).map(mk_str).unwrap_or_else(null))
+                    .collect(),
+            );
+            with_host(|h| h.set_attr(&out, "dimnames", dnv));
+        }
+    } else if let Some(&d) = kept.first() {
+        if let Some(l) = labels(d) {
+            if l.iter().any(|n| n.is_some()) {
+                set_names(&out, l);
+            }
+        }
     }
     Ok(out)
 }
@@ -1276,7 +1326,7 @@ fn assign_index(
                 .map(|e| e.unwrap_or(0) as usize)
                 .collect();
             if d.len() == args.len() {
-                let (pos, _) = array_positions(args, &d)?;
+                let (pos, _) = array_positions(args, &d, &dimnames_of(x))?;
                 let lin: Vec<Option<i64>> =
                     pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
                 return assign_index(x, &[(None, mk_int(lin))], value, false);
@@ -2197,14 +2247,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 })
                 .collect();
             // R pads every element to a common width: numbers right-justified,
-            // character left-justified. (A length-1 vector needs no alignment.)
-            let out = if out.len() > 1 {
+            // character left-justified. `width` raises that common width to a
+            // minimum, and applies even to a length-1 vector (which otherwise
+            // needs no alignment).
+            let width = a
+                .named("width")
+                .and_then(|v| num1(&v))
+                .unwrap_or(0.0)
+                .max(0.0) as usize;
+            let out = if out.len() > 1 || width > 0 {
                 let w = out
                     .iter()
                     .flatten()
                     .map(|s| s.chars().count())
                     .max()
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .max(width);
                 let left = matches!(data(&x), RData::Str(_));
                 out.into_iter()
                     .map(|s| {
@@ -2483,6 +2541,21 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .filter(|(_, e)| **e == Some(true))
                 .map(|(i, _)| i)
                 .collect();
+            // `arr.ind = TRUE` reports each hit as its per-margin subscripts
+            // instead of one linear position (arrays only; a plain vector keeps
+            // the linear answer).
+            let arr_ind = a
+                .named("arr.ind")
+                .and_then(|v| as_lgl(&v).first().copied().flatten())
+                .unwrap_or(false);
+            if arr_ind {
+                let d: Vec<usize> = with_host(|h| h.attr(&x, "dim"))
+                    .map(|d| as_int(&d).iter().map(|e| e.unwrap_or(0) as usize).collect())
+                    .unwrap_or_default();
+                if d.len() >= 2 {
+                    return Ok(which_arr_ind(&x, &hits, &d));
+                }
+            }
             let out = mk_int(hits.iter().map(|i| Some(*i as i64 + 1)).collect());
             if !nm.is_empty() {
                 set_names(
@@ -3432,6 +3505,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let re = regex::Regex::new(&pat)
                 .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
             let x = as_str(&a.req(1, "text")?);
+            // R matches all-ASCII input on the byte path and reports that with
+            // `index.type`/`useBytes`; multibyte input takes the char path and
+            // carries `match.length` alone.
+            let ascii = pat.is_ascii() && x.iter().flatten().all(|s| s.is_ascii());
+            let tag = |v: &Value| {
+                if ascii {
+                    let it = scalar_str("chars");
+                    let ub = scalar_lgl(true);
+                    with_host(|h| {
+                        h.set_attr(v, "index.type", it);
+                        h.set_attr(v, "useBytes", ub);
+                    });
+                }
+            };
             if name == "regexpr" {
                 // First match per element: a 1-based char position (or -1), with
                 // the match width carried on the `match.length` attribute so
@@ -3452,6 +3539,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 let out = mk_int(starts);
                 let ml = mk_int(lens);
                 with_host(|h| h.set_attr(&out, "match.length", ml));
+                tag(&out);
                 Ok(out)
             } else {
                 // All matches per element, as a list of position vectors each
@@ -3473,6 +3561,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         let v = mk_int(starts);
                         let ml = mk_int(lens);
                         with_host(|h| h.set_attr(&v, "match.length", ml));
+                        tag(&v);
                         v
                     })
                     .collect();
@@ -3892,6 +3981,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let out = take_positions(&data, &pos);
             let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
             with_host(|h| h.set_attr(&out, "dim", dim));
+            // `dimnames` is one label vector per margin, of any rank — the same
+            // list the N-D subscript and print paths read back.
+            if let Some(dn) = a.get(2, "dimnames").filter(|v| !is_null(v)) {
+                with_host(|h| h.set_attr(&out, "dimnames", dn));
+            }
             Ok(out)
         }
         "aperm" => {
@@ -4302,9 +4396,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .map(|l| Some(obs.iter().filter(|o| *o == l).count() as i64))
                 .collect();
             let out = mk_int(counts);
-            set_names(&out, levels.into_iter().map(Some).collect());
+            // R's `table` is a 1-D array: the labels live in `dimnames`, and the
+            // name OF that dimnames element is the deparsed argument, which is
+            // the header `print` puts above the counts (`table(z)` heads `z`).
+            // The compiler passes that symbol as `.dnn`; a non-symbol argument
+            // has none and R heads the table with a blank line.
+            let dim = mk_int(vec![Some(levels.len() as i64)]);
+            let labels = mk_str(levels.into_iter().map(Some).collect());
+            let dn = mk_list(vec![labels]);
+            if let Some(sym) = a.named(".dnn").and_then(|v| str1(&v)) {
+                set_names(&dn, vec![Some(sym)]);
+            }
             let cls = scalar_str("table");
-            with_host(|h| h.set_attr(&out, "class", cls));
+            with_host(|h| {
+                h.set_attr(&out, "dim", dim);
+                h.set_attr(&out, "dimnames", dn);
+                h.set_attr(&out, "class", cls);
+            });
             Ok(out)
         }
 
@@ -4585,6 +4693,15 @@ fn simplify(list: &Value) -> Value {
         } else {
             let dim = mk_int(vec![Some(k as i64), Some(items.len() as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
+            // R labels the rows with the first result's own names and the
+            // columns with the names of what was mapped over.
+            let rn = names_of(&items[0]);
+            let cn = names_of(list);
+            set_dimnames(
+                &out,
+                (!rn.is_empty()).then_some(rn),
+                (!cn.is_empty()).then_some(cn),
+            );
         }
         return out;
     }
@@ -4684,16 +4801,50 @@ fn rep(a: &Args) -> Value {
         Some(v) => v,
         None => return null(),
     };
-    let times = a.get(1, "times").and_then(|v| num1(&v)).unwrap_or(1.0) as usize;
-    let each = a.named("each").and_then(|v| num1(&v)).unwrap_or(1.0) as usize;
+    let each = a
+        .named("each")
+        .and_then(|v| num1(&v))
+        .unwrap_or(1.0)
+        .max(0.0) as usize;
     let n = len(&x);
-    let mut pos = Vec::with_capacity(n * times * each);
-    for _ in 0..times {
-        for i in 0..n {
-            for _ in 0..each {
-                pos.push(Some(i));
+
+    // R applies `each` first: every element is repeated in place.
+    let mut base: Vec<Option<usize>> = Vec::with_capacity(n * each);
+    for i in 0..n {
+        for _ in 0..each {
+            base.push(Some(i));
+        }
+    }
+
+    // `times` is either a scalar whole-vector count or a per-element vector of
+    // counts (`rep(1:3, times = c(1, 2, 3))` -> 1 2 2 3 3 3).
+    let times_arg = a.get(1, "times");
+    let mut pos: Vec<Option<usize>> = Vec::new();
+    match &times_arg {
+        Some(t) if len(t) > 1 => {
+            let counts = as_int(t);
+            for (k, p) in base.iter().enumerate() {
+                let c = counts.get(k).copied().flatten().unwrap_or(0).max(0) as usize;
+                for _ in 0..c {
+                    pos.push(*p);
+                }
             }
         }
+        _ => {
+            let times = times_arg.and_then(|v| num1(&v)).unwrap_or(1.0).max(0.0) as usize;
+            for _ in 0..times {
+                pos.extend_from_slice(&base);
+            }
+        }
+    }
+
+    // `length.out` then truncates, or recycles, to an exact length.
+    if let Some(want) = a.named("length.out").and_then(|v| num1(&v)) {
+        let want = want.max(0.0) as usize;
+        pos = match pos.len() {
+            0 => vec![None; want],
+            m => (0..want).map(|i| pos[i % m]).collect(),
+        };
     }
     take_positions(&x, &pos)
 }
@@ -4982,7 +5133,10 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
 /// input sorts by value (so `10` follows `2`, not precedes it), character input
 /// sorts lexically.
 fn factor_levels(x: &Value) -> Vec<String> {
-    if matches!(data(x), RData::Int(_) | RData::Dbl(_) | RData::Lgl(_)) {
+    // Logicals level as their labels, not their 0/1 codes: R's
+    // `levels(factor(c(TRUE, FALSE)))` is `"FALSE" "TRUE"`, which the string
+    // branch's sort already yields.
+    if matches!(data(x), RData::Int(_) | RData::Dbl(_)) {
         let mut u: Vec<f64> = Vec::new();
         for v in as_dbl(x).into_iter().flatten() {
             if !u.contains(&v) {
@@ -5016,6 +5170,38 @@ fn dims_of(x: &Value) -> Vec<usize> {
                 .collect()
         })
         .unwrap_or_else(|| vec![len(x)])
+}
+
+/// `which(x, arr.ind = TRUE)` — one row per hit, one column per dimension,
+/// holding that hit's 1-based subscript along the margin. R heads the columns
+/// `row`/`col` for a matrix and `dim1`…`dimN` for a higher-rank array, and
+/// carries the first margin's labels over as row names.
+fn which_arr_ind(x: &Value, hits: &[usize], dims: &[usize]) -> Value {
+    let k = dims.len();
+    // Column-major: the subscript along margin `d` is the linear position
+    // divided by the product of the dimensions before it, modulo its own.
+    let mut cells: Vec<Option<i64>> = Vec::with_capacity(hits.len() * k);
+    for d in 0..k {
+        let stride: usize = dims[..d].iter().product();
+        for &h in hits {
+            cells.push(Some((h / stride % dims[d]) as i64 + 1));
+        }
+    }
+    let out = mk_int(cells);
+    let dim = mk_int(vec![Some(hits.len() as i64), Some(k as i64)]);
+    with_host(|h| h.set_attr(&out, "dim", dim));
+    let colnames: Vec<Option<String>> = if k == 2 {
+        vec![Some("row".into()), Some("col".into())]
+    } else {
+        (1..=k).map(|i| Some(format!("dim{i}"))).collect()
+    };
+    let rownames = dimnames_of(x).first().cloned().flatten().map(|all| {
+        hits.iter()
+            .map(|&h| all.get(h % dims[0]).cloned().flatten())
+            .collect()
+    });
+    set_dimnames(&out, rownames, Some(colnames));
+    out
 }
 
 /// A value's `dimnames` as one optional label vector per dimension. An absent
@@ -5710,17 +5896,55 @@ pub fn print_value(v: &Value) {
     }
 }
 
-/// Render a value into the lines `print` would emit.
+/// Render a value into the lines `print` would emit, including the trailing
+/// `attr(,"name")` blocks R appends for every non-structural attribute.
 pub fn format_value(v: &Value) -> Vec<String> {
+    let mut out = format_value_body(v);
+    out.extend(format_extra_attrs(v));
+    out
+}
+
+/// R's `print.default` follows a value with an `attr(,"name")` block for every
+/// attribute that is not part of the value's own structure — the structural
+/// ones are already shown as names, a matrix layout, or a `Levels:` line.
+fn format_extra_attrs(v: &Value) -> Vec<String> {
+    const STRUCTURAL: [&str; 7] = [
+        "names",
+        "dim",
+        "dimnames",
+        "class",
+        "levels",
+        "row.names",
+        "tsp",
+    ];
+    let mut out = Vec::new();
+    for (k, val) in with_host(|h| h.attrs_of(v)) {
+        if STRUCTURAL.contains(&k.as_str()) {
+            continue;
+        }
+        out.push(format!("attr(,\"{k}\")"));
+        out.extend(format_value(&val));
+    }
+    out
+}
+
+/// The value's own layout, before any `attr(,…)` tail.
+fn format_value_body(v: &Value) -> Vec<String> {
     // Class-based print methods that override the default vector layout.
     let classes = class_of(v);
     if classes.iter().any(|c| c == "factor") {
         return format_factor(v);
     }
     if classes.iter().any(|c| c == "table") {
-        // R heads a 1-D table with a blank line (the empty dimname), then the
-        // named-vector body.
-        let mut out = vec![String::new()];
+        // R heads a 1-D table with the name of its `dimnames` element — the
+        // deparsed argument, e.g. `z` for `table(z)` — then the named-vector
+        // body. A table built from a non-symbol argument has no such name and
+        // is headed with a blank line.
+        let header = with_host(|h| h.attr(v, "dimnames"))
+            .map(|dn| names_of(&dn))
+            .and_then(|n| n.first().cloned().flatten())
+            .unwrap_or_default();
+        let mut out = vec![header];
         out.extend(format_vector(v));
         return out;
     }
@@ -5766,17 +5990,29 @@ fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
     let plane = nr * nc;
     let outer: Vec<usize> = dims[2..].to_vec();
     let n_planes: usize = outer.iter().product::<usize>().max(1);
+    let dn = dimnames_of(v);
+    let margin = |d: usize| dn.get(d).cloned().flatten();
     let mut out = Vec::new();
     let mut oidx = vec![0usize; outer.len()];
     for p in 0..n_planes {
-        let labels: Vec<String> = oidx.iter().map(|i| (i + 1).to_string()).collect();
+        // A labelled outer margin heads its plane with the label, else the index.
+        let labels: Vec<String> = oidx
+            .iter()
+            .enumerate()
+            .map(|(k, i)| {
+                margin(k + 2)
+                    .and_then(|l| l.get(*i).cloned().flatten())
+                    .unwrap_or_else(|| (i + 1).to_string())
+            })
+            .collect();
         out.push(format!(", , {}", labels.join(", ")));
         out.push(String::new());
         // Extract this plane (contiguous in column-major order) and print it as
-        // a matrix.
+        // a matrix, carrying the first two margins' labels onto it.
         let base = p * plane;
         let pos: Vec<Option<usize>> = (0..plane).map(|i| Some(base + i)).collect();
         let slice = take_positions(v, &pos);
+        set_dimnames(&slice, margin(0), margin(1));
         out.extend(format_matrix(&slice, nr, nc));
         out.push(String::new());
         for k in 0..outer.len() {
@@ -6168,6 +6404,25 @@ fn is_syntactic_name(n: &str) -> bool {
 }
 
 fn format_list(v: &Value) -> Vec<String> {
+    format_list_at(v, "")
+}
+
+/// Whether `format_value` would lay this value out as a list, i.e. it is a bare
+/// list with no class-specific print method of its own.
+fn is_plain_list(v: &Value) -> bool {
+    if class_of(v)
+        .iter()
+        .any(|c| c == "factor" || c == "table" || c == "rle")
+    {
+        return false;
+    }
+    matches!(data(v), RData::List(_) | RData::Args(_))
+}
+
+/// Render a list, heading each element with the full path taken to reach it.
+/// R does not restart the tags inside a nested list: `list(a = list(b = 1))`
+/// prints `$a` and then `$a$b`, not a second bare `$b`.
+fn format_list_at(v: &Value, prefix: &str) -> Vec<String> {
     let items = elements(v);
     if items.is_empty() {
         return vec!["list()".into()];
@@ -6175,13 +6430,19 @@ fn format_list(v: &Value) -> Vec<String> {
     let names = names_of(v);
     let mut out = Vec::new();
     for (i, it) in items.iter().enumerate() {
-        let header = match names.get(i).cloned().flatten() {
+        let tag = match names.get(i).cloned().flatten() {
             Some(n) if is_syntactic_name(&n) => format!("${n}"),
             Some(n) => format!("$`{n}`"),
             None => format!("[[{}]]", i + 1),
         };
-        out.push(header);
-        out.extend(format_value(it));
+        let path = format!("{prefix}{tag}");
+        out.push(path.clone());
+        if is_plain_list(it) {
+            out.extend(format_list_at(it, &path));
+            out.extend(format_extra_attrs(it));
+        } else {
+            out.extend(format_value(it));
+        }
         out.push(String::new());
     }
     out

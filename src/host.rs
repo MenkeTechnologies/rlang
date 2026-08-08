@@ -640,10 +640,26 @@ impl RHost {
 
     /// `names(x)`, as a plain vector of `Option<String>` (`None` where unnamed).
     pub fn names(&self, v: &Value) -> Vec<Option<String>> {
-        match self.attr(v, "names") {
-            Some(n) => self.as_str(&n),
-            None => Vec::new(),
+        if let Some(n) = self.attr(v, "names") {
+            return self.as_str(&n);
         }
+        // A 1-D array carries no `names` attribute: R's `names.default` reads
+        // `dimnames[[1]]` instead, which is where a `table`'s labels live.
+        let one_d = self.attr(v, "dim").is_some_and(|d| self.length(&d) == 1);
+        if one_d {
+            if let Some(dn) = self.attr(v, "dimnames") {
+                if let Some(RObj {
+                    data: RData::List(xs),
+                    ..
+                }) = self.get(&dn)
+                {
+                    if let Some(first) = xs.first() {
+                        return self.as_str(first);
+                    }
+                }
+            }
+        }
+        Vec::new()
     }
 
     /// Whether the value is `NULL`.
