@@ -4,10 +4,13 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 57
-surfaces. The fuzzer currently reports **zero** divergences across those
-surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
-remains below is structural — whole subsystems, not per-primitive gaps.
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 58
+surfaces. The fuzzer reports one known gap class, listed with its reasoning in
+`tests/data/parity_fuzz_baseline.txt` (R's `R_Visible` rules — a bare numeric
+literal in statement position lowers to a native VM op that never enters an
+rlang builtin, so there is no hook on which to re-set the flag); everything else
+is at parity. What remains below is structural — whole subsystems, not
+per-primitive gaps.
 
 ## Evaluation model
 
@@ -20,16 +23,32 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   didn't produce it. Set `RLANG_NO_CRAN=1` to force the native path only.
   Defaults behave lazily — they compile into a body prologue
   (`if (missing(p)) p <- <default>`), so a default may refer to another argument.
-- **No condition system.** `tryCatch`, `withCallingHandlers`, `simpleError`,
-  `on.exit`, `signalCondition`, restarts. `stop()` aborts the program and
-  `warning()`/`message()` write to stderr, but nothing can catch them.
+- **The condition system catches, but records no call and has no restarts.**
+  `tryCatch` selects a handler by condition class (`error`, `warning`,
+  `message`, `condition`), `finally` runs either way, and `try` returns a
+  `"try-error"` string. `on.exit` runs when a frame is left, however it is left.
+  `stop`, `warning`, `message` and `signalCondition` raise real condition
+  objects, and `conditionMessage` / `simpleError` / `simpleCondition` build and
+  read them. `warning()` and `message()` still print and continue when nothing
+  is waiting to catch them, which is R's default action. Two gaps: a condition
+  carries **no `call`**, because the body reaching a builtin is a value rather
+  than an expression — so `conditionCall` is always `NULL`, `print(cond)` is
+  `<simpleError: msg>` rather than `<simpleError in f(): msg>`, and `try`'s
+  string is R's call-less `"Error : msg\n"` rather than
+  `"Error in f() : msg\n"`. And there are **no restarts**
+  (`withRestarts`, `invokeRestart`, `muffleWarning`), so
+  `withCallingHandlers` unwinds like `tryCatch` instead of resuming.
+- **`local()` works; the rest of the environment surface does not.**
+  `local(expr)` compiles to `(function() expr)()`, which is R's own definition,
+  so it gets a fresh environment enclosing the caller's. `sys.function()`,
+  `parent.frame()` and `eval(expr, envir)` are still missing.
 - **Formulas (`~`) parse and become real formula objects** — `lhs ~ rhs` is
   deparsed to R source and built in the CRAN bridge, so `lm(y ~ x, data = df)`,
   `aggregate(v ~ g, df, sum)`, and one-sided `~ x` work. A formula referencing a
   bare rlang variable (`lm(y ~ x)` with `x` defined only in rlang) can't see it —
   pass the data explicitly, or use literal vectors.
 - **No environments as first-class manipulation targets** beyond `new.env()`,
-  `environment()`, `$`, and `[[` on an environment: `local()`, `sys.function()`,
+  `environment()`, `local()`, `$`, and `[[` on an environment: `sys.function()`,
   `parent.frame()`, `eval(expr, envir)` are missing.
 
 ## Types
@@ -134,15 +153,18 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## S3 / S4 / R5
 
-- **`NextMethod()` is missing** — dispatch finds the first matching method and
-  stops. `UseMethod` works, and the primitives R treats as generic (`print`,
-  `format`, `as.character`, `length`, `c`, `sort`, …) hand off to a user's
-  `<generic>.<class>` before running their own implementation, so a
-  `print.myclass` takes over both `print(x)` and top-level autoprint.
+- **`UseMethod` and `NextMethod` both work.** Dispatch records the classes it has
+  not tried yet on the method's frame, so `NextMethod()` continues down the class
+  vector and ends at `<generic>.default` — or, for the primitives R treats as
+  generic (`print`, `format`, `as.character`, `length`, `c`, `sort`, …), at the
+  primitive's own implementation. Those primitives hand off to a user's
+  `<generic>.<class>` first, so a `print.myclass` takes over both `print(x)` and
+  top-level autoprint.
 - **No S4 (`setClass`, `setGeneric`, `isVirtualClass`), no Reference Classes,
   no R6.** `@` parses and reads an attribute, which is not S4 slot semantics.
-- **No group generics** (`Ops`, `Math`, `Summary`), so a class cannot overload
-  `+` through S3.
+- **No *user-definable* group generics** (`Ops`, `Math`, `Summary`), so a class
+  of your own cannot overload `+` through S3. The built-in factor ones
+  (`Ops.factor`, `Ops.ordered`, `Summary.ordered`) are implemented natively.
 
 ## Runtime
 

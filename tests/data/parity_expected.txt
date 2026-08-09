@@ -1032,3 +1032,50 @@ Levels: x y
 n1 
  x 
 Levels: x y
+#==#
+[1] 2
+[1] "boom"
+[1] "simpleError" "error"       "condition"  
+[1] "cond"
+[1] "W: w!"
+[1] "M: m!\n"
+[1] "NaNs produced"
+#==#
+FIN
+[1] "h"
+FIN2
+[1] "ok"
+[1] "outer"
+[1] "deep"
+#==#
+body
+exit
+[1] "v"
+a
+b
+cleanup
+[1] "bad"
+#==#
+[1] 10
+[1] 1
+[1] 3
+[1] 30
+#==#
+[1] "simpleError" "error"       "condition"  
+[1] "simpleCondition" "condition"      
+<simpleError: t>
+<simpleWarning: w>
+[1] "msg"
+NULL
+#==#
+[1] "try-error"
+[1] TRUE
+[1] "fine"
+#==#
+foo
+bar
+[1] 1 2 3
+attr(,"class")
+[1] "foo" "bar"
+[1] "a"   "b"   "end"
+[1] "$5"

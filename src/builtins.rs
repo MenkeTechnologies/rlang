@@ -2118,6 +2118,18 @@ pub const PRIMITIVES: &[&str] = &[
     "missing",
     "return",
     "UseMethod",
+    "NextMethod",
+    "tryCatch",
+    "withCallingHandlers",
+    "try",
+    "on.exit",
+    "conditionMessage",
+    "conditionCall",
+    "simpleError",
+    "simpleWarning",
+    "simpleMessage",
+    "simpleCondition",
+    "signalCondition",
     "factor",
     "levels",
     "nlevels",
@@ -2202,8 +2214,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     // A primitive R treats as generic hands off to a user's S3 method before
     // running its own implementation, so `print.myclass` wins over the default
     // layout the way it does in R.
-    if let Some(res) = s3_primitive_method(name, &args) {
-        return res;
+    if !with_host(|h| std::mem::take(&mut h.suppress_s3)) {
+        if let Some(res) = s3_primitive_method(name, &args) {
+            return res;
+        }
     }
     let a = Args::new(args);
     match name {
@@ -2479,17 +2493,39 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "message" | "warning" => {
             let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
-            let text = text.join("");
+            // R's `message` appends a newline to the condition's message; a
+            // warning's does not.
+            let text = text.join("") + if name == "message" { "\n" } else { "" };
+            let classes: Vec<String> = match name {
+                "warning" => ["simpleWarning", "warning", "condition"],
+                _ => ["simpleMessage", "message", "condition"],
+            }
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            // With a `tryCatch` waiting for this class the condition is raised
+            // so the handler can take over; with none in scope R's default
+            // action applies — report it and carry on.
+            if handler_in_scope(&classes) {
+                raise_condition(text, classes);
+                return Ok(null());
+            }
             if name == "warning" {
-                eprintln!("Warning message:\n{text}");
+                r_warning(&text);
             } else {
-                eprintln!("{text}");
+                eprint!("{text}");
             }
             with_host(|h| h.visible = false);
             Ok(null())
         }
         "stop" => {
             let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
+            with_host(|h| {
+                h.error_classes = ["simpleError", "error", "condition"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            });
             Err(text.join(""))
         }
         "stopifnot" => {
@@ -3366,7 +3402,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     return Ok(mk_int(v.iter().map(|e| e.map(|n| n.abs())).collect()));
                 }
             }
-            let out = mk_dbl(as_dbl(&x).iter().map(|e| e.map(f)).collect());
+            let input = as_dbl(&x);
+            let vals: Vec<Option<f64>> = input.iter().map(|e| e.map(f)).collect();
+            // R warns when a math function turns a real number into NaN —
+            // `sqrt(-1)`, `log(-1)`, `asin(2)`. An input that was already NaN
+            // does not warn, because nothing was produced.
+            if vals
+                .iter()
+                .zip(&input)
+                .any(|(o, i)| matches!((o, i), (Some(o), Some(i)) if o.is_nan() && !i.is_nan()))
+            {
+                nan_warning()?;
+            }
+            let out = mk_dbl(vals);
             carry_attrs(&out, &x, &x);
             Ok(out)
         }
@@ -4793,6 +4841,54 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(v)
         }
         "UseMethod" => use_method(&a),
+        "NextMethod" => next_method(),
+        "tryCatch" | "withCallingHandlers" => try_catch(&a),
+        "try" => r_try(&a),
+        "on.exit" => {
+            let thunk = a.req(0, "expr")?;
+            let add = a.named("add").and_then(|v| lgl1(&v)).unwrap_or(false);
+            with_host(|h| {
+                if let Some(f) = h.frames.last_mut() {
+                    // Without `add = TRUE` a later `on.exit` replaces the
+                    // registered expression rather than joining it.
+                    if !add {
+                        f.on_exit.clear();
+                    }
+                    f.on_exit.push(thunk);
+                }
+                h.visible = false;
+            });
+            Ok(null())
+        }
+        "conditionMessage" => Ok(scalar_str(
+            element_field(&a.req(0, "c")?, "message")
+                .and_then(|m| str1(&m))
+                .unwrap_or_default(),
+        )),
+        "conditionCall" => Ok(element_field(&a.req(0, "c")?, "call").unwrap_or_else(null)),
+        "simpleError" | "simpleWarning" | "simpleMessage" | "simpleCondition" => {
+            let msg = str1(&a.req(0, "message")?).unwrap_or_default();
+            let classes: &[&str] = match name {
+                "simpleError" => &["simpleError", "error", "condition"],
+                "simpleWarning" => &["simpleWarning", "warning", "condition"],
+                "simpleMessage" => &["simpleMessage", "message", "condition"],
+                _ => &["simpleCondition", "condition"],
+            };
+            Ok(mk_condition(&msg, classes))
+        }
+        "signalCondition" => {
+            let c = a.req(0, "cond")?;
+            let msg = element_field(&c, "message")
+                .and_then(|m| str1(&m))
+                .unwrap_or_default();
+            let classes = class_of(&c);
+            if handler_in_scope(&classes) {
+                raise_condition(msg, classes);
+                return Ok(null());
+            }
+            with_host(|h| h.visible = false);
+            Ok(null())
+        }
         "Recall" => {
             // Re-invoke the closure that is currently executing, one frame down
             // (the top frame is Recall's own primitive call is not pushed, so the
@@ -6653,13 +6749,208 @@ fn s3_primitive_method(
     // a plain vector ("numeric", "character", …) does not select a method here,
     // matching R, where those reach `print.default`.
     with_host(|h| h.attr(obj, "class"))?;
-    for cls in class_of(obj) {
-        let method = format!("{name}.{cls}");
-        if let Some(f) = with_host(|h| h.lookup_function(&method)) {
-            return Some(call_value(&f, args.to_vec(), Some(method)));
+    let mut classes = class_of(obj);
+    classes.push("default".to_string());
+    // Only take over when a method actually exists; otherwise the primitive's
+    // own implementation is the answer and `dispatch_from` would just bounce
+    // straight back into it.
+    classes
+        .iter()
+        .any(|c| with_host(|h| h.lookup_function(&format!("{name}.{c}")).is_some()))
+        .then(|| dispatch_from(name, &classes, args.to_vec()))
+}
+
+// ── conditions ──────────────────────────────────────────────────────────
+
+/// R's condition object: a two-element list `list(message =, call =)` carrying
+/// the condition's S3 class vector. `conditionMessage` reads the first field.
+fn mk_condition(message: &str, classes: &[&str]) -> Value {
+    let out = mk_list(vec![scalar_str(message), null()]);
+    set_names(
+        &out,
+        vec![Some("message".to_string()), Some("call".to_string())],
+    );
+    let cls = mk_str(classes.iter().map(|c| Some((*c).to_string())).collect());
+    with_host(|h| h.set_attr(&out, "class", cls));
+    out
+}
+
+/// Whether an enclosing `tryCatch` handles any of `classes`. This is what lets
+/// `warning()` and `message()` keep R's default behaviour — print and carry on —
+/// unless somebody is actually waiting to catch them.
+fn handler_in_scope(classes: &[String]) -> bool {
+    with_host(|h| {
+        h.handlers
+            .iter()
+            .any(|hs| hs.iter().any(|w| classes.iter().any(|c| c == w)))
+    })
+}
+
+/// R's "NaNs produced" warning, as a catchable condition. Returns `Err` when a
+/// `tryCatch(warning = )` is waiting for it, which unwinds to that handler.
+fn nan_warning() -> Result<(), String> {
+    let classes: Vec<String> = ["simpleWarning", "warning", "condition"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if handler_in_scope(&classes) {
+        raise_condition("NaNs produced".into(), classes);
+        return Err("NaNs produced".into());
+    }
+    r_warning("NaNs produced");
+    Ok(())
+}
+
+/// Raise a condition: record the message and its class vector, and let the
+/// normal error unwind carry it out to the nearest `tryCatch`.
+fn raise_condition(msg: String, classes: Vec<String>) {
+    with_host(|h| {
+        if h.error.is_none() {
+            h.error = Some(msg);
+            h.error_classes = classes;
+        }
+    });
+}
+
+/// `tryCatch(function() expr, <class> = handler, …, finally = function() f)`.
+///
+/// The compiler has already wrapped `expr` and `finally` in zero-argument
+/// closures (see `thunk_lazy_args`), so this decides *when* they run. The body
+/// executes on its own nested VM, which is what bounds the unwind: an error
+/// inside it surfaces here as an `Err` with the host's error state already
+/// cleared, so a matching handler simply returns a value instead.
+fn try_catch(a: &Args) -> Result<Value, String> {
+    let body = a.req(0, "expr")?;
+    let finally = a.named("finally");
+    // Every named argument other than `expr`/`finally` is a handler keyed by the
+    // condition class it catches.
+    let handlers: Vec<(String, Value)> = a
+        .all
+        .iter()
+        .filter_map(|(t, v)| match t.as_deref() {
+            Some("finally") | Some("expr") | None => None,
+            Some(t) => Some((t.to_string(), v.clone())),
+        })
+        .collect();
+    let handled: Vec<String> = handlers.iter().map(|(c, _)| c.clone()).collect();
+    with_host(|h| h.handlers.push(handled));
+    let out = call_value(&body, Vec::new(), None);
+    let raised = with_host(|h| {
+        h.handlers.pop();
+        std::mem::take(&mut h.error_classes)
+    });
+    let result = match out {
+        Ok(v) => Ok(v),
+        Err(msg) => {
+            // An error with no class vector is a plain `stop()`.
+            let classes: Vec<String> = if raised.is_empty() {
+                ["simpleError", "error", "condition"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                raised
+            };
+            match handlers
+                .iter()
+                .find(|(c, _)| classes.iter().any(|k| k == c))
+            {
+                Some((_, f)) => {
+                    let cond = mk_condition(
+                        &msg,
+                        &classes.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                    call_value(f, vec![(None, cond)], None)
+                }
+                // Nothing here handles it — keep unwinding.
+                None => Err(msg),
+            }
+        }
+    };
+    // `finally` runs whichever way the body went, before the result leaves. Its
+    // own visibility is not the call's: `tryCatch(42, finally = cat("x\n"))`
+    // still prints 42.
+    if let Some(f) = finally {
+        let vis = with_host(|h| h.visible);
+        call_value(&f, Vec::new(), None)?;
+        with_host(|h| h.visible = vis);
+    }
+    result
+}
+
+/// `try(expr, silent = FALSE)` — run `expr`, and on error return the message as
+/// an invisible `"try-error"` string instead of aborting.
+fn r_try(a: &Args) -> Result<Value, String> {
+    let body = a.req(0, "expr")?;
+    let silent = a.named("silent").and_then(|v| lgl1(&v)).unwrap_or(false);
+    match call_value(&body, Vec::new(), None) {
+        Ok(v) => Ok(v),
+        Err(msg) => {
+            let classes = with_host(|h| std::mem::take(&mut h.error_classes));
+            let text = format!("Error : {msg}\n");
+            if !silent {
+                eprint!("{text}");
+            }
+            let out = scalar_str(text);
+            let classes: Vec<&str> = if classes.is_empty() {
+                vec!["simpleError", "error", "condition"]
+            } else {
+                classes.iter().map(String::as_str).collect()
+            };
+            // Every value is built before the host is borrowed — allocating one
+            // borrows it too, and `with_host` is not re-entrant.
+            let cls = scalar_str("try-error");
+            let cond = mk_condition(&msg, &classes);
+            with_host(|h| {
+                h.set_attr(&out, "class", cls);
+                h.set_attr(&out, "condition", cond);
+                h.visible = false;
+            });
+            Ok(out)
         }
     }
-    None
+}
+
+/// `NextMethod()` — continue S3 dispatch at the class *after* the one whose
+/// method is running. `UseMethod` records the remaining class vector on the
+/// method's frame; this walks the rest of it, ending at `<generic>.default`.
+fn next_method() -> Result<Value, String> {
+    let (dispatch, args) = with_host(|h| {
+        let f = h.frames.last();
+        (
+            f.and_then(|f| f.dispatch.clone()),
+            f.map(|f| f.args.clone()).unwrap_or_default(),
+        )
+    });
+    let (generic, rest) =
+        dispatch.ok_or_else(|| "NextMethod called from outside a method".to_string())?;
+    dispatch_from(&generic, &rest, args)
+}
+
+/// Run the first `<generic>.<class>` found in `classes`, recording the classes
+/// after it so a `NextMethod` inside that method continues where this left off.
+/// With no method left, the generic's own primitive is the default.
+fn dispatch_from(
+    generic: &str,
+    classes: &[String],
+    args: Vec<(Option<String>, Value)>,
+) -> Result<Value, String> {
+    for (i, cls) in classes.iter().enumerate() {
+        let method = format!("{generic}.{cls}");
+        if let Some(f) = with_host(|h| h.lookup_function(&method)) {
+            with_host(|h| {
+                h.pending_dispatch = Some((generic.to_string(), classes[i + 1..].to_vec()))
+            });
+            let out = call_value(&f, args, Some(method));
+            with_host(|h| h.pending_dispatch = None);
+            return out;
+        }
+    }
+    // Nothing further defined: fall through to the primitive behind the generic,
+    // which is what R's internal default dispatch does. The flag stops that call
+    // re-entering S3 dispatch on the same object and looping forever.
+    with_host(|h| h.suppress_s3 = true);
+    call_primitive(generic, args)
 }
 
 /// `UseMethod("generic")` — S3 dispatch on the class vector of the first
@@ -6676,19 +6967,19 @@ fn use_method(a: &Args) -> Result<Value, String> {
     };
     let mut classes = class_of(&obj);
     classes.push("default".to_string());
-    for cls in classes {
-        let method = format!("{generic}.{cls}");
-        if let Some(f) = with_host(|h| h.lookup_function(&method)) {
-            let out = call_value(&f, frame_args, Some(method))?;
-            // The generic returns whatever the method returned.
-            with_host(|h| h.signal = Some(Signal::Return(out.clone())));
-            return Ok(out);
-        }
+    if !classes
+        .iter()
+        .any(|c| with_host(|h| h.lookup_function(&format!("{generic}.{c}")).is_some()))
+    {
+        return Err(format!(
+            "no applicable method for '{generic}' applied to an object of class \"{}\"",
+            class_of(&obj).first().cloned().unwrap_or_default()
+        ));
     }
-    Err(format!(
-        "no applicable method for '{generic}' applied to an object of class \"{}\"",
-        class_of(&obj).first().cloned().unwrap_or_default()
-    ))
+    let out = dispatch_from(&generic, &classes, frame_args)?;
+    // The generic returns whatever the method returned.
+    with_host(|h| h.signal = Some(Signal::Return(out.clone())));
+    Ok(out)
 }
 
 // ===========================================================================
@@ -6718,9 +7009,12 @@ fn format_extra_attrs(v: &Value) -> Vec<String> {
     // `class` is structural only for the classes that have their own layout
     // above; a class rlang has no method for is shown, the way R's
     // `print.default` shows one it has no method for.
-    let laid_out = class_of(v)
-        .iter()
-        .any(|c| matches!(c.as_str(), "factor" | "ordered" | "table" | "rle"));
+    let laid_out = class_of(v).iter().any(|c| {
+        matches!(
+            c.as_str(),
+            "factor" | "ordered" | "table" | "rle" | "condition"
+        )
+    });
     let mut out = Vec::new();
     for (k, val) in with_host(|h| h.attrs_of(v)) {
         if STRUCTURAL.contains(&k.as_str()) || (k == "class" && laid_out) {
@@ -6754,6 +7048,23 @@ fn format_value_body(v: &Value) -> Vec<String> {
     }
     if classes.iter().any(|c| c == "rle") {
         return format_rle(v);
+    }
+    // `print.condition`: `<simpleError in f(): msg>`, or without the `in` clause
+    // when the condition carries no call — which is always here, since rlang
+    // records none.
+    if classes.iter().any(|c| c == "condition") {
+        let msg = element_field(v, "message")
+            .and_then(|m| str1(&m))
+            .unwrap_or_default();
+        let call = element_field(v, "call").filter(|c| !is_null(c));
+        let head = classes.first().cloned().unwrap_or_default();
+        return match call {
+            Some(c) => vec![format!(
+                "<{head} in {}: {msg}>",
+                str1(&c).unwrap_or_default()
+            )],
+            None => vec![format!("<{head}: {msg}>")],
+        };
     }
     match data(v) {
         RData::Null => vec!["NULL".into()],
@@ -7241,7 +7552,7 @@ fn format_list(v: &Value) -> Vec<String> {
 fn is_plain_list(v: &Value) -> bool {
     if class_of(v)
         .iter()
-        .any(|c| c == "factor" || c == "table" || c == "rle")
+        .any(|c| c == "factor" || c == "table" || c == "rle" || c == "condition")
     {
         return false;
     }

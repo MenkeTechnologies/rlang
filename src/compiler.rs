@@ -446,7 +446,29 @@ impl Compiler {
                     if name == "switch" && !args.is_empty() {
                         return self.switch_expr(b, args);
                     }
+                    // `local(expr)` evaluates `expr` in a fresh environment
+                    // whose parent is the caller's — which is exactly what
+                    // calling a zero-argument closure does, and is how R's own
+                    // `local` is defined.
+                    if name == "local" && args.len() == 1 {
+                        if let Some(body) = args[0].value.clone() {
+                            return self.expr(b, &call_thunk(body));
+                        }
+                    }
                 }
+                // `tryCatch` / `try` / `on.exit` take their body *unevaluated*:
+                // rlang evaluates arguments eagerly, so the body is wrapped in a
+                // zero-argument closure here and the builtin decides when — and
+                // whether — to call it. A closure body runs on its own nested
+                // VM, so an error inside it unwinds only that far, which is what
+                // makes it catchable. The rewritten list shadows `args` rather
+                // than being re-compiled as a fresh call, which would re-enter
+                // this rewrite and thunk the thunk forever.
+                let thunked = match fun.as_ref() {
+                    Expr::Ident(name) => thunk_lazy_args(name, args),
+                    _ => None,
+                };
+                let args: &[Arg] = thunked.as_deref().unwrap_or(args);
                 // A named callee resolves in function position, skipping
                 // non-function bindings (`c <- 1; c(1, 2)` still concatenates).
                 match fun.as_ref() {
@@ -470,7 +492,7 @@ impl Compiler {
                         value: Some(Expr::Ident(sym)),
                     }) = args.first()
                     {
-                        let mut rewritten = args.clone();
+                        let mut rewritten = args.to_vec();
                         rewritten[0] = Arg {
                             name: name.clone(),
                             value: Some(Expr::Str(sym.clone())),
@@ -490,7 +512,7 @@ impl Compiler {
                         value: Some(Expr::Ident(sym)),
                     }) = args.first()
                     {
-                        let mut rewritten = args.clone();
+                        let mut rewritten = args.to_vec();
                         rewritten.push(Arg {
                             name: Some(".dnn".into()),
                             value: Some(Expr::Str(sym.clone())),
@@ -529,7 +551,7 @@ impl Compiler {
                                 .collect(),
                         }),
                     };
-                    let mut rewritten = args.clone();
+                    let mut rewritten = args.to_vec();
                     rewritten.push(Arg {
                         name: Some(".deparse.sym".into()),
                         ..label(&|e| match e {
@@ -1341,6 +1363,67 @@ fn is_native_num(e: &Expr, cand: &std::collections::HashSet<String>) -> bool {
         Expr::Unary { operand, .. } => is_native_num(operand, cand),
         _ => false,
     }
+}
+
+/// `function() <body>` — a zero-argument closure that defers `body`.
+fn thunk(body: Expr) -> Expr {
+    Expr::Function {
+        params: Vec::new(),
+        body: Box::new(body),
+    }
+}
+
+/// `(function() <body>)()` — defer `body`, then immediately call it, so it runs
+/// in a fresh environment enclosing the caller's.
+fn call_thunk(body: Expr) -> Expr {
+    Expr::Call {
+        fun: Box::new(thunk(body)),
+        args: Vec::new(),
+    }
+}
+
+/// Wrap the arguments a lazy special form must not have evaluated for it in
+/// `function() …` thunks, or `None` when `name` is not one of them.
+///
+/// `tryCatch(expr, error = h, finally = f)`: `expr` and `finally` are
+/// expressions to run under the handlers, while the handlers are already
+/// functions and are left alone. `try(expr)` and `on.exit(expr)` defer their one
+/// body argument the same way.
+fn thunk_lazy_args(name: &str, args: &[Arg]) -> Option<Vec<Arg>> {
+    // The argument names whose values are bodies rather than handlers, per
+    // special form. An empty name means "the first positional argument".
+    let deferred: &[&str] = match name {
+        "tryCatch" | "withCallingHandlers" => &["", "expr", "finally"],
+        "try" => &["", "expr"],
+        "on.exit" => &["", "expr"],
+        _ => return None,
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut seen_positional = false;
+    let mut changed = false;
+    for a in args {
+        // A `...` or empty argument cannot be thunked — its expression only
+        // exists at run time — so such a call is left to the eager path.
+        let value = a.value.clone()?;
+        let is_body = match &a.name {
+            Some(n) => deferred.contains(&n.as_str()),
+            None => {
+                let first = !seen_positional;
+                seen_positional = true;
+                first && deferred.contains(&"")
+            }
+        };
+        if is_body && !matches!(value, Expr::Dots) {
+            changed = true;
+            out.push(Arg {
+                name: a.name.clone(),
+                value: Some(thunk(value)),
+            });
+        } else {
+            out.push(a.clone());
+        }
+    }
+    changed.then_some(out)
 }
 
 fn native_binop(op: &BinOp) -> Option<Op> {

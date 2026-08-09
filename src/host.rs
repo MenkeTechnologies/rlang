@@ -231,6 +231,9 @@ pub struct Frame {
     pub fun: Value,
     /// Set by `UseMethod` so `NextMethod` can continue down the class vector.
     pub dispatch: Option<(String, Vec<String>)>,
+    /// Thunks registered by `on.exit`, run when this frame is left — whether it
+    /// returns normally or unwinds with an error.
+    pub on_exit: Vec<Value>,
 }
 
 /// The R runtime: heap, environments, call stack, and pending control state.
@@ -240,6 +243,23 @@ pub struct RHost {
     pub frames: Vec<Frame>,
     pub closures: Vec<ClosureDef>,
     pub error: Option<String>,
+    /// The S3 class vector of the condition currently being signalled — R's
+    /// `c("simpleError", "error", "condition")` and friends. It rides alongside
+    /// `error` so a `tryCatch` handler can be selected by class.
+    pub error_classes: Vec<String>,
+    /// The condition classes each enclosing `tryCatch` is prepared to handle,
+    /// innermost last. `warning()` and `message()` consult it: with a matching
+    /// handler in scope they raise a catchable condition, and without one they
+    /// print and carry on, which is R's default behaviour.
+    pub handlers: Vec<Vec<String>>,
+    /// Set by S3 dispatch immediately before invoking a method, and consumed by
+    /// the frame that method pushes, so `NextMethod` inside it knows which
+    /// classes are still to try.
+    pub pending_dispatch: Option<(String, Vec<String>)>,
+    /// Set for exactly one `call_primitive` by `NextMethod`'s fall-through, so
+    /// the primitive behind a generic runs its own implementation instead of
+    /// dispatching S3 on the same object again.
+    pub suppress_s3: bool,
     pub signal: Option<Signal>,
     /// R's "visibility" flag: assignment and `invisible()` clear it, so the
     /// top-level echo knows not to print.
@@ -316,9 +336,14 @@ impl RHost {
                 fun_name: None,
                 fun: Value::Undef,
                 dispatch: None,
+                on_exit: Vec::new(),
             }],
             closures: Vec::new(),
             error: None,
+            error_classes: Vec::new(),
+            handlers: Vec::new(),
+            pending_dispatch: None,
+            suppress_s3: false,
             signal: None,
             visible: true,
             echo: true,
@@ -1080,18 +1105,48 @@ pub fn call_closure(
         }
     }
     with_host(|h| {
+        // The dispatch that selected this method, if it was one — set just
+        // before the call so `NextMethod` in the body can continue it.
+        let dispatch = h.pending_dispatch.take();
         h.frames.push(Frame {
             env: frame_env,
             args: args.clone(),
             fun_name,
             fun,
-            dispatch: None,
+            dispatch,
+            on_exit: Vec::new(),
         })
     });
     let out = run_chunk(def.chunk.clone());
-    with_host(|h| {
+    // `on.exit` runs on the way out however the frame is left — normal return,
+    // `return()`, or an error unwinding through it — so it is taken off the
+    // frame before the result is propagated.
+    let exits = with_host(|h| {
+        let e = h.frames.last_mut().map(|f| std::mem::take(&mut f.on_exit));
         h.frames.pop();
+        e.unwrap_or_default()
     });
+    // `run_chunk` has already moved any error out of the host and into `out`,
+    // so the cleanups run on a clean slate. An error raised by a cleanup
+    // propagates only when the body itself succeeded — otherwise the body's
+    // error is the one that reaches the caller, as in R.
+    let mut out = out;
+    for thunk in exits {
+        // A `return()` signal from the body must not halt the cleanup chunk, and
+        // whether the *call* prints is decided by its own value — a `cat` in the
+        // cleanup must not make the result invisible.
+        let (sig, vis) = with_host(|h| (h.signal.take(), h.visible));
+        let cleanup = call_value(&thunk, Vec::new(), None);
+        with_host(|h| {
+            h.signal = sig;
+            h.visible = vis;
+        });
+        if out.is_ok() {
+            if let Err(e) = cleanup {
+                out = Err(e);
+            }
+        }
+    }
     let out = out?;
     // A `return()` inside the body halted the chunk; its value is the result.
     let sig = with_host(|h| h.signal.take());

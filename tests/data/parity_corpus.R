@@ -805,3 +805,58 @@ names(nm) <- c("n1", "n2")
 print(nm)
 print(rev(nm))
 print(nm[1])
+#==#
+print(tryCatch(1 + 1, error = function(e) "caught"))
+print(tryCatch(stop("boom"), error = function(e) conditionMessage(e)))
+print(tryCatch(stop("boom"), error = function(e) class(e)))
+print(tryCatch(stop("x"), condition = function(c) "cond"))
+print(tryCatch(warning("w!"), warning = function(w) paste("W:", conditionMessage(w))))
+print(tryCatch(message("m!"), message = function(m) paste("M:", conditionMessage(m))))
+print(tryCatch(sqrt(-1), warning = function(w) conditionMessage(w)))
+#==#
+r <- tryCatch(stop("e"), error = function(e) "h", finally = cat("FIN\n"))
+print(r)
+r2 <- tryCatch("ok", finally = cat("FIN2\n"))
+print(r2)
+print(tryCatch(tryCatch(stop("inner"), error = function(e) stop("outer")),
+               error = function(e) conditionMessage(e)))
+print(tryCatch(tryCatch(stop("deep"), warning = function(w) "wrong"),
+               error = function(e) conditionMessage(e)))
+#==#
+f <- function() { on.exit(cat("exit\n")); cat("body\n"); invisible("v") }
+print(f())
+g <- function() { on.exit(cat("a\n")); on.exit(cat("b\n"), add = TRUE); invisible(1) }
+invisible(g())
+h <- function() { on.exit(cat("cleanup\n")); stop("bad") }
+print(tryCatch(h(), error = function(e) conditionMessage(e)))
+#==#
+print(local({ a <- 5; a * 2 }))
+x <- 1
+local({ x <- 99 })
+print(x)
+print(local({ q <- 2; local({ q + 1 }) }))
+ff <- function() { y <- 10; local({ y * 3 }) }
+print(ff())
+#==#
+print(class(simpleError("z")))
+print(class(simpleCondition("z")))
+print(simpleError("t"))
+print(simpleWarning("w"))
+e <- simpleCondition("msg")
+print(conditionMessage(e))
+print(conditionCall(e))
+#==#
+print(class(try(stop("t"), silent = TRUE)))
+print(inherits(try(stop("t"), silent = TRUE), "try-error"))
+print(try("fine", silent = TRUE))
+#==#
+print.foo <- function(x, ...) { cat("foo\n"); NextMethod() }
+print.bar <- function(x, ...) { cat("bar\n"); NextMethod() }
+print(structure(1:3, class = c("foo", "bar")))
+summ <- function(x, ...) UseMethod("summ")
+summ.a <- function(x, ...) c("a", NextMethod())
+summ.b <- function(x, ...) c("b", NextMethod())
+summ.default <- function(x, ...) "end"
+print(summ(structure(1, class = c("a", "b"))))
+as.character.money <- function(x, ...) paste0("$", NextMethod())
+print(as.character(structure(5, class = "money")))

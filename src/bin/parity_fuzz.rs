@@ -870,6 +870,45 @@ fn gen_factorops(seed: u64) -> Vec<String> {
     })
 }
 
+/// The condition system: `tryCatch` handler selection, `finally` ordering,
+/// `on.exit` cleanup (including when the frame unwinds), `local` scoping and
+/// `NextMethod` chaining. These are lazy special forms compiled to thunks, so a
+/// mistake shows up as the body running at the wrong time — or not at all.
+fn gen_conditions(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    let n = r.range(1, 9);
+    one(match r.below(16) {
+        0 => format!("tryCatch({n}, error = function(e) \"caught\")"),
+        1 => format!("tryCatch(stop(\"{w}\"), error = function(e) conditionMessage(e))"),
+        2 => format!("tryCatch(stop(\"{w}\"), error = function(e) class(e))"),
+        3 => format!("tryCatch(warning(\"{w}\"), warning = function(x) conditionMessage(x))"),
+        4 => format!("tryCatch(message(\"{w}\"), message = function(x) conditionMessage(x))"),
+        5 => format!("tryCatch(stop(\"{w}\"), condition = function(x) \"cond\")"),
+        6 => format!("tryCatch({n}, finally = cat(\"fin\\n\"))"),
+        7 => format!("tryCatch(stop(\"{w}\"), error = function(e) {n}, finally = cat(\"fin\\n\"))"),
+        8 => format!(
+            "tryCatch(tryCatch(stop(\"{w}\"), error = function(e) stop(\"outer\")), \
+             error = function(e) conditionMessage(e))"
+        ),
+        9 => format!("(function() {{ on.exit(cat(\"x\\n\")); {n} }})()"),
+        10 => format!(
+            "(function() {{ on.exit(cat(\"a\\n\")); on.exit(cat(\"b\\n\"), add = TRUE); {n} }})()"
+        ),
+        11 => format!(
+            "tryCatch((function() {{ on.exit(cat(\"cl\\n\")); stop(\"{w}\") }})(), \
+             error = function(e) conditionMessage(e))"
+        ),
+        12 => format!("local({{ v <- {n}; v * 2 }})"),
+        13 => format!("class(try(stop(\"{w}\"), silent = TRUE))"),
+        14 => format!("inherits(try(stop(\"{w}\"), silent = TRUE), \"try-error\")"),
+        _ => format!(
+            "{{ f <- function(x) UseMethod(\"f\"); f.a <- function(x) c(\"a\", NextMethod()); \
+             f.default <- function(x) \"{w}\"; f(structure({n}, class = \"a\")) }}"
+        ),
+    })
+}
+
 fn gen_trig(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let f = ff(r);
@@ -1477,6 +1516,7 @@ enum Mode {
     Typepred,
     Factorsub,
     Factorops,
+    Conditions,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1537,6 +1577,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Typepred,
     Mode::Factorsub,
     Mode::Factorops,
+    Mode::Conditions,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1598,6 +1639,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Typepred => gen_typepred(seed),
         Mode::Factorsub => gen_factorsub(seed),
         Mode::Factorops => gen_factorops(seed),
+        Mode::Conditions => gen_conditions(seed),
     }
 }
 
@@ -1964,6 +2006,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Typepred => "typepred",
         Mode::Factorsub => "factorsub",
         Mode::Factorops => "factorops",
+        Mode::Conditions => "conditions",
     }
 }
 

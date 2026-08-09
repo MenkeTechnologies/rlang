@@ -1104,7 +1104,67 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "UseMethod",
         "UseMethod(generic, object)",
-        "S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns. NextMethod does not exist, so dispatch stops at the first match.",
+        "S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns.",
+    ),
+    (
+        "NextMethod",
+        "NextMethod()",
+        "Continue S3 dispatch from inside a method: run the method for the next class in the vector UseMethod was dispatching on, falling back to the primitive behind the generic when no further method is defined.",
+    ),
+    (
+        "tryCatch",
+        "tryCatch(expr, ..., finally)",
+        "Evaluate expr with handlers installed. Each named argument other than finally is a handler for the condition class of that name (error, warning, message, condition); if expr signals a matching condition, that handler is called with the condition object and its value becomes the result. finally is evaluated on the way out either way.",
+    ),
+    (
+        "withCallingHandlers",
+        "withCallingHandlers(expr, ...)",
+        "Evaluate expr with handlers installed, spelled as tryCatch is. Restarts are not implemented, so a handled condition unwinds rather than resuming.",
+    ),
+    (
+        "try",
+        "try(expr, silent = FALSE)",
+        "Evaluate expr, returning its value, or on error an invisible character string of class \"try-error\" carrying the message (also printed to stderr unless silent is TRUE) rather than aborting.",
+    ),
+    (
+        "on.exit",
+        "on.exit(expr, add = FALSE)",
+        "Register expr to be evaluated when the enclosing closure exits, whether it returns normally or unwinds with an error. Without add = TRUE a later on.exit replaces the registered expression instead of joining it.",
+    ),
+    (
+        "conditionMessage",
+        "conditionMessage(c)",
+        "The message string carried by a condition object.",
+    ),
+    (
+        "conditionCall",
+        "conditionCall(c)",
+        "The call a condition was signalled from. rlang records no call, so this is always NULL.",
+    ),
+    (
+        "simpleError",
+        "simpleError(message)",
+        "Build a condition object of class c(\"simpleError\", \"error\", \"condition\").",
+    ),
+    (
+        "simpleWarning",
+        "simpleWarning(message)",
+        "Build a condition object of class c(\"simpleWarning\", \"warning\", \"condition\").",
+    ),
+    (
+        "simpleMessage",
+        "simpleMessage(message)",
+        "Build a condition object of class c(\"simpleMessage\", \"message\", \"condition\").",
+    ),
+    (
+        "simpleCondition",
+        "simpleCondition(message)",
+        "Build a condition object of class c(\"simpleCondition\", \"condition\").",
+    ),
+    (
+        "signalCondition",
+        "signalCondition(cond)",
+        "Signal a condition object: if an enclosing tryCatch handles one of its classes the handler runs, otherwise the call returns NULL and evaluation continues.",
     ),
     (
         "Recall",
