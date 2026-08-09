@@ -804,6 +804,72 @@ fn gen_factor(seed: u64) -> Vec<String> {
     })
 }
 
+/// A factor whose levels are a fixed alphabet, so two independently generated
+/// factors share a level set — which is what `==` between factors requires.
+fn some_factor(r: &mut Rng, ordered: bool) -> String {
+    let n = r.range(3, 6) as usize;
+    let items: Vec<String> = (0..n)
+        .map(|_| format!("\"{}\"", r.pick(&["a", "b", "c", "d"])))
+        .collect();
+    format!(
+        "factor(c({}), levels = c(\"a\", \"b\", \"c\", \"d\"){})",
+        items.join(", "),
+        if ordered { ", ordered = TRUE" } else { "" }
+    )
+}
+
+/// Subsetting and reordering a factor. Every one of these rebuilds the codes,
+/// so each is a chance to drop the `levels`/`class` attributes and silently
+/// hand back bare integers — the failure this surface exists to catch.
+fn gen_factorsub(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let ordered = r.below(4) == 0;
+    let f = some_factor(r, ordered);
+    let i = r.range(1, 3);
+    let j = r.range(3, 5);
+    one(match r.below(14) {
+        0 => format!("({f})[{i}:{j}]"),
+        1 => format!("({f})[-{i}]"),
+        2 => format!("({f})[[{i}]]"),
+        3 => format!("({f})[c(TRUE, FALSE)]"),
+        4 => format!("({f})[{i}:{j}, drop = TRUE]"),
+        5 => format!("head({f}, {i})"),
+        6 => format!("tail({f}, {i})"),
+        7 => format!("rev({f})"),
+        8 => format!("sort({f})"),
+        9 => format!("sort({f}, decreasing = TRUE)"),
+        10 => format!("unique({f})"),
+        11 => format!("rep({f}, {i})"),
+        12 => format!("c({}, {})", some_factor(r, false), some_factor(r, false)),
+        _ => format!("levels(({f})[{i}:{j}])"),
+    })
+}
+
+/// Operators and label coercion on a factor. A factor compares by *label*, so
+/// anything reading the codes here answers the wrong thing rather than erroring.
+fn gen_factorops(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = some_factor(r, false);
+    let o = some_factor(r, true);
+    let w = *r.pick(&["a", "b", "c", "d", "z"]);
+    one(match r.below(14) {
+        0 => format!("({f}) == \"{w}\""),
+        1 => format!("({f}) != \"{w}\""),
+        2 => format!("(function(x) x[x == \"{w}\"])({f})"),
+        3 => format!("which(({f}) == \"{w}\")"),
+        4 => format!("({o}) < \"{w}\""),
+        5 => format!("({o}) >= \"{w}\""),
+        6 => format!("sum(({f}) == \"{w}\")"),
+        7 => format!("({f}) %in% c(\"a\", \"{w}\")"),
+        8 => format!("match({f}, c(\"a\", \"b\", \"c\", \"d\"))"),
+        9 => format!("paste({f}, collapse = \"-\")"),
+        10 => format!("as.vector({f})"),
+        11 => format!("toString({f})"),
+        12 => format!("droplevels(({f})[1:2])"),
+        _ => format!("table(({f})[1:2])"),
+    })
+}
+
 fn gen_trig(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let f = ff(r);
@@ -1409,6 +1475,8 @@ enum Mode {
     Parens,
     Seqfmt,
     Typepred,
+    Factorsub,
+    Factorops,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1467,6 +1535,8 @@ const ALL_MODES: &[Mode] = &[
     Mode::Parens,
     Mode::Seqfmt,
     Mode::Typepred,
+    Mode::Factorsub,
+    Mode::Factorops,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1526,6 +1596,8 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Parens => gen_parens(seed),
         Mode::Seqfmt => gen_seqfmt(seed),
         Mode::Typepred => gen_typepred(seed),
+        Mode::Factorsub => gen_factorsub(seed),
+        Mode::Factorops => gen_factorops(seed),
     }
 }
 
@@ -1890,6 +1962,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Parens => "parens",
         Mode::Seqfmt => "seqfmt",
         Mode::Typepred => "typepred",
+        Mode::Factorsub => "factorsub",
+        Mode::Factorops => "factorops",
     }
 }
 

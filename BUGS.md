@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 55
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 57
 surfaces. The fuzzer currently reports **zero** divergences across those
 surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
 remains below is structural — whole subsystems, not per-primitive gaps.
@@ -40,15 +40,23 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   operation on it (`df$col`, `df[i, ]`, `nrow`, `print`, `toJSON(df)`) is
   delegated there. This needs R installed; the values are correct but not
   inspectable from rlang's own primitives.
-- **No complex numbers, no `Date`/`POSIXct` native type.** Factors are
-  supported (`factor`, `levels`, `nlevels`, `table`, explicit `levels =`, and
-  their printing), and the type predicates exclude them the way R's do
-  (`is.numeric(f)` and `is.integer(f)` are FALSE). Two gaps remain: **a factor
-  does not survive being subset or reordered** — `f[1:2]`, `head(f)`, `rep(f)`,
-  `sort(f)`, `rev(f)`, `unique(f)` and `c(f)` all yield the bare integer codes,
-  because those primitives build a fresh vector and drop the `levels`/`class`
-  attributes, and `f == "a"` compares against the codes rather than the labels,
-  so it selects nothing. And there are no ordered factors.
+- **No complex numbers, no `Date`/`POSIXct` native type.** **Factors are a
+  complete subsystem**, including ordered ones. A factor survives being subset
+  or reordered — `f[i]` (with `drop =`), `f[[i]]`, `head`/`tail`, `rev`, `sort`,
+  `unique`, `rep`, `c`, `split` and the set operators all rebuild the level
+  table and class the way R's `[.factor` / `rep.factor` do, rather than handing
+  back the bare integer codes. Operators go through R's group generics: `==` and
+  `!=` compare *labels*, so `f == "a"` selects the right elements; `<`/`>` on an
+  *ordered* factor compare level positions, and on an unordered one answer `NA`
+  with R's "not meaningful for factors" warning instead of silently comparing
+  codes. Label coercion (`as.vector`, `paste`, `toString`, `match`, `%in%`,
+  `split`/`tapply` grouping) reads the labels, `min`/`max`/`range` follow
+  `Summary.ordered`, and the type predicates exclude factors the way R's do
+  (`is.numeric(f)` and `is.integer(f)` are FALSE). One cosmetic gap remains: the
+  `Ops.factor` warning is emitted without R's `In Ops.factor(f, "b") :` call
+  prefix, because a builtin receives values rather than expressions and `+`
+  lowers to a native fusevm op that never sees the argument text. The message
+  body and the returned `NA`s match.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
   a margin onto its result) work; the array-specific helpers (`slice.index`,

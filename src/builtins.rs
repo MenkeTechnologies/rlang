@@ -154,6 +154,95 @@ fn elements(v: &Value) -> Vec<Value> {
 fn is_factor(v: &Value) -> bool {
     class_of(v).iter().any(|c| c == "factor")
 }
+/// Whether `v` is an *ordered* factor, whose levels carry a `<` order. R keeps
+/// the two apart with separate group generics: `Ops.ordered` gives `<`/`>`
+/// meaning, `Ops.factor` refuses them.
+fn is_ordered(v: &Value) -> bool {
+    class_of(v).iter().any(|c| c == "ordered")
+}
+/// A factor's level labels, in code order.
+fn levels_of(v: &Value) -> Vec<String> {
+    with_host(|h| h.attr(v, "levels"))
+        .map(|l| as_str(&l).into_iter().flatten().collect())
+        .unwrap_or_default()
+}
+/// A factor's elements as their labels — `as.character(f)`. An `NA` or
+/// out-of-range code stays `NA`.
+fn factor_labels(v: &Value) -> Vec<Option<String>> {
+    let levels = levels_of(v);
+    as_int(v)
+        .iter()
+        .map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned()))
+        .collect()
+}
+/// Character coercion the way R's factor methods do it: a factor contributes
+/// its *labels*, anything else its ordinary `as.character`. This is the
+/// coercion behind `paste`, `toString`, `match`, `%in%`, `split`, `tapply` and
+/// `as.vector` — every one of which would otherwise see the integer codes.
+fn as_str_labels(v: &Value) -> Vec<Option<String>> {
+    if is_factor(v) {
+        factor_labels(v)
+    } else {
+        as_str(v)
+    }
+}
+/// Build a factor from 1-based `codes` into `levels`. The one constructor
+/// `factor`, `droplevels`, `cut` and the factor-preserving primitives share.
+fn mk_factor(codes: Vec<Option<i64>>, levels: Vec<String>, ordered: bool) -> Value {
+    let out = mk_int(codes);
+    let lv = mk_str(levels.into_iter().map(Some).collect());
+    // An ordered factor carries `c("ordered", "factor")`.
+    let cls = if ordered {
+        mk_str(vec![Some("ordered".into()), Some("factor".into())])
+    } else {
+        scalar_str("factor")
+    };
+    with_host(|h| {
+        h.set_attr(&out, "levels", lv);
+        h.set_attr(&out, "class", cls);
+    });
+    out
+}
+/// Restore `levels` and `class` from the factor `src` onto `out`, which holds
+/// the selected codes.
+///
+/// This is R's `[.factor`: `NextMethod("[")` subsets the codes like any integer
+/// vector, then the level table and the class are put back. `rep.factor` does
+/// the same via `structure(y, class = class(x), levels = levels(x))`, and
+/// `sort.default`/`rev.default`/`head`/`tail` inherit it by going through `[`.
+fn carry_factor(out: &Value, src: &Value) {
+    if !is_factor(src) {
+        return;
+    }
+    with_host(|h| {
+        if let Some(l) = h.attr(src, "levels") {
+            h.set_attr(out, "levels", l);
+        }
+        if let Some(c) = h.attr(src, "class") {
+            h.set_attr(out, "class", c);
+        }
+    });
+}
+/// `factor(f, exclude = NA)` — rebuild a factor keeping only the levels that
+/// are actually used, in their original order. This is `droplevels`, and what
+/// `f[i, drop = TRUE]` applies to its result.
+fn drop_unused_levels(v: &Value) -> Value {
+    let levels = levels_of(v);
+    let labels = factor_labels(v);
+    let kept: Vec<String> = levels
+        .into_iter()
+        .filter(|l| labels.iter().any(|s| s.as_deref() == Some(l.as_str())))
+        .collect();
+    let codes = labels
+        .iter()
+        .map(|s| {
+            s.as_ref()
+                .and_then(|s| kept.iter().position(|l| l == s))
+                .map(|p| p as i64 + 1)
+        })
+        .collect();
+    mk_factor(codes, kept, is_ordered(v))
+}
 /// The element of a named list/vector bound to `name`, if present (`x$name`).
 fn element_field(v: &Value, name: &str) -> Option<Value> {
     let names = names_of(v);
@@ -558,6 +647,14 @@ fn b_binop(vm: &mut VM, _: u8) -> Value {
 fn b_unop(vm: &mut VM, _: u8) -> Value {
     let op = name_of(&vm.pop());
     let x = vm.pop();
+    // `-f` / `!f` reach `Ops.factor` with one argument, so they warn and give NA
+    // rather than negating the codes.
+    if let Some(r) = ops_factor(&op, &x, None) {
+        return match r {
+            Ok(v) => propagate(vm, v),
+            Err(e) => abort(vm, e),
+        };
+    }
     match op.as_str() {
         "-" => match data(&x) {
             RData::Int(v) => mk_int(v.iter().map(|e| e.map(|n| -n)).collect()),
@@ -596,8 +693,8 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
 
 /// `x %in% table`.
 fn value_in(x: &Value, table: &Value) -> Value {
-    let hay: Vec<Option<String>> = as_str(table);
-    let out = as_str(x)
+    let hay: Vec<Option<String>> = as_str_labels(table);
+    let out = as_str_labels(x)
         .into_iter()
         .map(|e| Some(hay.contains(&e)))
         .collect();
@@ -605,11 +702,108 @@ fn value_in(x: &Value, table: &Value) -> Value {
 }
 
 /// R's binary operators, vectorized with recycling and NA propagation.
+/// Emit a warning the way R's top-level handler does: the banner, the message,
+/// and — for a warning carrying no call — a trailing space before the newline.
+fn r_warning(msg: &str) {
+    eprintln!("Warning message:\n{msg} ");
+}
+
+/// R's `Ops.factor` / `Ops.ordered` group generics, or `None` when no operand is
+/// a factor.
+///
+/// A factor's integer codes are an implementation detail that an operator must
+/// never expose: `f == "a"` compares *labels*, and every operator with no
+/// meaning on a label set answers `NA` with a warning rather than silently
+/// comparing codes. `Ops.factor` allows only `==` and `!=`; `Ops.ordered`
+/// additionally allows `< > <= >=`, which compare level positions, and delegates
+/// `==`/`!=` back here via `NextMethod`.
+///
+/// `rhs` is `None` for a unary operator (`!f`).
+fn ops_factor(op: &str, lhs: &Value, rhs: Option<&Value>) -> Option<Result<Value, String>> {
+    let lf = is_factor(lhs);
+    let rf = rhs.is_some_and(is_factor);
+    // `:` is not a member of R's Ops group — on factors it builds an
+    // interaction, which is a separate primitive, so leave it alone.
+    if (!lf && !rf) || op == ":" {
+        return None;
+    }
+    let ordered = (lf && is_ordered(lhs)) || (rf && is_ordered(rhs.unwrap()));
+    let ok = match op {
+        "==" | "!=" => true,
+        "<" | ">" | "<=" | ">=" => ordered,
+        _ => false,
+    };
+    if !ok {
+        // R: `warning(gettextf("%s not meaningful for factors", sQuote(.Generic)))`
+        // — `sQuote` yields directional quotes — and `Ops.ordered`'s plainer
+        // `sprintf("'%s' is not meaningful for ordered factors", .Generic)`.
+        r_warning(&if ordered {
+            format!("'{op}' is not meaningful for ordered factors")
+        } else {
+            format!("\u{2018}{op}\u{2019} not meaningful for factors")
+        });
+        let n = len(lhs).max(rhs.map_or(0, len));
+        return Some(Ok(mk_lgl(vec![None; n])));
+    }
+    let rhs = rhs.expect("a binary operator reached the comparison path");
+    // Two factors must describe the same level set, whichever comparison it is.
+    if lf && rf {
+        let (l1, l2) = (levels_of(lhs), levels_of(rhs));
+        let mismatch = if op == "==" || op == "!=" {
+            // `Ops.factor` compares the level sets as sets.
+            let (mut a, mut b) = (l1.clone(), l2.clone());
+            a.sort();
+            b.sort();
+            a != b
+        } else {
+            // `Ops.ordered` compares them positionally — the order is the point.
+            l1 != l2
+        };
+        if mismatch {
+            return Some(Err("level sets of factors are different".into()));
+        }
+    }
+    if op == "==" || op == "!=" {
+        // Both sides become labels, then it is an ordinary string comparison.
+        return Some(compare(
+            op,
+            &mk_str(as_str_labels(lhs)),
+            &mk_str(as_str_labels(rhs)),
+        ));
+    }
+    // Ordering compares level *positions*. A side that is already ordered
+    // contributes its codes; a bare value is matched into the other's levels
+    // (`NA` when it is not a level at all, which makes the comparison NA).
+    let levels = if lf { levels_of(lhs) } else { levels_of(rhs) };
+    let rank = |v: &Value| -> Value {
+        if is_factor(v) {
+            mk_int(as_int(v))
+        } else {
+            mk_int(
+                as_str(v)
+                    .iter()
+                    .map(|s| {
+                        s.as_ref()
+                            .and_then(|s| levels.iter().position(|l| l == s))
+                            .map(|p| p as i64 + 1)
+                    })
+                    .collect(),
+            )
+        }
+    };
+    Some(compare(op, &rank(lhs), &rank(rhs)))
+}
+
 pub fn binop(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // An operator on a foreign R object (`date + months(3)`, `sparse %*% x`)
     // delegates to embedded R, which knows the S3/S4 method.
     if matches!(data(lhs), RData::RForeign(_)) || matches!(data(rhs), RData::RForeign(_)) {
         return cran_call(op, &[(None, lhs.clone()), (None, rhs.clone())]);
+    }
+    // A factor operand dispatches to R's group generic before any of the
+    // ordinary numeric/string paths can see its codes.
+    if let Some(r) = ops_factor(op, lhs, Some(rhs)) {
+        return r;
     }
     match op {
         "+" | "-" | "*" | "/" | "^" | "%%" | "%/%" => arith(op, lhs, rhs),
@@ -1118,6 +1312,17 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
             .collect();
         set_names(&out, sel);
     }
+    // `[.factor` puts the level table and class back on the subset codes, and
+    // `drop = TRUE` then re-levels to only the labels that survived.
+    carry_factor(&out, x);
+    let drop = args
+        .iter()
+        .find(|(t, _)| t.as_deref() == Some("drop"))
+        .and_then(|(_, v)| as_lgl(v).first().copied().flatten())
+        .unwrap_or(false);
+    if drop && is_factor(x) {
+        return Ok(drop_unused_levels(&out));
+    }
     Ok(out)
 }
 
@@ -1277,6 +1482,15 @@ fn index_double(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     };
     match data(x) {
         RData::List(v) => Ok(v.get(i).cloned().unwrap_or_else(null)),
+        // `[[.factor` restores the level table and class just as `[.factor`
+        // does, so `f[[2]]` is a length-1 factor, not a bare code. It has to be
+        // rebuilt rather than taken from `element_at`, whose unboxed scalar
+        // cannot carry attributes.
+        _ if is_factor(x) => {
+            let out = mk_int(vec![as_int(x).get(i).copied().flatten()]);
+            carry_factor(&out, x);
+            Ok(out)
+        }
         _ => Ok(element_at(x, i)),
     }
 }
@@ -2035,9 +2249,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "as.logical" => Ok(mk_lgl(as_lgl(&a.req(0, "x")?))),
         "as.vector" => {
+            let x = a.req(0, "x")?;
+            // `as.vector.factor` is the exception to the rule below: dropping a
+            // factor's attributes would leave the codes, so R hands back the
+            // labels instead.
+            if is_factor(&x) {
+                return Ok(mk_str(factor_labels(&x)));
+            }
             // `as.vector` drops attributes (names, dim, class, levels), so a
             // `table` collapses to its plain integer counts.
-            let out = copy_of(&a.req(0, "x")?);
+            let out = copy_of(&x);
             with_host(|h| {
                 let nl = h.null();
                 for attr in ["names", "dim", "class", "levels", "dimnames"] {
@@ -2288,7 +2509,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "identity" => a.req(0, "x"),
         "paste" | "paste0" => Ok(paste(&a, name == "paste0")),
         "toString" => {
-            let parts: Vec<String> = as_str(&a.req(0, "x")?)
+            let parts: Vec<String> = as_str_labels(&a.req(0, "x")?)
                 .into_iter()
                 .map(|s| s.unwrap_or_else(|| "NA".into()))
                 .collect();
@@ -2446,7 +2667,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = a.get(1, "length.out").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
             let src = len(&x).max(1);
             let pos: Vec<Option<usize>> = (0..n).map(|i| Some(i % src)).collect();
-            Ok(take_positions(&x, &pos))
+            let out = take_positions(&x, &pos);
+            carry_factor(&out, &x);
+            Ok(out)
         }
         "rev" => {
             let x = a.req(0, "x")?;
@@ -2457,6 +2680,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if !nm.is_empty() {
                 set_names(&out, nm.into_iter().rev().collect());
             }
+            // `rev.default` is `x[length(x):1L]`, so a factor stays one.
+            carry_factor(&out, &x);
             Ok(out)
         }
         "unname" => {
@@ -2527,7 +2752,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             } else {
                 (total as usize - k..total as usize).map(Some).collect()
             };
-            Ok(take_positions(&x, &pos))
+            let out = take_positions(&x, &pos);
+            // `head`/`tail` are `x[seq]`, which for a factor is `[.factor`.
+            carry_factor(&out, &x);
+            Ok(out)
         }
         "append" => {
             let x = a.req(0, "x")?;
@@ -2593,12 +2821,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     pos.push(Some(i));
                 }
             }
-            Ok(take_positions(&x, &pos))
+            let out = take_positions(&x, &pos);
+            // R's `unique` keeps a factor's full level table — the levels are a
+            // property of the variable, not of the values that happen to remain.
+            carry_factor(&out, &x);
+            Ok(out)
         }
         "setdiff" | "union" | "intersect" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "y")?;
-            let (xs, ys) = (as_str(&x), as_str(&y));
+            let (xs, ys) = (as_str_labels(&x), as_str_labels(&y));
             let mut pos = Vec::new();
             let mut seen: Vec<Option<String>> = Vec::new();
             for (i, k) in xs.iter().enumerate() {
@@ -2613,24 +2845,34 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
             }
             let head = take_positions(&x, &pos);
-            if name != "union" {
+            carry_factor(&head, &x);
+            if name == "setdiff" {
+                // `setdiff` is `x[match(x, y, 0L) == 0L]` — a subset of `x`, so
+                // it keeps exactly `x`'s levels.
                 return Ok(head);
             }
+            // `union` appends `y`'s new elements; `intersect` appends `y[0L]`.
+            // Both go through `c`, which is what widens the level set to the
+            // union — R's set operators are defined in terms of `c` precisely so
+            // that a factor result spans both operands' levels.
             let mut ypos = Vec::new();
-            for (i, k) in ys.iter().enumerate() {
-                if !seen.contains(k) {
-                    seen.push(k.clone());
-                    ypos.push(Some(i));
+            if name == "union" {
+                for (i, k) in ys.iter().enumerate() {
+                    if !seen.contains(k) {
+                        seen.push(k.clone());
+                        ypos.push(Some(i));
+                    }
                 }
             }
             let tail = take_positions(&y, &ypos);
+            carry_factor(&tail, &y);
             Ok(concat(&Args::new(vec![(None, head), (None, tail)])))
         }
         "match" => {
             // First position (1-based) of each `x` in `table`, else NA. String
             // coercion gives a type-agnostic equality that matches R here.
-            let xs = as_str(&a.req(0, "x")?);
-            let table = as_str(&a.req(1, "table")?);
+            let xs = as_str_labels(&a.req(0, "x")?);
+            let table = as_str_labels(&a.req(1, "table")?);
             Ok(mk_int(
                 xs.iter()
                     .map(|k| table.iter().position(|t| t == k).map(|p| p as i64 + 1))
@@ -2638,8 +2880,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             ))
         }
         "is.element" => {
-            let el = as_str(&a.req(0, "el")?);
-            let table = as_str(&a.req(1, "table")?);
+            let el = as_str_labels(&a.req(0, "el")?);
+            let table = as_str_labels(&a.req(1, "table")?);
             Ok(mk_lgl(el.iter().map(|k| Some(table.contains(k))).collect()))
         }
         "duplicated" => {
@@ -2937,6 +3179,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_dbl(if name == "sd" { var.sqrt() } else { var }))
         }
         "min" | "max" | "range" => {
+            // R's `Summary.factor` refuses every member of the group; only
+            // `Summary.ordered` allows `min`/`max`/`range`, and it answers with
+            // a factor over the same levels rather than a code.
+            if let Some(f) = a.all.iter().map(|(_, v)| v).find(|v| is_factor(v)) {
+                if !is_ordered(f) {
+                    return Err(format!("'{name}' not meaningful for factors"));
+                }
+                let levels = levels_of(f);
+                let codes: Vec<i64> = as_int(f).into_iter().flatten().collect();
+                let pick: Vec<Option<i64>> = match name {
+                    "min" => vec![codes.iter().min().copied()],
+                    "max" => vec![codes.iter().max().copied()],
+                    _ => vec![codes.iter().min().copied(), codes.iter().max().copied()],
+                };
+                return Ok(mk_factor(pick, levels, true));
+            }
             let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
             let mut xs: Vec<Option<f64>> = Vec::new();
             let mut strings: Vec<Option<String>> = Vec::new();
@@ -3972,7 +4230,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "split" => {
             let x = a.req(0, "x")?;
-            let f = as_str(&a.req(1, "f")?);
+            let f = as_str_labels(&a.req(1, "f")?);
             // Groups appear in sorted-level order (R uses the factor levels).
             let levels = factor_levels(&a.req(1, "f")?);
             let groups: Vec<Value> = levels
@@ -3984,7 +4242,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .filter(|(_, k)| k.as_deref() == Some(lev.as_str()))
                         .map(|(i, _)| Some(i))
                         .collect();
-                    take_positions(&x, &pos)
+                    let group = take_positions(&x, &pos);
+                    // Splitting a factor yields factors, levels intact.
+                    carry_factor(&group, &x);
+                    group
                 })
                 .collect();
             let out = mk_list(groups);
@@ -3993,7 +4254,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "tapply" => {
             let x = a.req(0, "X")?;
-            let index = as_str(&a.req(1, "INDEX")?);
+            let index = as_str_labels(&a.req(1, "INDEX")?);
             let f = a.req(2, "FUN")?;
             let levels = factor_levels(&a.req(1, "INDEX")?);
             let mut results = Vec::with_capacity(levels.len());
@@ -4549,8 +4810,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 None => factor_levels(&x),
             };
             // Each value's code is the 1-based index of its label in `levels`
-            // (NA when the value is not among the levels).
-            let codes: Vec<Option<i64>> = as_str(&x)
+            // (NA when the value is not among the levels). Re-factoring an
+            // existing factor matches on its labels, never its codes.
+            let codes: Vec<Option<i64>> = as_str_labels(&x)
                 .iter()
                 .map(|c| {
                     c.as_ref()
@@ -4558,20 +4820,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .map(|p| p as i64 + 1)
                 })
                 .collect();
-            let ordered = a.named("ordered").and_then(|v| lgl1(&v)).unwrap_or(false);
-            let out = mk_int(codes);
-            let lv = mk_str(levels.into_iter().map(Some).collect());
-            // An ordered factor carries `c("ordered", "factor")`.
-            let cls = if ordered {
-                mk_str(vec![Some("ordered".into()), Some("factor".into())])
-            } else {
-                scalar_str("factor")
-            };
-            with_host(|h| {
-                h.set_attr(&out, "levels", lv);
-                h.set_attr(&out, "class", cls);
-            });
-            Ok(out)
+            // R's default is `ordered = is.ordered(x)`, so re-factoring an
+            // ordered factor keeps it ordered.
+            let ordered = a
+                .named("ordered")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or_else(|| is_ordered(&x));
+            Ok(mk_factor(codes, levels, ordered))
         }
         "levels" => {
             let x = a.req(0, "x")?;
@@ -4584,38 +4839,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .unwrap_or(0);
             Ok(scalar_int(n as i64))
         }
-        "droplevels" => {
-            // Drop levels that no longer occur, renumbering the codes.
-            let x = a.req(0, "x")?;
-            let old_levels: Vec<String> = with_host(|h| h.attr(&x, "levels"))
-                .map(|l| as_str(&l).into_iter().flatten().collect())
-                .unwrap_or_default();
-            let codes = as_int(&x);
-            let mut kept: Vec<usize> = Vec::new();
-            for c in codes.iter().flatten() {
-                let idx = (*c - 1) as usize;
-                if idx < old_levels.len() && !kept.contains(&idx) {
-                    kept.push(idx);
-                }
-            }
-            kept.sort_unstable();
-            let new_levels: Vec<String> = kept.iter().map(|&i| old_levels[i].clone()).collect();
-            let new_codes: Vec<Option<i64>> = codes
-                .iter()
-                .map(|c| {
-                    c.and_then(|c| kept.iter().position(|&i| i == (c - 1) as usize))
-                        .map(|p| p as i64 + 1)
-                })
-                .collect();
-            let out = mk_int(new_codes);
-            let lv = mk_str(new_levels.into_iter().map(Some).collect());
-            let cls = with_host(|h| h.attr(&x, "class")).unwrap_or_else(|| scalar_str("factor"));
-            with_host(|h| {
-                h.set_attr(&out, "levels", lv);
-                h.set_attr(&out, "class", cls);
-            });
-            Ok(out)
-        }
+        // `droplevels.factor` is `factor(x, exclude = …)` — drop the levels that
+        // no longer occur and renumber the codes.
+        "droplevels" => Ok(drop_unused_levels(&a.req(0, "x")?)),
         "cut" => cut(&a),
         "table" => {
             let x = a.req(0, "x")?;
@@ -4901,6 +5127,39 @@ fn concat(a: &Args) -> Value {
         }
     }
 
+    // `c.factor`: when *every* argument is a factor the result is a factor over
+    // the union of their level sets, so the codes are re-mapped rather than
+    // concatenated. A single non-factor argument drops the whole result to
+    // `unlist`'s plain coercion — which is why `c(f, "q")` yields the codes as
+    // text, not the labels.
+    if parts.iter().all(|(_, v)| is_factor(v)) {
+        let mut levels: Vec<String> = Vec::new();
+        for (_, v) in &parts {
+            for l in levels_of(v) {
+                if !levels.contains(&l) {
+                    levels.push(l);
+                }
+            }
+        }
+        let codes = parts
+            .iter()
+            .flat_map(|(_, v)| factor_labels(v))
+            .map(|s| {
+                s.and_then(|s| levels.iter().position(|l| *l == s))
+                    .map(|p| p as i64 + 1)
+            })
+            .collect();
+        // The result stays ordered only when every argument is ordered over the
+        // *same* levels; otherwise the combined order would be invented.
+        let ordered = parts
+            .iter()
+            .all(|(_, v)| is_ordered(v) && levels_of(v) == levels);
+        let out = mk_factor(codes, levels, ordered);
+        if any_named {
+            set_names(&out, names);
+        }
+        return out;
+    }
     let out = if rank >= 5 {
         mk_list(parts.iter().flat_map(|(_, v)| elements(v)).collect())
     } else {
@@ -4992,7 +5251,7 @@ fn paste(a: &Args, zero: bool) -> Value {
         .all
         .iter()
         .filter(|(t, _)| !matches!(t.as_deref(), Some("sep") | Some("collapse")))
-        .map(|(_, v)| as_str(v))
+        .map(|(_, v)| as_str_labels(v))
         .collect();
     // Every argument contributes a field, even a zero-length one — it just
     // contributes the empty string. That is why `paste("a", NULL, "b")` is
@@ -5148,7 +5407,19 @@ fn rep(a: &Args) -> Value {
             m => (0..want).map(|i| pos[i % m]).collect(),
         };
     }
-    take_positions(&x, &pos)
+    let out = take_positions(&x, &pos);
+    let nm = names_of(&x);
+    if !nm.is_empty() {
+        set_names(
+            &out,
+            pos.iter()
+                .map(|p| p.and_then(|i| nm.get(i).cloned().flatten()))
+                .collect(),
+        );
+    }
+    // `rep.factor` is `structure(NextMethod(), class = class(x), levels = levels(x))`.
+    carry_factor(&out, &x);
+    out
 }
 
 fn sort_value(x: &Value, decreasing: bool, na_last: Option<bool>) -> Value {
@@ -5164,6 +5435,9 @@ fn sort_value(x: &Value, decreasing: bool, na_last: Option<bool>) -> Value {
                 .collect(),
         );
     }
+    // `sort.default` sorts an object with `x[order(x, ...)]`, so a factor's
+    // levels and class survive the reorder.
+    carry_factor(&out, x);
     out
 }
 
@@ -5581,6 +5855,12 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
 /// input sorts by value (so `10` follows `2`, not precedes it), character input
 /// sorts lexically.
 fn factor_levels(x: &Value) -> Vec<String> {
+    // An existing factor already carries its level table, in the order that
+    // defines it — re-deriving it from the codes would both re-sort it and
+    // report the codes as the labels.
+    if is_factor(x) {
+        return levels_of(x);
+    }
     // Logicals level as their labels, not their 0/1 codes: R's
     // `levels(factor(c(TRUE, FALSE)))` is `"FALSE" "TRUE"`, which the string
     // branch's sort already yields.
@@ -5821,14 +6101,7 @@ fn cut(a: &Args) -> Result<Value, String> {
             })
         })
         .collect();
-    let out = mk_int(codes);
-    let lv = mk_str(labels.into_iter().map(Some).collect());
-    let cls = scalar_str("factor");
-    with_host(|h| {
-        h.set_attr(&out, "levels", lv);
-        h.set_attr(&out, "class", cls);
-    });
-    Ok(out)
+    Ok(mk_factor(codes, labels, false))
 }
 
 /// Format an interval endpoint for a `cut` label — R's `dig.lab = 3`.
@@ -6710,17 +6983,21 @@ fn format_factor(v: &Value) -> Vec<String> {
                 .unwrap_or_else(|| "<NA>".into())
         })
         .collect();
+    let ordered = class_of(v).iter().any(|c| c == "ordered");
+    let names = names_of(v);
     let mut out = if labels.is_empty() {
-        vec!["factor(0)".to_string()]
-    } else {
+        // A zero-length factor prints as `factor()` / `ordered()` — the empty
+        // *call*, not the `type(0)` form a plain empty vector uses.
+        vec![format!("{}()", if ordered { "ordered" } else { "factor" })]
+    } else if names.is_empty() {
         layout_indexed(&labels, true)
+    } else {
+        // A named factor prints its names above the labels, like any named
+        // vector — the `Levels:` line still follows.
+        layout_named(&names, &labels)
     };
     // An ordered factor separates its levels with `<`.
-    let sep = if class_of(v).iter().any(|c| c == "ordered") {
-        " < "
-    } else {
-        " "
-    };
+    let sep = if ordered { " < " } else { " " };
     out.push(format!("Levels: {}", levels.join(sep)));
     out
 }
@@ -6757,6 +7034,47 @@ fn layout_indexed(cells: &[String], left_align: bool) -> Vec<String> {
     out
 }
 
+/// A named vector's two-row layout: names above values, sharing one column
+/// width, both right-justified, wrapped at 80 columns. Shared by the plain
+/// vector printer and the factor printer, which differ only in how they render
+/// a cell.
+fn layout_named(names: &[Option<String>], cells: &[String]) -> Vec<String> {
+    const WIDTH: usize = 80;
+    let n = cells.len();
+    let labels: Vec<String> = (0..n)
+        .map(|i| {
+            names
+                .get(i)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| "<NA>".into())
+        })
+        .collect();
+    let w = labels
+        .iter()
+        .chain(cells.iter())
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(1);
+    let per_line = (WIDTH / (w + 1)).max(1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let take = per_line.min(n - i);
+        let row = |src: &[String]| {
+            (i..i + take)
+                .map(|k| format!("{:>w$}", src[k], w = w))
+                .collect::<Vec<_>>()
+                .join(" ")
+                + " "
+        };
+        out.push(row(&labels));
+        out.push(row(cells));
+        i += take;
+    }
+    out
+}
+
 fn format_vector(v: &Value) -> Vec<String> {
     let n = len(v);
     if n == 0 {
@@ -6785,39 +7103,7 @@ fn format_vector(v: &Value) -> Vec<String> {
     };
 
     if !names.is_empty() {
-        // Named vectors print as name/value rows sharing one column width.
-        let labels: Vec<String> = (0..n)
-            .map(|i| {
-                names
-                    .get(i)
-                    .cloned()
-                    .flatten()
-                    .unwrap_or_else(|| "<NA>".into())
-            })
-            .collect();
-        let w = labels
-            .iter()
-            .chain(cells.iter())
-            .map(|s| s.chars().count())
-            .max()
-            .unwrap_or(1);
-        let per_line = (WIDTH / (w + 1)).max(1);
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < n {
-            let take = per_line.min(n - i);
-            let row = |src: &[String]| {
-                (i..i + take)
-                    .map(|k| format!("{:>w$}", src[k], w = w))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    + " "
-            };
-            out.push(row(&labels));
-            out.push(row(&cells));
-            i += take;
-        }
-        return out;
+        return layout_named(&names, &cells);
     }
 
     let cell_w = cells.iter().map(|c| c.chars().count()).max().unwrap_or(1);
