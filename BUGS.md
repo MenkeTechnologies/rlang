@@ -4,10 +4,12 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 60
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 61
 surfaces. The fuzzer currently reports **zero** divergences across those
-surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
-remains below is structural — whole subsystems, not per-primitive gaps.
+surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty), and a
+run that compared nothing — no cases generated, or an oracle that never answered
+— now exits 2 rather than reporting that zero. What remains below is structural
+— whole subsystems, not per-primitive gaps.
 
 ## Evaluation model
 

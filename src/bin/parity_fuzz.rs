@@ -1126,6 +1126,77 @@ fn gen_restarts(seed: u64) -> Vec<String> {
     })
 }
 
+/// Every other generator draws its strings from `WORDS`, which is pure ASCII —
+/// the one alphabet where R's three string units (code points, UTF-8 bytes,
+/// terminal columns) all agree. So none of them could ever see a unit confusion.
+/// This pool exists to break that: accented Latin (2 bytes, 1 column), CJK and
+/// emoji (wide, 2 columns), a combining mark (0 columns), and the characters
+/// whose full Unicode case mapping changes length while R's per-character one
+/// does not (`ß`, `ﬁ`, `İ`, final sigma).
+const UWORDS: &[&str] = &[
+    "café",
+    "naïve",
+    "日本語",
+    "한글",
+    "Привет",
+    "Ωμέγα",
+    "straße",
+    "ﬁx",
+    "İstanbul",
+    "ΣΑΣ",
+    "e\\u0301",
+    "😀ok",
+    "a\\u3000b",
+    "→←",
+];
+
+fn uw<'a>(r: &mut Rng) -> &'a str {
+    r.pick(UWORDS)
+}
+
+/// A `c("…", "…")` of 2–3 non-ASCII words.
+fn vec_uw(r: &mut Rng) -> String {
+    let n = r.range(2, 3) as usize;
+    let items: Vec<String> = (0..n).map(|_| format!("\"{}\"", uw(r))).collect();
+    format!("c({})", items.join(", "))
+}
+
+/// Strings measured and laid out in every unit R uses: `nchar(type=)`, the
+/// byte-counted `sprintf` field width, and the column-counted `print` / `format`
+/// / `formatC` / `strtrim` layouts — plus the per-character case map and the
+/// code-point round trip.
+fn gen_strwidth(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let s = uw(r);
+    let v = vec_uw(r);
+    let w = r.range(1, 10);
+    one(match r.below(20) {
+        0 => format!("nchar(\"{s}\")"),
+        1 => format!("nchar(\"{s}\", type = \"bytes\")"),
+        2 => format!("nchar(\"{s}\", type = \"width\")"),
+        3 => format!(
+            "nchar({v}, type = \"{}\")",
+            r.pick(&["chars", "bytes", "width"])
+        ),
+        4 => format!("sprintf(\"[%{w}s]\", \"{s}\")"),
+        5 => format!("sprintf(\"[%-{w}s]\", \"{s}\")"),
+        6 => format!("print({v})"),
+        7 => format!("print(c(a = \"{s}\", bb = \"{}\"))", uw(r)),
+        8 => format!("print(matrix({v}, 1))"),
+        9 => format!("print(format({v}))"),
+        10 => format!("print(format(\"{s}\", width = {w}))"),
+        11 => format!("cat(\"[\", formatC(\"{s}\", width = {w}), \"]\\n\")"),
+        12 => format!("cat(\"[\", formatC(\"{s}\", width = {w}, flag = \"-\"), \"]\\n\")"),
+        13 => format!("cat(strtrim(\"{s}\", {w}), \"\\n\")"),
+        14 => format!("print(utf8ToInt(\"{s}\"))"),
+        15 => format!("print(intToUtf8(utf8ToInt(\"{s}\")))"),
+        16 => format!("print(intToUtf8(utf8ToInt(\"{s}\"), multiple = TRUE))"),
+        17 => format!("cat(toupper(\"{s}\"), tolower(\"{s}\"), \"\\n\")"),
+        18 => format!("print(nchar(toupper({v}), type = \"bytes\"))"),
+        _ => format!("print(substr(\"{s}\", 1, {}))", r.range(1, 4)),
+    })
+}
+
 fn gen_trig(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let f = ff(r);
@@ -1736,6 +1807,7 @@ enum Mode {
     Conditions,
     Calling,
     Restarts,
+    Strwidth,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1799,6 +1871,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Conditions,
     Mode::Calling,
     Mode::Restarts,
+    Mode::Strwidth,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1863,6 +1936,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Conditions => gen_conditions(seed),
         Mode::Calling => gen_calling(seed),
         Mode::Restarts => gen_restarts(seed),
+        Mode::Strwidth => gen_strwidth(seed),
     }
 }
 
@@ -2286,6 +2360,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Conditions => "conditions",
         Mode::Calling => "calling",
         Mode::Restarts => "restarts",
+        Mode::Strwidth => "strwidth",
     }
 }
 
