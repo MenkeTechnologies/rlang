@@ -18,6 +18,14 @@
 //! own directory and the oracle from an absolute system path — neither can
 //! resolve to the other. See `ours_bin` / `oracle_path`.
 //!
+//! A clean run is only meaningful if it looked at something, so the run is
+//! accounted in three buckets and every one of them reaches the exit status:
+//! `compared` (the oracle answered and at least one side produced output),
+//! `drained` (the oracle timed out or would not spawn, so the case was never
+//! judged), and `no-signal` (both sides silent, which agrees trivially). If
+//! `compared` is zero the run exits 2 instead of reporting "0 divergences" —
+//! see the tail of [`main`].
+//!
 //! The generators are biased toward the historically weak areas of an R
 //! frontend: vector print-width/alignment, float shortest-repr and `digits`,
 //! `seq`/`rep` with fractional `by`, `sprintf`/`formatC` specs, named-vector and
@@ -251,6 +259,22 @@ fn differs(a: &RunOut, b: &RunOut) -> bool {
         return norm_stderr(&a.stderr) != norm_stderr(&b.stderr);
     }
     false
+}
+
+/// Did this pair carry any *evidence*? Two runs that both printed nothing agree
+/// trivially: the case exercised no observable behaviour, so counting it as a
+/// match inflates the denominator without testing anything. A run made entirely
+/// of these is a run that compared nothing, and [`main`] refuses to pass it.
+fn no_signal(a: &RunOut, b: &RunOut) -> bool {
+    if !a.stdout.is_empty() || !b.stdout.is_empty() {
+        return false;
+    }
+    if CMP_STDERR.load(Ordering::Relaxed)
+        && (!norm_stderr(&a.stderr).is_empty() || !norm_stderr(&b.stderr).is_empty())
+    {
+        return false;
+    }
+    true
 }
 
 /// Spawn `cmd` and wait up to `timeout`, killing it if it overruns.
@@ -2525,7 +2549,11 @@ fn main() {
         let script = build_program(&stmts);
         let o = run_oracle(&script, timeout);
         let r = run_ours(&script, &bin, timeout);
-        let diverged = !o.timed_out && differs(&o, &r);
+        if o.timed_out || o.exit == -999 || o.exit == -998 {
+            eprintln!("parity-fuzz: the oracle did not answer this case — nothing to compare");
+            std::process::exit(2);
+        }
+        let diverged = differs(&o, &r);
         println!("seed   : {}", args.base_seed);
         println!("mode   : {}", mode_name(mode));
         let (show, o, r) = if diverged && stmts.len() > 1 {
@@ -2552,6 +2580,12 @@ fn main() {
     let next = AtomicU64::new(0);
     let checked = AtomicU64::new(0);
     let timeouts = AtomicU64::new(0);
+    // Cases the oracle could not answer (it timed out, or would not spawn) and
+    // cases where neither side said anything: both drain out of the divergence
+    // count without ever having been compared.
+    let drained = AtomicU64::new(0);
+    let silent = AtomicU64::new(0);
+    let compared = AtomicU64::new(0);
     let stop = AtomicBool::new(false);
     let divergences: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
     let start = Instant::now();
@@ -2584,6 +2618,13 @@ fn main() {
                     timeouts.fetch_add(1, Ordering::Relaxed);
                 }
                 // oracle-side timeout ⇒ pathological case; not a parity gap.
+                if o.timed_out || o.exit == -999 || o.exit == -998 {
+                    drained.fetch_add(1, Ordering::Relaxed);
+                } else if no_signal(&o, &r) {
+                    silent.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    compared.fetch_add(1, Ordering::Relaxed);
+                }
                 if !o.timed_out && differs(&o, &r) {
                     let minimal = minimize(stmts, &bin, timeout);
                     let mscript = build_program(&minimal);
@@ -2647,6 +2688,9 @@ fn main() {
 
     let checked = checked.load(Ordering::Relaxed);
     let timeouts = timeouts.load(Ordering::Relaxed);
+    let drained = drained.load(Ordering::Relaxed);
+    let silent = silent.load(Ordering::Relaxed);
+    let compared = compared.load(Ordering::Relaxed);
     let mut divergences: Vec<(u64, String)> = divergences.into_inner().unwrap();
     divergences.sort_by_key(|(seed, _)| *seed);
     let divergences: Vec<String> = divergences.into_iter().map(|(_, r)| r).collect();
@@ -2687,6 +2731,7 @@ fn main() {
     println!(
         "\nfuzzed {checked} cases in {:.1}s ({:.0}/s)\n\
          oracle      : {}\n\
+         compared    : {compared} (drained {drained} / no-signal {silent})\n\
          divergences : {} ({} known / {} new)\n\
          timeouts    : {}",
         elapsed.as_secs_f64(),
@@ -2713,6 +2758,22 @@ fn main() {
                 args.out_path.display()
             );
         }
+    }
+
+    // "0 divergences" is only good news when something was compared. A run that
+    // generated no cases (`--count 0`), whose oracle never answered (a timeout
+    // short enough to kill every case, an unusable `Rscript`), or whose cases
+    // were all silent on both sides, has proved nothing — fail it rather than
+    // report a clean sheet. This is the difference between "no gaps found" and
+    // "no look taken". It runs after the report is written, so whatever evidence
+    // the run did collect survives on disk.
+    if compared == 0 {
+        eprintln!(
+            "parity-fuzz: nothing was compared — {checked} case(s) generated, \
+             {drained} drained, {silent} with no output on either side. \
+             A run that compares nothing cannot pass."
+        );
+        std::process::exit(2);
     }
 
     if !new_records.is_empty() {
