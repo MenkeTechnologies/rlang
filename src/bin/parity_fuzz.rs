@@ -1197,6 +1197,55 @@ fn gen_strwidth(seed: u64) -> Vec<String> {
     })
 }
 
+/// Character ordering runs through the `LC_COLLATE` locale, not code points, so
+/// R sorts `c("B", "a")` as `a B`.
+///
+/// Nothing else here could see that. `gen_sortops` only ever sorts integers, so
+/// no character vector reaches `sort`/`order`/`rank` at all; and `WORDS` — the
+/// pool every string generator draws from — is uniformly lowercase, which is
+/// exactly the case where collation and code-point order agree. The divergence
+/// needs a *case* difference or an accent, so this pool carries both.
+const CWORDS: &[&str] = &[
+    "Apple", "apple", "banana", "Banana", "Cherry", "cherry", "aB", "Ab", "ab", "AB", "zoo", "Zoo",
+    "café", "Café", "élan", "Élan", "straße", "Strasse", "ñu", "Ñu", "ΣΑΣ", "σας", "_x", "0a",
+];
+
+fn cw<'a>(r: &mut Rng) -> &'a str {
+    r.pick(CWORDS)
+}
+
+/// A `c("…", "…")` of 3–5 words that differ in case or accent.
+fn vec_cw(r: &mut Rng) -> String {
+    let n = r.range(3, 5) as usize;
+    let items: Vec<String> = (0..n).map(|_| format!("\"{}\"", cw(r))).collect();
+    format!("c({})", items.join(", "))
+}
+
+/// Every surface that orders character data: the sort family, the ordering
+/// permutation, the extremes, the comparison operators, and the default
+/// `factor` levels (which are `sort(unique(x))`).
+fn gen_collate(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = vec_cw(r);
+    let (a, b) = (cw(r), cw(r));
+    one(match r.below(14) {
+        0 => format!("print(sort({v}))"),
+        1 => format!("print(sort({v}, decreasing = TRUE))"),
+        2 => format!("print(order({v}))"),
+        3 => format!("print(rank({v}))"),
+        4 => format!("print(xtfrm({v}))"),
+        5 => format!("print(sort.list({v}))"),
+        6 => format!("cat(min({v}), max({v}), \"\\n\")"),
+        7 => format!("print(range({v}))"),
+        8 => format!("cat(\"{a}\" < \"{b}\", \"{a}\" > \"{b}\", \"{a}\" <= \"{b}\", \"\\n\")"),
+        9 => format!("cat(\"{a}\" == \"{b}\", \"{a}\" != \"{b}\", \"\\n\")"),
+        10 => format!("print(levels(factor({v})))"),
+        11 => format!("print(table({v}))"),
+        12 => format!("print(rev(sort({v})))"),
+        _ => format!("print(sort(unique({v})))"),
+    })
+}
+
 fn gen_trig(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let f = ff(r);
@@ -1808,6 +1857,7 @@ enum Mode {
     Calling,
     Restarts,
     Strwidth,
+    Collate,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1872,6 +1922,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Calling,
     Mode::Restarts,
     Mode::Strwidth,
+    Mode::Collate,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1937,6 +1988,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Calling => gen_calling(seed),
         Mode::Restarts => gen_restarts(seed),
         Mode::Strwidth => gen_strwidth(seed),
+        Mode::Collate => gen_collate(seed),
     }
 }
 
@@ -2361,6 +2413,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Calling => "calling",
         Mode::Restarts => "restarts",
         Mode::Strwidth => "strwidth",
+        Mode::Collate => "collate",
     }
 }
 

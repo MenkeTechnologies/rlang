@@ -286,15 +286,15 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 61 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across 62 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, factor subsetting and factor
 operators, set/bit ops, trig, gamma/`choose`,
 `pmax`/`pmin`, string translation, closure deparse, `rbind`/`cbind` seam labels,
 `dimnames` replacement, `sort`/`order` with missing values, `NA`-versus-`NaN`
 propagation, S3 methods on the generic primitives, `cat` argument handling,
-non-ASCII string measurement and layout, …) and runs each through the
-reference `Rscript --vanilla -e` and rlang's own `Rscript -e`, reporting every
-case where stdout or exit code diverges. Both binaries share the name `Rscript`,
+non-ASCII string measurement and layout, character collation, …) and runs each
+through the reference `Rscript --vanilla -e` and rlang's own `Rscript -e`,
+reporting every case where stdout or exit code diverges. Both binaries share the name `Rscript`,
 so each is resolved by absolute path — the reference from a system path, rlang's
 from this harness's own directory — and can never be confused. Generators emit
 only deterministic-output programs (no `Sys.time`, RNG, or environment prints),
@@ -310,7 +310,7 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 61 surfaces over
+The fuzzer currently reports **zero** divergences across its 62 surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,
