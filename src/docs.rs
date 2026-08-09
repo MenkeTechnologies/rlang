@@ -457,7 +457,17 @@ const ORDERING: &[Entry] = &[
     (
         "rank",
         "rank(x)",
-        "Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = \"average\". The result is always a double vector.",
+        "Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = \"average\". Character input ranks in collation order, and the missing values take the trailing ranks. The result is always a double vector.",
+    ),
+    (
+        "sort.list",
+        "sort.list(x, decreasing = FALSE, na.last = TRUE)",
+        "The 1-based permutation that sorts a single key — order() over one vector. na.last places the missing values: last by default, first for FALSE, dropped for NA, in which case the positions index the vector with the missing values already removed.",
+    ),
+    (
+        "xtfrm",
+        "xtfrm(x)",
+        "The numeric key that sorts x. A plain numeric vector is already that key and is returned unchanged, names and all; character, logical and factor input ranks in collation order with tied values sharing the lowest slot they occupy, and missing values staying NA.",
     ),
     (
         "which",

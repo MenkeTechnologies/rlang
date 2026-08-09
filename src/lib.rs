@@ -10,6 +10,7 @@
 // identically on native and on `wasm32-unknown-unknown`.
 pub mod ast;
 pub mod builtins;
+pub mod collate;
 pub mod compiler;
 pub mod deparse;
 // The reference corpus is plain data (no OS, no host), so it builds everywhere

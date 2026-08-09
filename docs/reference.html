@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 255 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 257 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 275 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 277 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 255 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 257 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -138,7 +138,7 @@
         <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
         <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">18</span></li>
         <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
-        <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">13</span></li>
+        <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
         <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">28</span></li>
@@ -551,7 +551,7 @@
     </section>
     <section class="tutorial-section" id="ch-ordering-and-sets">
       <h2>Ordering and sets</h2>
-      <p class="chapter-meta">13 entries</p>
+      <p class="chapter-meta">15 entries</p>
       <article class="doc-entry" id="doc-sort">
         <h3><a class="doc-anchor" href="#doc-sort">#</a> <code>sort</code></h3>
         <pre><code class="lang-r r">sort(x, decreasing = FALSE, na.last = NA, index.return = FALSE)
@@ -610,7 +610,19 @@
         <h3><a class="doc-anchor" href="#doc-rank">#</a> <code>rank</code></h3>
         <pre><code class="lang-r r">rank(x)
 </code></pre>
-        <p>Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = "average". The result is always a double vector.</p>
+        <p>Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = "average". Character input ranks in collation order, and the missing values take the trailing ranks. The result is always a double vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-sort-list">
+        <h3><a class="doc-anchor" href="#doc-sort-list">#</a> <code>sort.list</code></h3>
+        <pre><code class="lang-r r">sort.list(x, decreasing = FALSE, na.last = TRUE)
+</code></pre>
+        <p>The 1-based permutation that sorts a single key — order() over one vector. na.last places the missing values: last by default, first for FALSE, dropped for NA, in which case the positions index the vector with the missing values already removed.</p>
+      </article>
+      <article class="doc-entry" id="doc-xtfrm">
+        <h3><a class="doc-anchor" href="#doc-xtfrm">#</a> <code>xtfrm</code></h3>
+        <pre><code class="lang-r r">xtfrm(x)
+</code></pre>
+        <p>The numeric key that sorts x. A plain numeric vector is already that key and is returned unchanged, names and all; character, logical and factor input ranks in collation order with tied values sharing the lowest slot they occupy, and missing values staying NA.</p>
       </article>
       <article class="doc-entry" id="doc-which">
         <h3><a class="doc-anchor" href="#doc-which">#</a> <code>which</code></h3>

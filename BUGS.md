@@ -166,9 +166,22 @@ run that compared nothing — no cases generated, or an oracle that never answer
   - **A surrogate code point is rejected.** R takes `"\uD800"` with a warning.
   - **`sprintf("%.Ns", x)` cuts on a character boundary,** where R cuts at
     exactly N bytes and can emit half a sequence.
-- **`sort()` on character orders by code point, not by locale collation.** R
-  collates through the system locale, so it answers `a é z` where rlang answers
-  `a z é`. Matching it needs a collation table rlang does not carry.
+- **Character data orders through the collation locale, as R's does.** `sort`,
+  `order`, `rank`, `xtfrm`, `sort.list`, `min`/`max`/`range`, `<`/`>`/`<=`/`>=`
+  and the default `factor` levels all collate, so `sort(c("B", "a"))` is `a B`
+  and `"a" < "B"` is `TRUE`. This was previously recorded here as needing "a
+  collation table rlang does not carry" and as an accented-character corner
+  (`a é z` vs `a z é`); both were wrong. The gap covered every mixed-case
+  character vector — plain ASCII — and `icu_collator`'s root ordering matches
+  the reference R exactly, diffed over 500 generated groups mixing Latin,
+  accents, Greek, Cyrillic, CJK, Hangul, digits and punctuation. Only the `C`
+  locale orders by code point, and rlang follows R there too. Two limits remain:
+  - **Collation is ICU's *root* ordering, not a per-locale tailoring.** `en_US`,
+    `de_DE` and `fr_FR` were measured to agree with root; a locale that really
+    tailors (Swedish, where `ä` sorts after `z`) would diverge.
+  - **`LC_ALL=POSIX` is treated as the `C` locale**, which is what POSIX
+    specifies and what glibc does. The reference R on Darwin instead falls back
+    to the system `strcoll` there and answers `é a b B z`.
 - **190 code points case-map differently**, measured by sweeping every code point
   against the reference `Rscript`: they are characters R's own case table
   predates (Vithkuqi `U+10570…`, the `U+A7C0…U+A7DC` Latin additions, `U+1C89`,

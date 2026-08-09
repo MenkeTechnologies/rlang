@@ -87,6 +87,13 @@ path = "src/bin/parity_fuzz.rs"
 [dependencies]
 fusevm = { version = "0.17.0" }
 
+# R orders character data through the `LC_COLLATE` locale, not by code point, so
+# `sort(c("B", "a"))` is `a B`. The reference R collates through ICU
+# (`capabilities("ICU")` is TRUE); this is the same root ordering in pure Rust,
+# which keeps the answer identical across macOS and Linux instead of inheriting
+# whatever the platform's `strcoll` does. See src/collate.rs.
+icu_collator = "2.2.1"
+
 # R vectors and lists carry ordered `names`; attribute maps are insertion-ordered
 # and observable (`attributes(x)`), so IndexMap is the right container.
 indexmap = "2"

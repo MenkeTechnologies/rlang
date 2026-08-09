@@ -939,7 +939,7 @@ fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         for i in 0..n {
             let (x, y) = (&a[i % a.len()], &b[i % b.len()]);
             out.push(match (x, y) {
-                (Some(x), Some(y)) => Some(cmp_result(op, x.cmp(y))),
+                (Some(x), Some(y)) => Some(cmp_result(op, crate::collate::str_cmp(x, y))),
                 _ => None,
             });
         }
@@ -1970,6 +1970,8 @@ pub const PRIMITIVES: &[&str] = &[
     "is.element",
     "duplicated",
     "rank",
+    "sort.list",
+    "xtfrm",
     "any",
     "all",
     "xor",
@@ -2913,6 +2915,61 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .collect(),
             ))
         }
+        "sort.list" => {
+            // `order` over a single key. With `na.last = NA` the missing values
+            // are dropped *before* the positions are taken, so the answer
+            // indexes the compacted vector: `sort.list(c("b", NA, "a"),
+            // na.last = NA)` is `2 1`, not `3 1`.
+            let x = a.req(0, "x")?;
+            let decreasing = a
+                .named("decreasing")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(false);
+            let na_last = na_last_arg(&a, Some(true));
+            let ord = order_by_keys(std::slice::from_ref(&x), decreasing, na_last);
+            let out: Vec<Option<i64>> = if na_last.is_none() {
+                let key = SortKey::of(&x);
+                let mut compacted = vec![0i64; len(&x)];
+                let mut next = 0;
+                for (i, slot) in compacted.iter_mut().enumerate() {
+                    if !key.missing(i) {
+                        next += 1;
+                        *slot = next;
+                    }
+                }
+                ord.into_iter().map(|i| Some(compacted[i])).collect()
+            } else {
+                ord.into_iter().map(|i| Some(i as i64 + 1)).collect()
+            };
+            Ok(mk_int(out))
+        }
+        "xtfrm" => {
+            // The numeric key that sorts `x`. A plain numeric vector already is
+            // that key and comes back untouched, names and all; everything else
+            // ranks with `ties.method = "min"` (so `c("b", "b", "a")` is
+            // `2 2 1`, where `rank` would average to `2.5 2.5 1`) and keeps NA.
+            let x = a.req(0, "x")?;
+            if !is_factor(&x) && matches!(data(&x), RData::Int(_) | RData::Dbl(_)) {
+                return Ok(x);
+            }
+            let key = SortKey::of(&x);
+            let n = len(&x);
+            let mut good: Vec<usize> = (0..n).filter(|&i| !key.missing(i)).collect();
+            good.sort_by(|&i, &j| key.cmp(i, j));
+            let mut out: Vec<Option<i64>> = vec![None; n];
+            let mut i = 0;
+            while i < good.len() {
+                let mut j = i + 1;
+                while j < good.len() && key.cmp(good[j], good[i]).is_eq() {
+                    j += 1;
+                }
+                for &k in &good[i..j] {
+                    out[k] = Some(i as i64 + 1);
+                }
+                i = j;
+            }
+            Ok(mk_int(out))
+        }
         "unique" => {
             let x = a.req(0, "x")?;
             let keys = as_str(&x);
@@ -3004,28 +3061,33 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "rank" => {
             // Average ranks with ties, like R's default `ties.method="average"`.
-            let xs = as_dbl(&a.req(0, "x")?);
-            let n = xs.len();
-            let mut idx: Vec<usize> = (0..n).collect();
-            idx.sort_by(|&i, &j| {
-                xs[i]
-                    .partial_cmp(&xs[j])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // The key is typed rather than coerced to double: character input
+            // ranks in collation order, so `rank(c("b", "b", "a"))` is
+            // `2.5 2.5 1` and not one universal tie.
+            let x = a.req(0, "x")?;
+            let key = SortKey::of(&x);
+            let n = len(&x);
+            let mut good: Vec<usize> = (0..n).filter(|&i| !key.missing(i)).collect();
+            good.sort_by(|&i, &j| key.cmp(i, j));
             let mut ranks = vec![0.0; n];
             let mut i = 0;
-            while i < n {
+            while i < good.len() {
                 let mut j = i + 1;
-                while j < n && xs[idx[j]] == xs[idx[i]] {
+                while j < good.len() && key.cmp(good[j], good[i]).is_eq() {
                     j += 1;
                 }
                 // positions i..j are tied; their shared rank is the average of
                 // the 1-based slots i+1..=j.
                 let avg = ((i + 1 + j) as f64) / 2.0;
-                for &k in &idx[i..j] {
+                for &k in &good[i..j] {
                     ranks[k] = avg;
                 }
                 i = j;
+            }
+            // `na.last = TRUE`, R's default for `rank`: the missing values take
+            // the trailing ranks, in the order they appear.
+            for (slot, i) in (0..n).filter(|&i| key.missing(i)).enumerate() {
+                ranks[i] = (good.len() + slot + 1) as f64;
             }
             // Integer ranks (no ties) print as a double vector in R anyway.
             Ok(mk_dbl(ranks.into_iter().map(Some).collect()))
@@ -3315,7 +3377,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             if is_text {
                 let mut ss: Vec<String> = strings.into_iter().flatten().collect();
-                ss.sort();
+                ss.sort_by(|a, b| crate::collate::str_cmp(a, b));
                 return Ok(match name {
                     "min" => scalar_str(ss.first().cloned().unwrap_or_default()),
                     "max" => scalar_str(ss.last().cloned().unwrap_or_default()),
@@ -5723,7 +5785,10 @@ impl SortKey {
     }
     fn cmp(&self, p: usize, q: usize) -> std::cmp::Ordering {
         match self {
-            SortKey::Text(v) => v[p].cmp(&v[q]),
+            SortKey::Text(v) => match (&v[p], &v[q]) {
+                (Some(a), Some(b)) => crate::collate::str_cmp(a, b),
+                (a, b) => a.cmp(b),
+            },
             SortKey::Num(v) => v[p].partial_cmp(&v[q]).unwrap_or(std::cmp::Ordering::Equal),
         }
     }
@@ -6126,7 +6191,7 @@ fn factor_levels(x: &Value) -> Vec<String> {
                 u.push(v);
             }
         }
-        u.sort();
+        u.sort_by(|a, b| crate::collate::str_cmp(a, b));
         u
     }
 }
