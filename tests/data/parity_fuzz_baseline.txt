@@ -8,10 +8,10 @@
 # A run exits 0 while every divergence is in this list; a NEW gap-class (a
 # regression, or a newly reached surface) exits 1 so CI/you can triage it.
 #
-# Every gap class the fuzzer found across its first 43 surfaces was fixed, and
-# the list stayed empty until the `conditions` surface reached R's *visibility*
-# rules, which are a subsystem of their own and are listed below rather than
-# half-fixed. Anything not listed here is a real regression to investigate.
+# This list is EMPTY: every gap class the fuzzer has found — across its first 43
+# surfaces and every surface added since — has been fixed, and repeated
+# multi-seed sweeps report zero divergences. A non-empty run is therefore a real
+# regression to investigate.
 #
 # Deliberately NOT generated (so they never appear here): `%%`/`%/%`, `var`, and
 # `round` on values at f64's precision boundary — R computes those in extended
@@ -21,23 +21,3 @@
 # operands out of those ops: `%%`/`%/%` never take a `^`-of-large-exponent, `var`
 # runs on integer inputs, and `round` rounds irrational products, not ties.
 
-# --- R's visibility model (`R_Visible`) ------------------------------------
-#
-# R sets `R_Visible = TRUE` on entry to evaluating essentially every expression
-# and lets assignment, `invisible()`, and the loops clear it, so a block whose
-# last statement is a bare numeric literal echoes even when the statement before
-# it did not: `(function() { x <- 1; 3 })()` prints `[1] 3`.
-#
-# rlang models it the other way round — the flag is cleared by the constructs
-# that make a value invisible and set again by the operations that produce a
-# visible one — and a numeric literal lowers to a *native* `Op::LoadFloat` /
-# `Op::LoadInt` that never enters an rlang builtin at all, so there is no hook
-# on which to set the flag. Reproducing R here needs the flag driven from
-# statement position in the compiler, not from the value-producing op; that is a
-# compiler-wide change, so it is recorded rather than patched at the two call
-# sites where the fuzzer happens to reach it.
-#
-# Predates the condition system: the same two programs diverge with `on.exit`
-# removed, and did so before `on.exit` existed.
-(function() { on.exit(cat(W)); N })()
-(function() { on.exit(cat(W)); on.exit(cat(W), add = TRUE); N })()

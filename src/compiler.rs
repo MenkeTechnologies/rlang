@@ -43,6 +43,10 @@ struct Compiler {
     /// Slots proven to hold an unboxed native numeric scalar (see
     /// [`native_num_slots`]) — usable as a native `for (i in 1:n)` bound.
     native_nums: std::collections::HashSet<String>,
+    /// Set while lowering an expression whose value is the value of a whole
+    /// statement. Only there does visibility matter, and only a bare numeric
+    /// literal needs help with it — see [`Compiler::expr`].
+    tail: bool,
 }
 
 /// Builtins that reach into an environment by name; their presence makes it
@@ -257,6 +261,7 @@ fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
         if slot_assign {
             c.stmt(&mut b, e)?;
         } else {
+            c.tail = true;
             c.expr(&mut b, e)?;
             b.emit(Op::CallBuiltin(ops::AUTOPRINT, 1), 0);
             if i + 1 < exprs.len() {
@@ -331,6 +336,7 @@ impl Compiler {
 
     /// Compile a body sequence: every value but the last is discarded.
     fn seq(&mut self, b: &mut ChunkBuilder, body: &[Expr]) -> Result<(), String> {
+        let tail = std::mem::take(&mut self.tail);
         if body.is_empty() {
             b.emit(Op::CallBuiltin(ops::CONST_NULL, 0), 0);
             return Ok(());
@@ -339,10 +345,20 @@ impl Compiler {
             if i + 1 < body.len() {
                 self.stmt(b, e)?;
             } else {
+                // The last element is the block's value, so it keeps whatever
+                // statement position the block itself had.
+                self.tail = tail;
                 self.expr(b, e)?;
             }
         }
         Ok(())
+    }
+
+    /// Emit the flag-setting builtin after a value that cannot set it itself.
+    fn mark_visible(&mut self, b: &mut ChunkBuilder, tail: bool) {
+        if tail {
+            b.emit(Op::CallBuiltin(ops::SET_VISIBLE, 1), 0);
+        }
     }
 
     /// Compile an expression in statement position — its value is discarded. A
@@ -371,6 +387,10 @@ impl Compiler {
     }
 
     fn expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        // Statement position is consumed here: it applies to this expression
+        // only, and is handed on explicitly by the few constructs whose value is
+        // the value of a sub-expression (`{ }`, `if`).
+        let tail = std::mem::take(&mut self.tail);
         match e {
             // A numeric literal rides unboxed (native `Value::Float`/`Int`) — no
             // `CONST_DBL`/`CONST_INT` builtin. Every host accessor already reads
@@ -378,11 +398,21 @@ impl Compiler {
             // what lets `--aot` native-lower a whole loop that starts with, e.g.,
             // `s <- 0` (a deopt-point builtin call there would end native codegen
             // before the loop even begins).
+            // A literal lowers to a native op that never enters an rlang
+            // builtin, so unlike every other expression it cannot set the
+            // visibility flag on the way past. R sets `R_Visible = TRUE` for
+            // one, so a block ending in a bare literal echoes even when the
+            // statement before it was invisible (`{ x <- 1; 3 }` prints 3).
+            // Only statement position needs it: a literal used as an operand or
+            // an argument has its visibility decided by the enclosing call, and
+            // paying for a builtin there would cost the hot arithmetic path.
             Expr::Num(n) => {
                 b.emit(Op::LoadFloat(*n), 0);
+                self.mark_visible(b, tail);
             }
             Expr::Int(n) => {
                 b.emit(Op::LoadInt(*n), 0);
+                self.mark_visible(b, tail);
             }
             Expr::Str(s) => {
                 self.kstr(b, s);
@@ -431,7 +461,10 @@ impl Compiler {
                 b.emit(Op::LoadInt(id as i64), 0);
                 b.emit(Op::CallBuiltin(ops::MKCLOSURE, 1), 0);
             }
-            Expr::Block(body) => self.seq(b, body)?,
+            Expr::Block(body) => {
+                self.tail = tail;
+                self.seq(b, body)?
+            }
             // `(x)` yields `x` but *visibly*: R's `(` is a function, and a call
             // sets the visibility flag, so `(x <- 5)` echoes at top level while
             // the bare assignment does not.
@@ -651,10 +684,14 @@ impl Compiler {
                 self.expr(b, cond)?;
                 b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
                 let jf = b.emit(Op::JumpIfFalse(0), 0);
+                // Whichever branch runs *is* the statement's value, so each
+                // inherits the statement position the `if` itself was in.
+                self.tail = tail;
                 self.expr(b, then)?;
                 let jend = b.emit(Op::Jump(0), 0);
                 let else_at = b.current_pos();
                 b.patch_jump(jf, else_at);
+                self.tail = tail;
                 match els {
                     Some(e) => self.expr(b, e)?,
                     // `if` without `else` yields invisible NULL.
@@ -1087,6 +1124,9 @@ impl Compiler {
             let here = fb.current_pos();
             fb.patch_jump(skip, here);
         }
+        // A closure's body is its value, so it is in statement position: the
+        // caller's `AUTOPRINT` asks whether *that* value is visible.
+        self.tail = true;
         self.expr(&mut fb, body)?;
         self.loops = saved;
         self.closures.push(ClosureDef {

@@ -5,12 +5,9 @@ working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
 `cargo run --bin parity-fuzz` on thousands of generated snippets across 58
-surfaces. The fuzzer reports one known gap class, listed with its reasoning in
-`tests/data/parity_fuzz_baseline.txt` (R's `R_Visible` rules — a bare numeric
-literal in statement position lowers to a native VM op that never enters an
-rlang builtin, so there is no hook on which to re-set the flag); everything else
-is at parity. What remains below is structural — whole subsystems, not
-per-primitive gaps.
+surfaces. The fuzzer currently reports **zero** divergences across those
+surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
+remains below is structural — whole subsystems, not per-primitive gaps.
 
 ## Evaluation model
 

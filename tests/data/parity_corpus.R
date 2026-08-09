@@ -860,3 +860,20 @@ summ.default <- function(x, ...) "end"
 print(summ(structure(1, class = c("a", "b"))))
 as.character.money <- function(x, ...) paste0("$", NextMethod())
 print(as.character(structure(5, class = "money")))
+#==#
+print((function() { invisible(1); 3 })())
+print((function() { x <- 1; 3 })())
+print((function() { x <- 1; if (TRUE) 3 })())
+print((function() { x <- 1; if (FALSE) 3 else 4 })())
+(function() { invisible(1); 3 })()
+(function() { x <- 1; 3 })()
+(function() { x <- 1; invisible(3) })()
+{ y <- 2; 9 }
+x <- 5
+invisible(7)
+for (i in 1:2) i
+while (FALSE) 1
+if (FALSE) 1
+(function() { on.exit(cat("x\n")); 3 })()
+(function() { on.exit(cat("a\n")); on.exit(cat("b\n"), add = TRUE); 4 })()
+tryCatch(42, finally = cat("f\n"))

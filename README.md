@@ -309,11 +309,10 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-Across its 58 surfaces the fuzzer reports one known gap class, recorded with
-its reasoning in `tests/data/parity_fuzz_baseline.txt` (R's `R_Visible` rules);
-everything else is at parity over repeated multi-seed sweeps. With `--baseline`
-the run exits non-zero the moment any *new* divergence class appears — a
-regression, or a surface that just started diverging. Like `parity`,
+The fuzzer currently reports **zero** divergences across its 58 surfaces over
+repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
+with `--baseline` the run exits non-zero the moment any *new* divergence class
+appears — a regression, or a surface that just started diverging. Like `parity`,
 it needs R on `PATH` (or `RLANG_FUZZ_RSCRIPT`), so it is a development tool, not
 a CI gate.
 
