@@ -286,7 +286,7 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 58 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across 60 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, factor subsetting and factor
 operators, set/bit ops, trig, gamma/`choose`,
 `pmax`/`pmin`, string translation, closure deparse, `rbind`/`cbind` seam labels,
@@ -309,7 +309,7 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 58 surfaces over
+The fuzzer currently reports **zero** divergences across its 60 surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,
@@ -329,11 +329,14 @@ byte-for-byte.
 
 Arguments are evaluated eagerly rather than as promises, so `substitute()` /
 `quote()` / non-standard evaluation are not available; data frames, complex
-numbers, restarts, and part of the linear-algebra surface (`solve`, `det`,
+numbers, and part of the linear-algebra surface (`solve`, `det`,
 `eigen`) are not implemented yet. Factors (ordered included, surviving
 subsetting and reordering, comparing by label), `table`, `%*%`, `outer`,
 `crossprod`, `cbind`/`rbind` with R's deparsed seam labels, and `apply` over
-matrix margins (carrying the margin's `dimnames`) all work; `tryCatch` /
+matrix margins (carrying the margin's `dimnames`) all work; the condition
+system is complete through restarts (`withCallingHandlers` resumes,
+`invokeRestart("muffleWarning")`, `withRestarts`/`computeRestarts`,
+`suppressWarnings`/`suppressMessages`); `tryCatch` /
 `try` / `on.exit` / `local` / `NextMethod` work, with conditions carrying no
 `call`; and a closure prints and deparses its own source. See
 [`BUGS.md`](BUGS.md) for the full known-gaps list.

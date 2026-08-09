@@ -563,7 +563,8 @@ impl Compiler {
                 // deparse (`deparse.level = 2`), one element per argument.
                 // Skipped when `...` is present — its runtime expansion would
                 // slide the arguments out of alignment with these vectors.
-                let is_bind = matches!(fun.as_ref(), Expr::Ident(n) if n == "rbind" || n == "cbind");
+                let is_bind =
+                    matches!(fun.as_ref(), Expr::Ident(n) if n == "rbind" || n == "cbind");
                 let has_dots = args
                     .iter()
                     .any(|a| matches!(a.value, Some(Expr::Dots)) || a.value.is_none());
@@ -1436,6 +1437,12 @@ fn thunk_lazy_args(name: &str, args: &[Arg]) -> Option<Vec<Arg>> {
         "tryCatch" | "withCallingHandlers" => &["", "expr", "finally"],
         "try" => &["", "expr"],
         "on.exit" => &["", "expr"],
+        // `withRestarts` runs its body with restarts established, and the
+        // `suppress*` family runs its body under a muffling handler — both need
+        // the frame in place *before* the body evaluates, which eager arguments
+        // cannot give them.
+        "withRestarts" => &["", "expr"],
+        "suppressWarnings" | "suppressMessages" | "suppressPackageStartupMessages" => &["", "expr"],
         _ => return None,
     };
     let mut out = Vec::with_capacity(args.len());

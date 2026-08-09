@@ -1119,7 +1119,7 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "withCallingHandlers",
         "withCallingHandlers(expr, ...)",
-        "Evaluate expr with handlers installed, spelled as tryCatch is. Restarts are not implemented, so a handled condition unwinds rather than resuming.",
+        "Evaluate expr with handlers installed, spelled as tryCatch is, but without unwinding: a matching handler runs at the point the condition was signalled, and when it returns the search continues outward and evaluation resumes there. A handler ends the search by transferring to a restart, which is what invokeRestart(\"muffleWarning\") does.",
     ),
     (
         "try",
@@ -1164,7 +1164,32 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "signalCondition",
         "signalCondition(cond)",
-        "Signal a condition object: if an enclosing tryCatch handles one of its classes the handler runs, otherwise the call returns NULL and evaluation continues.",
+        "Signal a condition object: every enclosing calling handler for one of its classes runs in place, an enclosing tryCatch for one of them unwinds, and with nothing in scope the call returns NULL and evaluation continues.",
+    ),
+    (
+        "withRestarts",
+        "withRestarts(expr, ...)",
+        "Evaluate expr with restarts established. Each named argument is a restart: a handler function, a list(handler =, description =), or a description string. If invokeRestart transfers to one, its handler's value becomes the value of this call.",
+    ),
+    (
+        "invokeRestart",
+        "invokeRestart(r, ...)",
+        "Transfer control to the restart named (or held) by r, passing the remaining arguments to its handler. Does not return: cleanups registered with on.exit and tryCatch's finally still run on the way out, but no handler catches the transfer.",
+    ),
+    (
+        "computeRestarts",
+        "computeRestarts(cond = NULL)",
+        "The restarts currently established, innermost first, ending with the abort restart the evaluator always provides. warning() establishes muffleWarning around itself and message() establishes muffleMessage.",
+    ),
+    (
+        "restartDescription",
+        "restartDescription(r)",
+        "The description string a restart was established with, or NULL when it carries none.",
+    ),
+    (
+        "isRestart",
+        "isRestart(x)",
+        "Whether x is a restart object, i.e. inherits from class \"restart\".",
     ),
     (
         "Recall",
@@ -1220,12 +1245,12 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "suppressMessages",
         "suppressMessages(expr)",
-        "Return expr. Arguments are evaluated eagerly, so any message has already been written to stderr by the time this runs — the call is accepted for compatibility, not honoured.",
+        "Evaluate expr with every message discarded, and return its value. The message is muffled at the point it is signalled, so expr carries on from there.",
     ),
     (
         "suppressWarnings",
         "suppressWarnings(expr)",
-        "Return expr, with the same eager-evaluation caveat as suppressMessages.",
+        "Evaluate expr with every warning discarded, and return its value. The warning is muffled at the point it is signalled, so expr carries on from there.",
     ),
     (
         "suppressPackageStartupMessages",

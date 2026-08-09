@@ -236,6 +236,54 @@ pub struct Frame {
     pub on_exit: Vec<Value>,
 }
 
+/// One `tryCatch` or `withCallingHandlers` frame, innermost last.
+///
+/// The two differ only in what happens when a handler matches: an *exiting*
+/// handler (`tryCatch`) unwinds the stack first and runs the handler in the
+/// `tryCatch`'s own frame, while a *calling* handler (`withCallingHandlers`)
+/// runs at the point the condition was signalled and — unless it transfers
+/// control to a restart — lets evaluation resume there.
+pub struct HandlerFrame {
+    /// `true` for `withCallingHandlers`.
+    pub calling: bool,
+    /// `(condition class, handler)` in the order written, which is the order R
+    /// tries them: `tryCatch` runs the first match, `withCallingHandlers` runs
+    /// every match.
+    pub handlers: Vec<(String, Value)>,
+    /// Set while one of this frame's handlers runs, so a condition signalled
+    /// from inside a handler is only offered to frames established *outside*
+    /// it. Without this, a `warning()` in a warning handler re-enters it.
+    pub disabled: bool,
+    /// A frame established by `suppressWarnings`/`suppressMessages`, which have
+    /// no R-level handler: a matching condition is muffled outright. Holds the
+    /// condition class to muffle (`"warning"` / `"message"`).
+    pub muffle: Option<String>,
+}
+
+/// One restart, as established by `withRestarts` or by the `warning()` /
+/// `message()` builtins around their own signalling.
+pub struct RestartFrame {
+    /// Identity for `invokeRestart`, which names a *particular* established
+    /// restart — two nested `withRestarts` may use the same name.
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    /// The function to run after control transfers here. `None` for the
+    /// built-in muffle restarts, which are consumed by the signalling builtin
+    /// itself rather than by an R-level handler.
+    pub handler: Option<Value>,
+}
+
+/// A restart transfer in flight: the target restart's id, and the arguments
+/// `invokeRestart` was given to pass on to its handler.
+pub type RestartInvoke = (u64, Vec<(Option<String>, Value)>);
+
+/// The `Err` payload that carries a restart transfer out to its establishing
+/// frame. It is not a message anyone sees: every site that catches errors
+/// (`tryCatch`, `try`, the top-level reporter) re-propagates while
+/// [`RHost::restart_invoke`] is set, and the establishing frame clears it.
+pub const RESTART_UNWIND: &str = "\u{1}restart";
+
 /// The R runtime: heap, environments, call stack, and pending control state.
 pub struct RHost {
     heap: Vec<RObj>,
@@ -247,11 +295,23 @@ pub struct RHost {
     /// `c("simpleError", "error", "condition")` and friends. It rides alongside
     /// `error` so a `tryCatch` handler can be selected by class.
     pub error_classes: Vec<String>,
-    /// The condition classes each enclosing `tryCatch` is prepared to handle,
-    /// innermost last. `warning()` and `message()` consult it: with a matching
-    /// handler in scope they raise a catchable condition, and without one they
-    /// print and carry on, which is R's default behaviour.
-    pub handlers: Vec<Vec<String>>,
+    /// The enclosing `tryCatch` / `withCallingHandlers` frames, innermost last.
+    /// Every signalling site walks it outward: a calling handler runs in place,
+    /// an exiting handler unwinds, and reaching the bottom with nothing matched
+    /// is what lets `warning()` and `message()` keep R's default action.
+    pub handlers: Vec<HandlerFrame>,
+    /// The established restarts, innermost group last. One group per
+    /// `withRestarts` call (or per signalling builtin), because the restarts in
+    /// a single call are searched in the order written while the groups
+    /// themselves are searched innermost-first.
+    pub restarts: Vec<Vec<RestartFrame>>,
+    /// Source of [`RestartFrame::id`].
+    pub next_restart_id: u64,
+    /// Set by `invokeRestart` and cleared by the frame that established the
+    /// target: the restart's id and the arguments to pass its handler. While it
+    /// is set the current unwind is a control transfer, not an error, so no
+    /// handler may absorb it.
+    pub restart_invoke: Option<RestartInvoke>,
     /// Set by S3 dispatch immediately before invoking a method, and consumed by
     /// the frame that method pushes, so `NextMethod` inside it knows which
     /// classes are still to try.
@@ -342,6 +402,9 @@ impl RHost {
             error: None,
             error_classes: Vec::new(),
             handlers: Vec::new(),
+            restarts: Vec::new(),
+            next_restart_id: 0,
+            restart_invoke: None,
             pending_dispatch: None,
             suppress_s3: false,
             signal: None,

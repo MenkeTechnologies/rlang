@@ -737,11 +737,17 @@ fn ops_factor(op: &str, lhs: &Value, rhs: Option<&Value>) -> Option<Result<Value
         // R: `warning(gettextf("%s not meaningful for factors", sQuote(.Generic)))`
         // — `sQuote` yields directional quotes — and `Ops.ordered`'s plainer
         // `sprintf("'%s' is not meaningful for ordered factors", .Generic)`.
-        r_warning(&if ordered {
+        let msg = if ordered {
             format!("'{op}' is not meaningful for ordered factors")
         } else {
             format!("\u{2018}{op}\u{2019} not meaningful for factors")
-        });
+        };
+        // A real condition, not just a printed line: `tryCatch(warning =)` can
+        // catch it, `suppressWarnings` can muffle it, and a calling handler sees
+        // it before the NA vector comes back.
+        if let Err(e) = signal_warning(&msg) {
+            return Some(Err(e));
+        }
         let n = len(lhs).max(rhs.map_or(0, len));
         return Some(Ok(mk_lgl(vec![None; n])));
     }
@@ -1806,7 +1812,13 @@ fn replacement(
                 mk_list(
                     elements(value)
                         .iter()
-                        .map(|e| if is_null(e) { null() } else { mk_str(as_str(e)) })
+                        .map(|e| {
+                            if is_null(e) {
+                                null()
+                            } else {
+                                mk_str(as_str(e))
+                            }
+                        })
                         .collect(),
                 )
             };
@@ -2130,6 +2142,11 @@ pub const PRIMITIVES: &[&str] = &[
     "simpleMessage",
     "simpleCondition",
     "signalCondition",
+    "withRestarts",
+    "invokeRestart",
+    "computeRestarts",
+    "restartDescription",
+    "isRestart",
     "factor",
     "levels",
     "nlevels",
@@ -2496,37 +2513,80 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // R's `message` appends a newline to the condition's message; a
             // warning's does not.
             let text = text.join("") + if name == "message" { "\n" } else { "" };
-            let classes: Vec<String> = match name {
-                "warning" => ["simpleWarning", "warning", "condition"],
-                _ => ["simpleMessage", "message", "condition"],
+            let warn = name == "warning";
+            let classes: Vec<String> = if warn {
+                ["simpleWarning", "warning", "condition"]
+            } else {
+                ["simpleMessage", "message", "condition"]
             }
             .iter()
             .map(|s| s.to_string())
             .collect();
-            // With a `tryCatch` waiting for this class the condition is raised
-            // so the handler can take over; with none in scope R's default
-            // action applies — report it and carry on.
-            if handler_in_scope(&classes) {
-                raise_condition(text, classes);
-                return Ok(null());
-            }
-            if name == "warning" {
-                r_warning(&text);
+            // R establishes `muffleWarning` / `muffleMessage` around the signal,
+            // so a calling handler can suppress the default action and let
+            // evaluation resume from here.
+            let muffle = if warn {
+                "muffleWarning"
             } else {
-                eprint!("{text}");
+                "muffleMessage"
+            };
+            match signal_condition_with_muffle(&text, &classes, muffle)? {
+                // A `tryCatch` is waiting: raise it so the unwind reaches there.
+                Signalled::Unwind => {
+                    raise_condition(text, classes);
+                    return Ok(null());
+                }
+                // Nothing took it — R's default action is to report and carry on.
+                Signalled::Fell => {
+                    if warn {
+                        r_warning(&text);
+                    } else {
+                        eprint!("{text}");
+                    }
+                }
+                Signalled::Muffled => {}
             }
+            // `warning()` returns its message, `message()` returns NULL; both
+            // invisibly.
+            let out = if warn { scalar_str(&text) } else { null() };
             with_host(|h| h.visible = false);
-            Ok(null())
+            Ok(out)
         }
         "stop" => {
             let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
-            with_host(|h| {
-                h.error_classes = ["simpleError", "error", "condition"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            });
-            Err(text.join(""))
+            // `stop(cond)` re-signals an existing condition object rather than
+            // building a message out of it.
+            let cond = a
+                .get(0, "message")
+                .filter(|v| class_of(v).iter().any(|c| c == "condition"));
+            let (text, classes) = match &cond {
+                Some(c) => (
+                    element_field(c, "message")
+                        .and_then(|m| str1(&m))
+                        .unwrap_or_default(),
+                    class_of(c),
+                ),
+                None => (
+                    text.join(""),
+                    ["simpleError", "error", "condition"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+            };
+            // An error has no restart of its own, but calling handlers still see
+            // it before the stack comes down — and one of them may transfer to a
+            // restart established further out, which is not an error at all.
+            let obj = match cond {
+                Some(c) => c,
+                None => mk_condition(
+                    &text,
+                    &classes.iter().map(String::as_str).collect::<Vec<_>>(),
+                ),
+            };
+            signal_to_handlers(&obj, &classes)?;
+            with_host(|h| h.error_classes = classes);
+            Err(text)
         }
         "stopifnot" => {
             for (_, v) in a.all.iter() {
@@ -2586,7 +2646,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // restore it afterwards.
                 let restore = digits.map(|d| crate::host::set_print_digits(d.max(1) as usize));
                 let dbl = as_dbl(&x);
-                let finite: Vec<f64> = dbl.iter().flatten().copied().filter(|v| v.is_finite()).collect();
+                let finite: Vec<f64> = dbl
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .collect();
                 // A common decimal count across the vector — R aligns the
                 // decimal point.
                 let fixed_d = finite
@@ -2600,7 +2665,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .max()
                     .unwrap_or(0);
                 let width = |f: &dyn Fn(f64) -> String| {
-                    finite.iter().map(|v| f(*v).chars().count()).max().unwrap_or(0)
+                    finite
+                        .iter()
+                        .map(|v| f(*v).chars().count())
+                        .max()
+                        .unwrap_or(0)
                 };
                 let use_sci = scientific.unwrap_or_else(|| {
                     width(&|v| render_sci(v, sci_d)) < width(&|v| render_fixed(v, fixed_d))
@@ -3683,7 +3752,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.double" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Dbl(_)))),
         "is.integer" => {
             let x = a.req(0, "x")?;
-            Ok(scalar_lgl(matches!(data(&x), RData::Int(_)) && !is_factor(&x)))
+            Ok(scalar_lgl(
+                matches!(data(&x), RData::Int(_)) && !is_factor(&x),
+            ))
         }
         "is.character" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Str(_)))),
         "is.logical" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Lgl(_)))),
@@ -4676,8 +4747,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // The labels of the margins iterated over, and of one result — R
             // carries both onto the answer: the margin labels name the slots the
             // results landed in, the result's own names label what FUN returned.
-            let margin_dn: Vec<Option<Vec<Option<String>>>> =
-                margins.iter().map(|&d| dn.get(d).cloned().flatten()).collect();
+            let margin_dn: Vec<Option<Vec<Option<String>>>> = margins
+                .iter()
+                .map(|&d| dn.get(d).cloned().flatten())
+                .collect();
             let result_names = results
                 .first()
                 .map(names_of)
@@ -4842,7 +4915,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "UseMethod" => use_method(&a),
         "NextMethod" => next_method(),
-        "tryCatch" | "withCallingHandlers" => try_catch(&a),
+        "tryCatch" => try_catch(&a),
+        "withCallingHandlers" => with_calling_handlers(&a),
         "try" => r_try(&a),
         "on.exit" => {
             let thunk = a.req(0, "expr")?;
@@ -4882,13 +4956,26 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .and_then(|m| str1(&m))
                 .unwrap_or_default();
             let classes = class_of(&c);
-            if handler_in_scope(&classes) {
+            // `signalCondition` establishes no restart and has no default
+            // action: with nothing waiting it just returns NULL — visibly, so a
+            // bare call at top level echoes it.
+            if let Signalled::Unwind = signal_to_handlers(&c, &classes)? {
                 raise_condition(msg, classes);
-                return Ok(null());
             }
-            with_host(|h| h.visible = false);
+            with_host(|h| h.visible = true);
             Ok(null())
         }
+        "withRestarts" => with_restarts(&a),
+        "invokeRestart" => invoke_restart(&a),
+        "computeRestarts" => Ok(compute_restarts()),
+        // `restartDescription(r)` is `r$description`, so the `abort` restart —
+        // which carries no such field — answers NULL rather than "".
+        "restartDescription" => {
+            Ok(element_field(&a.req(0, "r")?, "description").unwrap_or_else(null))
+        }
+        "isRestart" => Ok(mk_lgl(vec![Some(
+            class_of(&a.req(0, "x")?).iter().any(|c| c == "restart"),
+        )])),
         "Recall" => {
             // Re-invoke the closure that is currently executing, one frame down
             // (the top frame is Recall's own primitive call is not pushed, so the
@@ -4999,11 +5086,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 Ok(null())
             }
         }
-        "suppressMessages" | "suppressWarnings" | "suppressPackageStartupMessages" => {
-            // Arguments are evaluated eagerly, so any message already fired;
-            // just pass the value through.
-            Ok(a.get(0, "expr").unwrap_or_else(null))
-        }
+        "suppressWarnings" => suppress_conditions(&a, "warning"),
+        "suppressMessages" | "suppressPackageStartupMessages" => suppress_conditions(&a, "message"),
         // A model formula (compiled from `lhs ~ rhs`): build the real formula
         // object in embedded R so `lm`/`glm`/`aggregate` receive it intact.
         ".rlang_formula" => {
@@ -5581,9 +5665,7 @@ impl SortKey {
     fn cmp(&self, p: usize, q: usize) -> std::cmp::Ordering {
         match self {
             SortKey::Text(v) => v[p].cmp(&v[q]),
-            SortKey::Num(v) => v[p]
-                .partial_cmp(&v[q])
-                .unwrap_or(std::cmp::Ordering::Equal),
+            SortKey::Num(v) => v[p].partial_cmp(&v[q]).unwrap_or(std::cmp::Ordering::Equal),
         }
     }
 }
@@ -5832,8 +5914,14 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
         .named("deparse.level")
         .and_then(|v| num1(&v))
         .unwrap_or(1.0) as i64;
-    let sym = a.named(".deparse.sym").map(|v| as_str(&v)).unwrap_or_default();
-    let txt = a.named(".deparse.txt").map(|v| as_str(&v)).unwrap_or_default();
+    let sym = a
+        .named(".deparse.sym")
+        .map(|v| as_str(&v))
+        .unwrap_or_default();
+    let txt = a
+        .named(".deparse.txt")
+        .map(|v| as_str(&v))
+        .unwrap_or_default();
     // R drops `NULL` and zero-length arguments outright — they contribute
     // neither a row/column nor a label.
     let inputs: Vec<(usize, Option<String>, Value)> = a
@@ -6775,30 +6863,338 @@ fn mk_condition(message: &str, classes: &[&str]) -> Value {
     out
 }
 
-/// Whether an enclosing `tryCatch` handles any of `classes`. This is what lets
-/// `warning()` and `message()` keep R's default behaviour — print and carry on —
-/// unless somebody is actually waiting to catch them.
-fn handler_in_scope(classes: &[String]) -> bool {
-    with_host(|h| {
-        h.handlers
-            .iter()
-            .any(|hs| hs.iter().any(|w| classes.iter().any(|c| c == w)))
-    })
+/// What walking the handler stack for a condition concluded.
+enum Signalled {
+    /// Nothing took it: the signalling site performs R's default action —
+    /// print for `warning`/`message`, unwind for `stop`, return for
+    /// `signalCondition`.
+    Fell,
+    /// A `tryCatch` frame matched. The signalling site records the condition so
+    /// the normal error unwind carries it out to that handler.
+    Unwind,
+    /// A `suppressWarnings` / `suppressMessages` frame swallowed it, which is R
+    /// invoking the built-in muffle restart on the signaller's behalf.
+    Muffled,
+}
+
+/// Offer a condition to every enclosing handler, innermost frame first — the
+/// heart of R's condition system.
+///
+/// A *calling* handler (`withCallingHandlers`) runs right here, on a nested VM,
+/// with the signalling frame still on the stack; when it returns normally the
+/// walk carries on outward and the signaller resumes. An *exiting* handler
+/// (`tryCatch`) is not run here at all: the walk stops and reports `Unwind`, so
+/// the stack is torn down before the handler sees the condition. A handler that
+/// transfers control to a restart comes back as `Err(RESTART_UNWIND)`, which
+/// propagates untouched to the frame that established it.
+///
+/// While a frame's handler runs, that frame and every frame inside it is
+/// disabled, so a condition signalled *by* a handler is only offered further
+/// out. Without that, `warning()` inside a warning handler re-enters it forever.
+fn signal_to_handlers(cond: &Value, classes: &[String]) -> Result<Signalled, String> {
+    let mut i = with_host(|h| h.handlers.len());
+    while i > 0 {
+        i -= 1;
+        let (calling, skip, muffle, matched) = with_host(|h| {
+            let f = &h.handlers[i];
+            let matched: Vec<usize> = f
+                .handlers
+                .iter()
+                .enumerate()
+                .filter(|(_, (c, _))| classes.iter().any(|k| k == c))
+                .map(|(j, _)| j)
+                .collect();
+            (f.calling, f.disabled, f.muffle.clone(), matched)
+        });
+        if skip {
+            continue;
+        }
+        if let Some(m) = muffle {
+            if classes.contains(&m) {
+                return Ok(Signalled::Muffled);
+            }
+            continue;
+        }
+        if matched.is_empty() {
+            continue;
+        }
+        if !calling {
+            return Ok(Signalled::Unwind);
+        }
+        let saved: Vec<bool> = with_host(|h| {
+            let s = h.handlers[i..].iter().map(|f| f.disabled).collect();
+            h.handlers[i..].iter_mut().for_each(|f| f.disabled = true);
+            s
+        });
+        // Every matching handler of one `withCallingHandlers` call runs, in the
+        // order written — R does not stop at the first match the way `tryCatch`
+        // does.
+        let mut out = Ok(());
+        // Running a handler must not decide whether the *signalling* expression
+        // prints: `withCallingHandlers(signalCondition(c), … = function(c)
+        // cat("x"))` still echoes NULL.
+        let vis = with_host(|h| h.visible);
+        for j in matched {
+            let f = with_host(|h| h.handlers[i].handlers[j].1.clone());
+            if let Err(e) = call_value(&f, vec![(None, cond.clone())], None) {
+                out = Err(e);
+                break;
+            }
+        }
+        with_host(|h| {
+            h.visible = vis;
+            for (f, was) in h.handlers[i..].iter_mut().zip(saved) {
+                f.disabled = was;
+            }
+        });
+        out?;
+    }
+    Ok(Signalled::Fell)
 }
 
 /// R's "NaNs produced" warning, as a catchable condition. Returns `Err` when a
 /// `tryCatch(warning = )` is waiting for it, which unwinds to that handler.
 fn nan_warning() -> Result<(), String> {
+    signal_warning("NaNs produced")
+}
+
+/// Signal one of rlang's own internal warnings the way `warning("…")` would:
+/// calling handlers see it, `tryCatch` unwinds to it, `suppressWarnings` eats
+/// it, and with nothing in scope it prints and evaluation carries on.
+fn signal_warning(msg: &str) -> Result<(), String> {
     let classes: Vec<String> = ["simpleWarning", "warning", "condition"]
         .iter()
         .map(|s| s.to_string())
         .collect();
-    if handler_in_scope(&classes) {
-        raise_condition("NaNs produced".into(), classes);
-        return Err("NaNs produced".into());
+    match signal_condition_with_muffle(msg, &classes, "muffleWarning")? {
+        Signalled::Fell => r_warning(msg),
+        Signalled::Muffled => {}
+        Signalled::Unwind => {
+            raise_condition(msg.to_string(), classes);
+            return Err(msg.to_string());
+        }
     }
-    r_warning("NaNs produced");
     Ok(())
+}
+
+/// Signal `msg` with `classes`, with the built-in restart `muffle` established
+/// around the walk — R establishes `muffleWarning` around `warning()` and
+/// `muffleMessage` around `message()` so a calling handler can suppress the
+/// default action and let evaluation resume.
+///
+/// A handler invoking *that* restart comes back as `Ok(Muffled)`; a handler
+/// invoking any other restart keeps unwinding.
+fn signal_condition_with_muffle(
+    msg: &str,
+    classes: &[String],
+    muffle: &str,
+) -> Result<Signalled, String> {
+    let cond = mk_condition(msg, &classes.iter().map(String::as_str).collect::<Vec<_>>());
+    let id = push_restarts(vec![(muffle.to_string(), String::new(), None)])[0];
+    let out = signal_to_handlers(&cond, classes);
+    with_host(|h| {
+        h.restarts.pop();
+    });
+    match out {
+        Err(e) => match with_host(|h| h.restart_invoke.take_if(|(t, _)| *t == id)) {
+            Some(_) => Ok(Signalled::Muffled),
+            None => Err(e),
+        },
+        Ok(v) => Ok(v),
+    }
+}
+
+// ── restarts ────────────────────────────────────────────────────────────
+
+/// The id reserved for R's top-level `abort` restart, which is established by
+/// the evaluator itself rather than by any `withRestarts` call. Nothing ever
+/// catches a transfer to it, so it reaches the top and ends the program.
+const ABORT_RESTART: u64 = 0;
+
+/// Establish a group of restarts — one `withRestarts` call, or the single
+/// muffle restart a signalling builtin puts around itself — and return their
+/// ids in order. The caller pops the group with `h.restarts.pop()`.
+fn push_restarts(specs: Vec<(String, String, Option<Value>)>) -> Vec<u64> {
+    with_host(|h| {
+        let group: Vec<crate::host::RestartFrame> = specs
+            .into_iter()
+            .map(|(name, description, handler)| {
+                h.next_restart_id += 1;
+                crate::host::RestartFrame {
+                    id: h.next_restart_id,
+                    name,
+                    description,
+                    handler,
+                }
+            })
+            .collect();
+        let ids = group.iter().map(|r| r.id).collect();
+        h.restarts.push(group);
+        ids
+    })
+}
+
+/// Every established restart as `(id, name, description)`, innermost group
+/// first — the order `computeRestarts` reports and `invokeRestart` searches.
+fn visible_restarts() -> Vec<(u64, String, String)> {
+    with_host(|h| {
+        h.restarts
+            .iter()
+            .rev()
+            .flatten()
+            .map(|r| (r.id, r.name.clone(), r.description.clone()))
+            .collect()
+    })
+}
+
+/// R's restart object: a six-element list of
+/// `name, exit, handler, description, test, interactive` with class `"restart"`.
+/// rlang keeps the establishing frame's id in the `exit` slot, which is what
+/// lets `invokeRestart(restartObject)` target one *particular* frame when two
+/// nested `withRestarts` share a name.
+fn mk_restart(id: u64, name: &str, description: &str) -> Value {
+    let out = mk_list(vec![
+        scalar_str(name),
+        scalar_dbl(id as f64),
+        null(),
+        scalar_str(description),
+        null(),
+        null(),
+    ]);
+    set_names(
+        &out,
+        [
+            "name",
+            "exit",
+            "handler",
+            "description",
+            "test",
+            "interactive",
+        ]
+        .iter()
+        .map(|s| Some((*s).to_string()))
+        .collect(),
+    );
+    let cls = scalar_str("restart");
+    with_host(|h| h.set_attr(&out, "class", cls));
+    out
+}
+
+/// R's top-level `abort` restart object, which is *not* shaped like the ones
+/// `withRestarts` builds: an unnamed two-element list, so `r$name` is `NULL`.
+fn mk_abort_restart() -> Value {
+    let out = mk_list(vec![scalar_str("abort"), null()]);
+    let cls = scalar_str("restart");
+    with_host(|h| h.set_attr(&out, "class", cls));
+    out
+}
+
+/// `computeRestarts(cond = NULL)` — every restart in scope, innermost first,
+/// ending with the `abort` restart the evaluator always provides.
+fn compute_restarts() -> Value {
+    let mut items: Vec<Value> = visible_restarts()
+        .into_iter()
+        .map(|(id, name, desc)| mk_restart(id, &name, &desc))
+        .collect();
+    items.push(mk_abort_restart());
+    mk_list(items)
+}
+
+/// `invokeRestart(r, ...)` — transfer control to the restart named (or held) by
+/// `r`, passing the remaining arguments to its handler.
+///
+/// This does not return: it records the target and unwinds with
+/// [`RESTART_UNWIND`], which no handler absorbs, until the establishing frame
+/// recognises the id. `on.exit` cleanups and `finally` blocks along the way
+/// still run, because the transfer rides R's ordinary unwind.
+fn invoke_restart(a: &Args) -> Result<Value, String> {
+    let r = a.req(0, "r")?;
+    let args = a.rest(1);
+    let named = str1(&r).unwrap_or_default();
+    let id = if class_of(&r).iter().any(|c| c == "restart") {
+        // A restart object names an exact frame; the `abort` restart carries no
+        // `exit` slot, so falling through to its reserved id is correct.
+        element_field(&r, "exit")
+            .and_then(|v| num1(&v))
+            .map(|v| v as u64)
+            .or(Some(ABORT_RESTART))
+            .filter(|id| *id == ABORT_RESTART || visible_restarts().iter().any(|(i, ..)| i == id))
+    } else if named == "abort" {
+        Some(ABORT_RESTART)
+    } else {
+        visible_restarts()
+            .into_iter()
+            .find(|(_, n, _)| *n == named)
+            .map(|(id, ..)| id)
+    };
+    let name = if named.is_empty() {
+        element_field(&r, "name")
+            .and_then(|v| str1(&v))
+            .unwrap_or_default()
+    } else {
+        named
+    };
+    let Some(id) = id else {
+        return Err(format!("no 'restart' '{name}' found"));
+    };
+    with_host(|h| h.restart_invoke = Some((id, args)));
+    Err(crate::host::RESTART_UNWIND.to_string())
+}
+
+/// `withRestarts(expr, name = handler, …)` — run `expr` with restarts
+/// established, and if one is invoked, return its handler's value as the value
+/// of this call.
+///
+/// A restart spec is the handler itself, a `list(handler = , description = )`,
+/// or a bare description string — R's `makeRestartList` accepts all three, and
+/// a string one leaves the handler as `function(...) NULL`.
+fn with_restarts(a: &Args) -> Result<Value, String> {
+    let body = a.req(0, "expr")?;
+    let specs: Vec<(String, String, Option<Value>)> = a
+        .all
+        .iter()
+        .filter_map(|(t, v)| match t.as_deref() {
+            Some("expr") | None => None,
+            Some(name) => {
+                let (handler, description) = match (element_field(v, "handler"), str1(v)) {
+                    (Some(h), _) => (
+                        Some(h),
+                        element_field(v, "description")
+                            .and_then(|d| str1(&d))
+                            .unwrap_or_default(),
+                    ),
+                    (None, Some(desc)) if !with_host(|h| h.is_function(v)) => (None, desc),
+                    _ => (Some(v.clone()), String::new()),
+                };
+                Some((name.to_string(), description, handler))
+            }
+        })
+        .collect();
+    let ids = push_restarts(specs);
+    let out = call_value(&body, Vec::new(), None);
+    let group = with_host(|h| h.restarts.pop()).unwrap_or_default();
+    let Err(e) = out else { return out };
+    // A transfer to one of *our* restarts stops here and becomes this call's
+    // value; anything else — a real error, or a transfer aimed further out —
+    // keeps going.
+    let Some((id, args)) = with_host(|h| h.restart_invoke.take_if(|(t, _)| ids.contains(t))) else {
+        return Err(e);
+    };
+    match group
+        .into_iter()
+        .find(|r| r.id == id)
+        .and_then(|r| r.handler)
+    {
+        Some(f) => call_value(&f, args, None),
+        None => Ok(null()),
+    }
+}
+
+/// Whether the unwind currently in flight is a restart transfer rather than an
+/// error. No handler — `tryCatch`, `try`, or the top-level reporter — may
+/// absorb one; only the frame that established the target restart may.
+fn restart_in_flight() -> bool {
+    with_host(|h| h.restart_invoke.is_some())
 }
 
 /// Raise a condition: record the message and its class vector, and let the
@@ -6832,8 +7228,14 @@ fn try_catch(a: &Args) -> Result<Value, String> {
             Some(t) => Some((t.to_string(), v.clone())),
         })
         .collect();
-    let handled: Vec<String> = handlers.iter().map(|(c, _)| c.clone()).collect();
-    with_host(|h| h.handlers.push(handled));
+    with_host(|h| {
+        h.handlers.push(crate::host::HandlerFrame {
+            calling: false,
+            handlers: handlers.clone(),
+            disabled: false,
+            muffle: None,
+        })
+    });
     let out = call_value(&body, Vec::new(), None);
     let raised = with_host(|h| {
         h.handlers.pop();
@@ -6841,6 +7243,9 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     });
     let result = match out {
         Ok(v) => Ok(v),
+        // A restart transfer is passing through on its way to the frame that
+        // established it; `finally` still runs, but no handler here may claim it.
+        Err(msg) if restart_in_flight() => Err(msg),
         Err(msg) => {
             // An error with no class vector is a plain `stop()`.
             let classes: Vec<String> = if raised.is_empty() {
@@ -6878,6 +7283,64 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     result
 }
 
+/// `withCallingHandlers(expr, <class> = handler, …)` — run `expr` with handlers
+/// that do **not** unwind.
+///
+/// This installs the frame and nothing else: the handlers fire at the point the
+/// condition is signalled (see `signal_to_handlers`), with the signalling frame
+/// still live, and when one returns normally the signaller carries on. That is
+/// the whole difference from `tryCatch`, and it is what makes the standard
+/// muffling idiom — handle the warning, `invokeRestart("muffleWarning")`,
+/// resume — behave as R's does.
+fn with_calling_handlers(a: &Args) -> Result<Value, String> {
+    let body = a.req(0, "expr")?;
+    let handlers: Vec<(String, Value)> = a
+        .all
+        .iter()
+        .filter_map(|(t, v)| match t.as_deref() {
+            Some("expr") | None => None,
+            Some(t) => Some((t.to_string(), v.clone())),
+        })
+        .collect();
+    with_host(|h| {
+        h.handlers.push(crate::host::HandlerFrame {
+            calling: true,
+            handlers,
+            disabled: false,
+            muffle: None,
+        })
+    });
+    let out = call_value(&body, Vec::new(), None);
+    with_host(|h| {
+        h.handlers.pop();
+    });
+    out
+}
+
+/// `suppressWarnings(expr)` / `suppressMessages(expr)` — R defines these as a
+/// `withCallingHandlers` whose handler does nothing but invoke the built-in
+/// muffle restart, so the condition is discarded and `expr` resumes.
+///
+/// rlang installs a handler frame with no R-level handler at all and muffles on
+/// the spot, which is the same observable behaviour without building a closure
+/// per call.
+fn suppress_conditions(a: &Args, class: &str) -> Result<Value, String> {
+    let body = a.req(0, "expr")?;
+    with_host(|h| {
+        h.handlers.push(crate::host::HandlerFrame {
+            calling: true,
+            handlers: Vec::new(),
+            disabled: false,
+            muffle: Some(class.to_string()),
+        })
+    });
+    let out = call_value(&body, Vec::new(), None);
+    with_host(|h| {
+        h.handlers.pop();
+    });
+    out
+}
+
 /// `try(expr, silent = FALSE)` — run `expr`, and on error return the message as
 /// an invisible `"try-error"` string instead of aborting.
 fn r_try(a: &Args) -> Result<Value, String> {
@@ -6885,6 +7348,8 @@ fn r_try(a: &Args) -> Result<Value, String> {
     let silent = a.named("silent").and_then(|v| lgl1(&v)).unwrap_or(false);
     match call_value(&body, Vec::new(), None) {
         Ok(v) => Ok(v),
+        // A restart transfer is not an error and `try` does not catch one.
+        Err(msg) if restart_in_flight() => Err(msg),
         Err(msg) => {
             let classes = with_host(|h| std::mem::take(&mut h.error_classes));
             let text = format!("Error : {msg}\n");
@@ -7004,17 +7469,23 @@ pub fn format_value(v: &Value) -> Vec<String> {
 /// R's `print.default` follows a value with an `attr(,"name")` block for every
 /// attribute that is not part of the value's own structure — the structural
 /// ones are already shown as names, a matrix layout, or a `Levels:` line.
+/// Whether one of `v`'s classes has a print layout of its own in
+/// `format_value_body`, rather than falling through to `print.default`.
+fn has_print_layout(v: &Value) -> bool {
+    class_of(v).iter().any(|c| {
+        matches!(
+            c.as_str(),
+            "factor" | "ordered" | "table" | "rle" | "condition" | "restart"
+        )
+    })
+}
+
 fn format_extra_attrs(v: &Value) -> Vec<String> {
     const STRUCTURAL: [&str; 6] = ["names", "dim", "dimnames", "levels", "row.names", "tsp"];
     // `class` is structural only for the classes that have their own layout
     // above; a class rlang has no method for is shown, the way R's
     // `print.default` shows one it has no method for.
-    let laid_out = class_of(v).iter().any(|c| {
-        matches!(
-            c.as_str(),
-            "factor" | "ordered" | "table" | "rle" | "condition"
-        )
-    });
+    let laid_out = has_print_layout(v);
     let mut out = Vec::new();
     for (k, val) in with_host(|h| h.attrs_of(v)) {
         if STRUCTURAL.contains(&k.as_str()) || (k == "class" && laid_out) {
@@ -7048,6 +7519,15 @@ fn format_value_body(v: &Value) -> Vec<String> {
     }
     if classes.iter().any(|c| c == "rle") {
         return format_rle(v);
+    }
+    // `print.restart`: the name only — R's method shows neither the handler nor
+    // the description.
+    if classes.iter().any(|c| c == "restart") {
+        let name = element_field(v, "name")
+            .and_then(|n| str1(&n))
+            .or_else(|| str1(&element_at(v, 0)))
+            .unwrap_or_default();
+        return vec![format!("<restart: {name} >")];
     }
     // `print.condition`: `<simpleError in f(): msg>`, or without the `in` clause
     // when the condition carries no call — which is always here, since rlang
@@ -7550,13 +8030,7 @@ fn format_list(v: &Value) -> Vec<String> {
 /// Whether `format_value` would lay this value out as a list, i.e. it is a bare
 /// list with no class-specific print method of its own.
 fn is_plain_list(v: &Value) -> bool {
-    if class_of(v)
-        .iter()
-        .any(|c| c == "factor" || c == "table" || c == "rle" || c == "condition")
-    {
-        return false;
-    }
-    matches!(data(v), RData::List(_) | RData::Args(_))
+    !has_print_layout(v) && matches!(data(v), RData::List(_) | RData::Args(_))
 }
 
 /// Render a list, heading each element with the full path taken to reach it.

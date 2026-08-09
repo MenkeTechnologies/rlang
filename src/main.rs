@@ -123,6 +123,12 @@ fn eval_with_cran_fallback(
             let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
             ExitCode::SUCCESS
         }
+        // A restart transfer nobody established — `invokeRestart("abort")` —
+        // ends the program with no diagnostic, the way R's abort restart does.
+        Err(e) if e == rlang::host::RESTART_UNWIND => {
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
+            ExitCode::FAILURE
+        }
         Err(e) => {
             #[cfg(not(target_arch = "wasm32"))]
             if rlang::rembed::available() {

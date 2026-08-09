@@ -877,3 +877,58 @@ if (FALSE) 1
 (function() { on.exit(cat("x\n")); 3 })()
 (function() { on.exit(cat("a\n")); on.exit(cat("b\n"), add = TRUE); 4 })()
 tryCatch(42, finally = cat("f\n"))
+#==#
+print(withCallingHandlers({ warning("w"); cat("resumed\n"); 7 },
+  warning = function(x) { cat("H", conditionMessage(x), "\n"); invokeRestart("muffleWarning") }))
+print(withCallingHandlers({ message("m"); cat("resumed\n"); 8 },
+  message = function(x) { cat("H", conditionMessage(x)); invokeRestart("muffleMessage") }))
+withCallingHandlers(withCallingHandlers({ warning("w2"); cat("resumed\n") },
+  warning = function(x) cat("inner\n")),
+  warning = function(x) { cat("outer\n"); invokeRestart("muffleWarning") })
+withCallingHandlers(withCallingHandlers({ warning("w3"); cat("resumed\n") },
+  warning = function(x) { cat("inner\n"); invokeRestart("muffleWarning") }),
+  warning = function(x) cat("outer\n"))
+print(tryCatch(withCallingHandlers({ warning("w4"); cat("NOT\n"); 1 },
+  warning = function(x) cat("calling\n")),
+  warning = function(x) paste("exiting", conditionMessage(x))))
+print(withCallingHandlers(tryCatch({ warning("w5"); 1 }, warning = function(x) "exiting"),
+  warning = function(x) cat("calling\n")))
+withCallingHandlers({ warning("w6"); cat("resumed\n") },
+  condition = function(x) cat("cond\n"),
+  warning = function(x) { cat("warn\n"); invokeRestart("muffleWarning") })
+print(tryCatch(withCallingHandlers(stop("e1"), error = function(e) cat("calling\n")),
+  error = function(e) paste("exiting", conditionMessage(e))))
+print(suppressWarnings({ warning("s1"); cat("resumed\n"); 3 }))
+print(suppressMessages({ message("s2"); cat("resumed\n"); 4 }))
+print(suppressWarnings(as.numeric("zz")))
+#==#
+print(withRestarts(invokeRestart("r1", 5), r1 = function(v) v * 2))
+print(withRestarts({ cat("body\n"); invokeRestart("r1"); cat("NOT\n") }, r1 = function() "done"))
+print(withRestarts({ cat("body\n"); 9 }, r1 = function() 0))
+withRestarts(print(length(computeRestarts())), r1 = function() 1, r2 = function() 2)
+withRestarts(for (x in computeRestarts()) cat(x$name, "\n"), r1 = function() 1, r2 = function() 2)
+withRestarts(for (x in computeRestarts()) cat("[", restartDescription(x), "]\n"),
+  r1 = list(handler = function() 1, description = "listed"), r2 = "plain")
+print(withRestarts(withRestarts(invokeRestart("r1", 2), r1 = function(v) paste("inner", v)),
+  r1 = function(v) paste("outer", v)))
+print(withRestarts(withRestarts({ x <- computeRestarts()[[2]]; invokeRestart(x, 2) },
+  r1 = function(v) paste("inner", v)), r1 = function(v) paste("outer", v)))
+print(withRestarts(tryCatch(invokeRestart("r1", 3), error = function(e) "WRONG",
+  finally = cat("fin\n")), r1 = function(v) paste("restart", v)))
+print(withRestarts((function() { on.exit(cat("exit\n")); invokeRestart("r1", 4) })(),
+  r1 = function(v) paste("restart", v)))
+print(tryCatch(invokeRestart("nope"), error = function(e) conditionMessage(e)))
+withRestarts(print(computeRestarts()), r1 = function() 1)
+withCallingHandlers(warning("w"), warning = function(x) {
+  for (y in computeRestarts()) cat(y$name, "\n"); invokeRestart("muffleWarning") })
+print(withRestarts(withCallingHandlers({ warning("w"); "NOT" },
+  warning = function(x) invokeRestart("r1", 6)), r1 = function(v) paste("jumped", v)))
+print(isRestart(withRestarts(computeRestarts()[[1]], r1 = function() 1)))
+#==#
+print(suppressWarnings(factor(c("a", "b")) < "b"))
+print(tryCatch(factor(c("a", "b")) < "b", warning = function(w) conditionMessage(w)))
+withCallingHandlers(print(factor(c("a", "b")) < "b"),
+  warning = function(w) { cat("H:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })
+print(suppressWarnings(sqrt(-1)))
+print(tryCatch(sqrt(-1), warning = function(w) conditionMessage(w)))
+print(withCallingHandlers(sqrt(-1), warning = function(w) invokeRestart("muffleWarning")))

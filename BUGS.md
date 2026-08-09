@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 58
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 60
 surfaces. The fuzzer currently reports **zero** divergences across those
 surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
 remains below is structural — whole subsystems, not per-primitive gaps.
@@ -20,21 +20,37 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   didn't produce it. Set `RLANG_NO_CRAN=1` to force the native path only.
   Defaults behave lazily — they compile into a body prologue
   (`if (missing(p)) p <- <default>`), so a default may refer to another argument.
-- **The condition system catches, but records no call and has no restarts.**
+- **The condition system is complete apart from the call a condition carries.**
   `tryCatch` selects a handler by condition class (`error`, `warning`,
   `message`, `condition`), `finally` runs either way, and `try` returns a
   `"try-error"` string. `on.exit` runs when a frame is left, however it is left.
   `stop`, `warning`, `message` and `signalCondition` raise real condition
-  objects, and `conditionMessage` / `simpleError` / `simpleCondition` build and
-  read them. `warning()` and `message()` still print and continue when nothing
-  is waiting to catch them, which is R's default action. Two gaps: a condition
-  carries **no `call`**, because the body reaching a builtin is a value rather
-  than an expression — so `conditionCall` is always `NULL`, `print(cond)` is
-  `<simpleError: msg>` rather than `<simpleError in f(): msg>`, and `try`'s
-  string is R's call-less `"Error : msg\n"` rather than
-  `"Error in f() : msg\n"`. And there are **no restarts**
-  (`withRestarts`, `invokeRestart`, `muffleWarning`), so
-  `withCallingHandlers` unwinds like `tryCatch` instead of resuming.
+  objects, and so do rlang's own internal warnings (`NaNs produced`,
+  `Ops.factor`'s "not meaningful for factors"), so those are catchable and
+  muffleable too. `conditionMessage` / `simpleError` / `simpleCondition` build
+  and read condition objects. `warning()` and `message()` print and continue
+  when nothing is waiting to catch them, which is R's default action.
+  **Restarts work**: `withRestarts` / `invokeRestart` / `computeRestarts` /
+  `restartDescription` / `isRestart`, and the built-in `muffleWarning` and
+  `muffleMessage` that `warning()` and `message()` establish around their own
+  signal. `withCallingHandlers` therefore *resumes* — its handler runs at the
+  signalling point with the stack intact, and evaluation carries on from there
+  unless the handler transfers to a restart — and `suppressWarnings` /
+  `suppressMessages` muffle for real rather than passing the value through.
+  One gap remains: a condition carries **no `call`**, because the body reaching
+  a builtin is a value rather than an expression — so `conditionCall` is always
+  `NULL`, `print(cond)` is `<simpleError: msg>` rather than
+  `<simpleError in f(): msg>`, `try`'s string is R's call-less
+  `"Error : msg\n"` rather than `"Error in f() : msg\n"`, and a warning that
+  reaches the top level reports as `Warning message:\n<msg> ` without R's
+  `In <call> :` prefix.
+- **A restart object does not `format()` the way R's does.** `print` gives R's
+  `<restart: name >` and `$name` / `restartDescription` / `computeRestarts`
+  ordering all match, but the `handler`, `test` and `interactive` slots hold
+  `NULL` rather than live functions and `exit` holds rlang's frame id rather
+  than an environment. `format(restartObject)` therefore differs — though R's
+  own output there embeds a heap address (`<environment: 0x…>`) that changes
+  between two runs of R itself, so it is not a parity target for anyone.
 - **`local()` works; the rest of the environment surface does not.**
   `local(expr)` compiles to `(function() expr)()`, which is R's own definition,
   so it gets a fresh environment enclosing the caller's. `sys.function()`,

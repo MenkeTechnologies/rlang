@@ -1094,3 +1094,66 @@ b
 [1] 4
 f
 [1] 42
+#==#
+H w 
+resumed
+[1] 7
+H m
+resumed
+[1] 8
+inner
+outer
+resumed
+inner
+resumed
+calling
+[1] "exiting w4"
+[1] "exiting"
+cond
+warn
+resumed
+calling
+[1] "exiting e1"
+resumed
+[1] 3
+resumed
+[1] 4
+[1] NA
+#==#
+[1] 10
+body
+[1] "done"
+body
+[1] 9
+[1] 3
+r1 
+r2 
+ 
+[ listed ]
+[ plain ]
+[ ]
+[1] "inner 2"
+[1] "outer 2"
+fin
+[1] "restart 3"
+exit
+[1] "restart 4"
+[1] "no 'restart' 'nope' found"
+[[1]]
+<restart: r1 >
+
+[[2]]
+<restart: abort >
+
+muffleWarning 
+ 
+[1] "jumped 6"
+[1] TRUE
+#==#
+[1] NA NA
+[1] "‘<’ not meaningful for factors"
+H: ‘<’ not meaningful for factors 
+[1] NA NA
+[1] NaN
+[1] "NaNs produced"
+[1] NaN

@@ -162,3 +162,204 @@ fn wide_vectors_wrap_with_index_prefixes() {
     assert!(lines[0].starts_with(" [1]"));
     assert!(lines.iter().all(|l| l.len() <= 80));
 }
+
+/// The transcript a program produces, including `cat` output, so a test can
+/// assert on *where* evaluation went rather than only on its final value.
+fn transcript(src: &str) -> String {
+    rlang::eval_capture(src).trim_end().to_string()
+}
+
+#[test]
+fn a_calling_handler_resumes_at_the_signalling_point() {
+    // The distinction from `tryCatch`: the handler runs, and then the statement
+    // *after* `warning()` still runs. Verified against Rscript 4.6.1.
+    assert_eq!(
+        transcript(
+            "print(withCallingHandlers({ warning(\"w\"); cat(\"resumed\\n\"); 7 }, \
+             warning = function(x) { cat(\"H\\n\"); invokeRestart(\"muffleWarning\") }))"
+        ),
+        "H\nresumed\n[1] 7"
+    );
+}
+
+#[test]
+fn a_calling_handler_that_returns_normally_still_resumes() {
+    // No restart invoked: R runs the handler, resumes, and then applies the
+    // warning's default action, which goes to stderr and not to this transcript.
+    assert_eq!(
+        transcript(
+            "print(withCallingHandlers({ warning(\"w\"); cat(\"resumed\\n\"); 7 }, \
+             warning = function(x) cat(\"H\\n\")))"
+        ),
+        "H\nresumed\n[1] 7"
+    );
+}
+
+#[test]
+fn calling_handlers_run_inner_to_outer_until_one_muffles() {
+    // Both handlers see it, innermost first, and the outer one muffles.
+    assert_eq!(
+        transcript(
+            "withCallingHandlers(withCallingHandlers({ warning(\"w\"); cat(\"resumed\\n\") }, \
+             warning = function(x) cat(\"inner\\n\")), \
+             warning = function(x) { cat(\"outer\\n\"); invokeRestart(\"muffleWarning\") })"
+        ),
+        "inner\nouter\nresumed"
+    );
+    // Muffling in the inner handler ends the search: the outer never runs.
+    assert_eq!(
+        transcript(
+            "withCallingHandlers(withCallingHandlers({ warning(\"w\"); cat(\"resumed\\n\") }, \
+             warning = function(x) { cat(\"inner\\n\"); invokeRestart(\"muffleWarning\") }), \
+             warning = function(x) cat(\"outer\\n\"))"
+        ),
+        "inner\nresumed"
+    );
+}
+
+#[test]
+fn an_exiting_handler_stops_the_search_and_unwinds() {
+    // Calling handler first, then the enclosing `tryCatch` tears the stack down,
+    // so the marker after the signal never runs.
+    assert_eq!(
+        transcript(
+            "print(tryCatch(withCallingHandlers({ warning(\"w\"); cat(\"NOT\\n\"); 1 }, \
+             warning = function(x) cat(\"calling\\n\")), \
+             warning = function(x) paste(\"exiting\", conditionMessage(x))))"
+        ),
+        "calling\n[1] \"exiting w\""
+    );
+    // The other nesting: the innermost handler is the exiting one, so the outer
+    // calling handler is never reached at all.
+    assert_eq!(
+        transcript(
+            "print(withCallingHandlers(tryCatch({ warning(\"w\"); 1 }, \
+             warning = function(x) \"exiting\"), warning = function(x) cat(\"NOT\\n\")))"
+        ),
+        "[1] \"exiting\""
+    );
+}
+
+#[test]
+fn a_handler_does_not_re_enter_its_own_frame() {
+    // The inner `warning` must not reach the handler that is running, or the
+    // handler recurses forever.
+    assert_eq!(
+        transcript(
+            "withCallingHandlers({ warning(\"w\"); cat(\"resumed\\n\") }, \
+             warning = function(x) { cat(\"H\\n\"); suppressWarnings(warning(\"again\")); \
+             invokeRestart(\"muffleWarning\") })"
+        ),
+        "H\nresumed"
+    );
+}
+
+#[test]
+fn a_restart_transfers_control_to_the_frame_that_established_it() {
+    assert_eq!(
+        transcript("print(withRestarts(invokeRestart(\"r1\", 5), r1 = function(v) v * 2))"),
+        "[1] 10"
+    );
+    // Everything after `invokeRestart` is skipped.
+    assert_eq!(
+        transcript(
+            "print(withRestarts({ cat(\"body\\n\"); invokeRestart(\"r1\"); cat(\"NOT\\n\") }, \
+             r1 = function() \"done\"))"
+        ),
+        "body\n[1] \"done\""
+    );
+    // Established but not invoked: the body's own value comes out.
+    assert_eq!(
+        transcript("print(withRestarts(9, r1 = function() 0))"),
+        "[1] 9"
+    );
+}
+
+#[test]
+fn a_restart_transfer_is_not_an_error_and_runs_cleanups_on_the_way() {
+    // `tryCatch(error =)` must not absorb the transfer, but `finally` still runs.
+    assert_eq!(
+        transcript(
+            "print(withRestarts(tryCatch(invokeRestart(\"r1\", 3), \
+             error = function(e) \"WRONG\", finally = cat(\"fin\\n\")), \
+             r1 = function(v) paste(\"restart\", v)))"
+        ),
+        "fin\n[1] \"restart 3\""
+    );
+    assert_eq!(
+        transcript(
+            "print(withRestarts((function() { on.exit(cat(\"exit\\n\")); \
+             invokeRestart(\"r1\", 4) })(), r1 = function(v) paste(\"restart\", v)))"
+        ),
+        "exit\n[1] \"restart 4\""
+    );
+}
+
+#[test]
+fn nested_restarts_of_the_same_name_resolve_innermost_first() {
+    assert_eq!(
+        transcript(
+            "print(withRestarts(withRestarts(invokeRestart(\"r1\", 2), \
+             r1 = function(v) paste(\"inner\", v)), r1 = function(v) paste(\"outer\", v)))"
+        ),
+        "[1] \"inner 2\""
+    );
+    // A restart *object* names one exact frame, so it reaches the outer one even
+    // though an inner restart shares its name.
+    assert_eq!(
+        transcript(
+            "print(withRestarts(withRestarts({ x <- computeRestarts()[[2]]; \
+             invokeRestart(x, 2) }, r1 = function(v) paste(\"inner\", v)), \
+             r1 = function(v) paste(\"outer\", v)))"
+        ),
+        "[1] \"outer 2\""
+    );
+}
+
+#[test]
+fn the_signalling_builtins_establish_the_muffle_restarts() {
+    // R puts `muffleWarning` around `warning()` and `muffleMessage` around
+    // `message()`, plus the evaluator's own `abort`.
+    // Untrimmed: the second line is the `abort` restart, whose `$name` is NULL,
+    // so `cat` writes only the separator and the newline.
+    assert_eq!(
+        rlang::eval_capture(
+            "withCallingHandlers(warning(\"w\"), warning = function(x) { \
+             for (y in computeRestarts()) cat(y$name, \"\\n\"); \
+             invokeRestart(\"muffleWarning\") })"
+        ),
+        "muffleWarning \n \n"
+    );
+    // Outside a signal only `abort` is established.
+    assert_eq!(transcript("print(length(computeRestarts()))"), "[1] 1");
+    assert_eq!(
+        transcript("print(computeRestarts()[[1]])"),
+        "<restart: abort >"
+    );
+}
+
+#[test]
+fn invoking_a_restart_that_is_not_established_is_an_error() {
+    assert_eq!(
+        transcript(
+            "print(tryCatch(invokeRestart(\"nope\"), error = function(e) conditionMessage(e)))"
+        ),
+        "[1] \"no 'restart' 'nope' found\""
+    );
+}
+
+#[test]
+fn suppress_wrappers_muffle_without_stopping_the_body() {
+    assert_eq!(
+        transcript("print(suppressWarnings({ warning(\"s\"); cat(\"resumed\\n\"); 3 }))"),
+        "resumed\n[1] 3"
+    );
+    assert_eq!(
+        transcript("print(suppressMessages({ message(\"s\"); cat(\"resumed\\n\"); 4 }))"),
+        "resumed\n[1] 4"
+    );
+    assert_eq!(
+        transcript("print(suppressWarnings(as.numeric(\"zz\")))"),
+        "[1] NA"
+    );
+}

@@ -909,6 +909,199 @@ fn gen_conditions(seed: u64) -> Vec<String> {
     })
 }
 
+/// `withCallingHandlers` — the *resuming* half of the condition system.
+///
+/// Every case is written so the answer depends on control flow, not just on the
+/// handler running: a `cat` marker after the signalling point only prints if
+/// evaluation resumed there, and the value printed at the end is the body's
+/// only when nothing unwound. A handler that unwinds instead of resuming — the
+/// pre-restart behaviour — changes both.
+fn gen_calling(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    let n = r.range(1, 9);
+    one(match r.below(18) {
+        // Handler muffles: marker prints, body value survives.
+        0 => format!(
+            "print(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\"); {n} }}, \
+             warning = function(x) {{ cat(\"H\", conditionMessage(x), \"\\n\"); \
+             invokeRestart(\"muffleWarning\") }}))"
+        ),
+        // Handler returns normally: R still resumes, and the warning falls
+        // through to its default action afterwards.
+        1 => format!(
+            "print(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\"); {n} }}, \
+             warning = function(x) cat(\"H\\n\")))"
+        ),
+        2 => format!(
+            "print(withCallingHandlers({{ message(\"{w}\"); cat(\"resumed\\n\"); {n} }}, \
+             message = function(x) {{ cat(\"H\", conditionMessage(x)); \
+             invokeRestart(\"muffleMessage\") }}))"
+        ),
+        3 => format!(
+            "print(withCallingHandlers({{ message(\"{w}\"); cat(\"resumed\\n\"); {n} }}, \
+             message = function(x) cat(\"H\\n\")))"
+        ),
+        // Inner declines, outer muffles: both run, inner first, then resume.
+        4 => format!(
+            "withCallingHandlers(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             warning = function(x) cat(\"inner\\n\")), \
+             warning = function(x) {{ cat(\"outer\\n\"); invokeRestart(\"muffleWarning\") }})"
+        ),
+        // Inner muffles: the outer handler never sees it at all.
+        5 => format!(
+            "withCallingHandlers(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             warning = function(x) {{ cat(\"inner\\n\"); invokeRestart(\"muffleWarning\") }}), \
+             warning = function(x) cat(\"outer\\n\"))"
+        ),
+        // Calling handler runs first, then the exiting one unwinds past the marker.
+        6 => format!(
+            "print(tryCatch(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\"); {n} }}, \
+             warning = function(x) cat(\"calling\\n\")), \
+             warning = function(x) paste(\"exiting\", conditionMessage(x))))"
+        ),
+        // The innermost handler is the exiting one, so the outer calling handler
+        // is never reached.
+        7 => format!(
+            "print(withCallingHandlers(tryCatch({{ warning(\"{w}\"); {n} }}, \
+             warning = function(x) \"exiting\"), warning = function(x) cat(\"calling\\n\")))"
+        ),
+        // Two handlers on one call: both run, in the order written.
+        8 => format!(
+            "withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             condition = function(x) cat(\"cond\\n\"), \
+             warning = function(x) {{ cat(\"warn\\n\"); invokeRestart(\"muffleWarning\") }})"
+        ),
+        // An error has no restart: the handler runs, then the stack still comes down.
+        9 => format!(
+            "print(tryCatch(withCallingHandlers({{ stop(\"{w}\"); cat(\"NOT\\n\") }}, \
+             error = function(e) cat(\"calling\", conditionMessage(e), \"\\n\")), \
+             error = function(e) paste(\"exiting\", conditionMessage(e))))"
+        ),
+        10 => format!("print(suppressWarnings({{ warning(\"{w}\"); cat(\"resumed\\n\"); {n} }}))"),
+        11 => format!("print(suppressMessages({{ message(\"{w}\"); cat(\"resumed\\n\"); {n} }}))"),
+        // The signal comes from a nested frame, so resumption has to land back
+        // inside that frame rather than at the handler's.
+        12 => format!(
+            "f <- function() {{ warning(\"{w}\"); cat(\"resumed\\n\"); {n} }}\n\
+             print(withCallingHandlers(f(), \
+             warning = function(x) invokeRestart(\"muffleWarning\")))"
+        ),
+        // A handler that signals the same class must not re-enter itself.
+        13 => format!(
+            "withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             warning = function(x) {{ cat(\"H\\n\"); suppressWarnings(warning(\"again\")); \
+             invokeRestart(\"muffleWarning\") }})"
+        ),
+        // A custom condition class, signalled with no default action.
+        14 => format!(
+            "cnd <- structure(class = c(\"{w}c\", \"condition\"), \
+             list(message = \"{w}\", call = NULL))\n\
+             print(withCallingHandlers({{ signalCondition(cnd); cat(\"resumed\\n\"); {n} }}, \
+             {w}c = function(x) cat(\"saw\", conditionMessage(x), \"\\n\")))"
+        ),
+        15 => format!(
+            "withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             warning = function(x) {{ print(class(x)); print(conditionMessage(x)); \
+             invokeRestart(\"muffleWarning\") }})"
+        ),
+        // Suppression nested either way round.
+        16 => format!(
+            "withCallingHandlers(suppressWarnings({{ warning(\"{w}\"); cat(\"resumed\\n\") }}), \
+             warning = function(x) cat(\"NOT\\n\"))"
+        ),
+        _ => format!(
+            "suppressWarnings(withCallingHandlers({{ warning(\"{w}\"); cat(\"resumed\\n\") }}, \
+             warning = function(x) cat(\"inner\\n\")))"
+        ),
+    })
+}
+
+/// Restarts: establishing them, transferring to them, and enumerating them.
+///
+/// A restart is a non-local transfer, so what matters is *where* control lands:
+/// the statement after `invokeRestart` must not run, `on.exit` and `finally`
+/// along the way must, and `tryCatch(error =)` must not absorb the transfer.
+fn gen_restarts(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let w = ww(r);
+    let n = r.range(1, 9);
+    one(match r.below(18) {
+        0 => format!(
+            "print(withRestarts(invokeRestart(\"r1\", {n}), r1 = function(v) v * 2))"
+        ),
+        1 => format!(
+            "print(withRestarts({{ cat(\"body\\n\"); invokeRestart(\"r1\"); cat(\"NOT\\n\") }}, \
+             r1 = function() \"{w}\"))"
+        ),
+        // Established but never invoked: the body's own value comes out.
+        2 => format!("print(withRestarts({{ cat(\"body\\n\"); {n} }}, r1 = function() 0))"),
+        3 => "withRestarts(print(length(computeRestarts())), r1 = function() 1, r2 = function() 2)"
+            .to_string(),
+        4 => "withRestarts(for (x in computeRestarts()) cat(x$name, \"\\n\"), \
+              r1 = function() 1, r2 = function() 2)"
+            .to_string(),
+        5 => format!(
+            "withRestarts(for (x in computeRestarts()) cat(\"[\", restartDescription(x), \"]\\n\"), \
+             r1 = list(handler = function() 1, description = \"{w}\"), r2 = \"desc {w}\")"
+        ),
+        // Two frames share a name: the innermost wins.
+        6 => format!(
+            "print(withRestarts(withRestarts(invokeRestart(\"r1\", {n}), \
+             r1 = function(v) paste(\"inner\", v)), r1 = function(v) paste(\"outer\", v)))"
+        ),
+        // A restart *object* names one exact frame, so it reaches the outer one.
+        7 => format!(
+            "print(withRestarts(withRestarts({{ x <- computeRestarts()[[2]]; \
+             invokeRestart(x, {n}) }}, r1 = function(v) paste(\"inner\", v)), \
+             r1 = function(v) paste(\"outer\", v)))"
+        ),
+        // The transfer passes through `tryCatch` untouched, but `finally` runs.
+        8 => format!(
+            "print(withRestarts(tryCatch(invokeRestart(\"r1\", {n}), \
+             error = function(e) \"WRONG\", finally = cat(\"fin\\n\")), \
+             r1 = function(v) paste(\"restart\", v)))"
+        ),
+        9 => format!(
+            "print(withRestarts((function() {{ on.exit(cat(\"exit\\n\")); \
+             invokeRestart(\"r1\", {n}) }})(), r1 = function(v) paste(\"restart\", v)))"
+        ),
+        // Transfer out of a deep call chain.
+        10 => format!(
+            "f <- function(k) if (k == 0) invokeRestart(\"r1\", \"{w}\") else f(k - 1)\n\
+             print(withRestarts(f({}), r1 = function(v) paste(\"caught\", v)))",
+            r.range(1, 12)
+        ),
+        11 => format!(
+            "print(tryCatch(invokeRestart(\"{w}\"), error = function(e) conditionMessage(e)))"
+        ),
+        12 => "withRestarts(print(computeRestarts()), r1 = function() 1)".to_string(),
+        13 => "withRestarts(print(sapply(computeRestarts(), class)), r1 = function() 1)".to_string(),
+        // The muffle restarts a signalling builtin establishes around itself.
+        14 => format!(
+            "withCallingHandlers(warning(\"{w}\"), warning = function(x) {{ \
+             for (y in computeRestarts()) cat(y$name, \"\\n\"); \
+             invokeRestart(\"muffleWarning\") }})"
+        ),
+        15 => format!(
+            "withCallingHandlers(message(\"{w}\"), message = function(x) {{ \
+             print(length(computeRestarts())); invokeRestart(\"muffleMessage\") }})"
+        ),
+        // The restart handler's own visibility decides whether the call prints.
+        16 => format!(
+            "withRestarts(invokeRestart(\"r1\", {n}), r1 = function(v) invisible(v))\n\
+             withRestarts(invokeRestart(\"r1\", {n}), r1 = function(v) v)"
+        ),
+        // Restart established outside, condition handled inside: the handler
+        // transfers past the signalling frame entirely.
+        _ => format!(
+            "print(withRestarts(withCallingHandlers({{ warning(\"{w}\"); \"NOT\" }}, \
+             warning = function(x) invokeRestart(\"r1\", {n})), \
+             r1 = function(v) paste(\"jumped\", v)))"
+        ),
+    })
+}
+
 fn gen_trig(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     let f = ff(r);
@@ -1517,6 +1710,8 @@ enum Mode {
     Factorsub,
     Factorops,
     Conditions,
+    Calling,
+    Restarts,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1578,6 +1773,8 @@ const ALL_MODES: &[Mode] = &[
     Mode::Factorsub,
     Mode::Factorops,
     Mode::Conditions,
+    Mode::Calling,
+    Mode::Restarts,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1640,6 +1837,8 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Factorsub => gen_factorsub(seed),
         Mode::Factorops => gen_factorops(seed),
         Mode::Conditions => gen_conditions(seed),
+        Mode::Calling => gen_calling(seed),
+        Mode::Restarts => gen_restarts(seed),
     }
 }
 
@@ -1651,13 +1850,22 @@ fn gen_deparsefn(seed: u64) -> Vec<String> {
     let body = match r.below(10) {
         0 => format!("x {} {}", r.pick(&["+", "-", "*", "/", "^"]), ii(r)),
         1 => format!("if (x > {}) x else {}", si(r), si(r)),
-        2 => format!("{{\n  y <- x * {}\n  if (y > {}) y else {}\n  y\n}}", ii(r), si(r), si(r)),
+        2 => format!(
+            "{{\n  y <- x * {}\n  if (y > {}) y else {}\n  y\n}}",
+            ii(r),
+            si(r),
+            si(r)
+        ),
         3 => format!("{{\n  for (i in 1:{}) x <- x + i\n  x\n}}", r.range(1, 5)),
         4 => format!("{{\n  while (x > {}) x <- x - 1\n  x\n}}", ii(r)),
         5 => format!("(x + {}) * {}", si(r), ii(r)),
         6 => format!("c(a = {}, b = \"{}\")", ff(r), ww(r)),
         7 => "function(y) x + y".to_string(),
-        8 => format!("{{\n  if (x) {{\n    {}\n  }} else {{\n    {}\n  }}\n}}", ii(r), ii(r)),
+        8 => format!(
+            "{{\n  if (x) {{\n    {}\n  }} else {{\n    {}\n  }}\n}}",
+            ii(r),
+            ii(r)
+        ),
         _ => format!("x[[{}]]$k", r.range(1, 3)),
     };
     let params = match r.below(4) {
@@ -1703,8 +1911,14 @@ fn gen_bindlabels(seed: u64) -> Vec<String> {
 /// `apply` results that ride on them.
 fn gen_dimnames(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    let mut out = vec![format!("m <- matrix(1:6, nrow = 2{})",
-        if r.below(2) == 0 { ", byrow = TRUE" } else { "" })];
+    let mut out = vec![format!(
+        "m <- matrix(1:6, nrow = 2{})",
+        if r.below(2) == 0 {
+            ", byrow = TRUE"
+        } else {
+            ""
+        }
+    )];
     match r.below(8) {
         0 => {
             out.push("dimnames(m) <- list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\", \"c3\"))".into());
@@ -1766,8 +1980,16 @@ fn gen_ordering(seed: u64) -> Vec<String> {
             c = ii(r),
             d = ii(r)
         ),
-        8 => format!("print(sort(c({a}, {a}, {b}), decreasing = TRUE))", a = ii(r), b = ii(r)),
-        _ => format!("print(order(c({a}, {a}, {b}), decreasing = TRUE))", a = ii(r), b = ii(r)),
+        8 => format!(
+            "print(sort(c({a}, {a}, {b}), decreasing = TRUE))",
+            a = ii(r),
+            b = ii(r)
+        ),
+        _ => format!(
+            "print(order(c({a}, {a}, {b}), decreasing = TRUE))",
+            a = ii(r),
+            b = ii(r)
+        ),
     })
 }
 
@@ -1775,7 +1997,9 @@ fn gen_ordering(seed: u64) -> Vec<String> {
 /// survives (`mean` keeps the first it meets, `median` always answers NA).
 fn gen_missing(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    let f = r.pick(&["mean", "median", "sum", "prod", "max", "min", "var", "sd", "range"]);
+    let f = r.pick(&[
+        "mean", "median", "sum", "prod", "max", "min", "var", "sd", "range",
+    ]);
     let v = match r.below(6) {
         0 => format!("c({}, NA)", ff(r)),
         1 => format!("c({}, NaN)", ff(r)),
@@ -1855,7 +2079,11 @@ fn gen_pastex(seed: u64) -> Vec<String> {
         3 => "print(paste(NULL))".to_string(),
         4 => format!("print(paste(NULL, collapse = \"{}\"))", ww(r)),
         5 => format!("print(paste(1:{}, 1:{}))", r.range(2, 3), r.range(4, 6)),
-        6 => format!("print(paste(\"{}\", 1:{}, sep = \"-\"))", ww(r), r.range(1, 4)),
+        6 => format!(
+            "print(paste(\"{}\", 1:{}, sep = \"-\"))",
+            ww(r),
+            r.range(1, 4)
+        ),
         7 => format!("print(paste(c(\"{}\", NA), \"{}\"))", ww(r), ww(r)),
         _ => format!(
             "print(paste(c(\"{}\", \"{}\"), collapse = \"{}\"))",
@@ -1870,7 +2098,9 @@ fn gen_pastex(seed: u64) -> Vec<String> {
 /// `big.mark` and `scientific` all interact with.
 fn gen_formatsci(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
-    let big = ["1e6", "1e5", "123456", "1234567", "1e-4", "1e-10", "0.0001", "100000"];
+    let big = [
+        "1e6", "1e5", "123456", "1234567", "1e-4", "1e-10", "0.0001", "100000",
+    ];
     let v = r.pick(&big);
     one(match r.below(9) {
         0 => format!("print(format({v}))"),
@@ -1905,12 +2135,35 @@ fn gen_parens(seed: u64) -> Vec<String> {
 fn gen_seqfmt(seed: u64) -> Vec<String> {
     let r = &mut Rng::seed(seed);
     one(match r.below(9) {
-        0 => format!("print(seq(along.with = c({}, {}, {})))", ii(r), ii(r), ii(r)),
-        1 => format!("print(seq({}, {}, length.out = {}))", ii(r), r.range(5, 20), r.range(2, 5)),
-        2 => format!("print(seq({}, {}, by = {}))", ii(r), r.range(5, 20), r.range(2, 4)),
+        0 => format!(
+            "print(seq(along.with = c({}, {}, {})))",
+            ii(r),
+            ii(r),
+            ii(r)
+        ),
+        1 => format!(
+            "print(seq({}, {}, length.out = {}))",
+            ii(r),
+            r.range(5, 20),
+            r.range(2, 5)
+        ),
+        2 => format!(
+            "print(seq({}, {}, by = {}))",
+            ii(r),
+            r.range(5, 20),
+            r.range(2, 4)
+        ),
         3 => format!("print(seq_len({}))", r.range(0, 5)),
-        4 => format!("print(sprintf(\"%*d\", {}, {}))", r.range(1, 8), r.range(1, 999)),
-        5 => format!("print(sprintf(\"%-*d|\", {}, {}))", r.range(1, 8), r.range(1, 999)),
+        4 => format!(
+            "print(sprintf(\"%*d\", {}, {}))",
+            r.range(1, 8),
+            r.range(1, 999)
+        ),
+        5 => format!(
+            "print(sprintf(\"%-*d|\", {}, {}))",
+            r.range(1, 8),
+            r.range(1, 999)
+        ),
         6 => format!("print(sprintf(\"%.*f\", {}, {}))", r.range(0, 5), ff(r)),
         7 => format!("print(sprintf(\"%*s|\", {}, \"{}\"))", r.range(1, 9), ww(r)),
         _ => format!("print(seq({}))", r.range(0, 6)),
@@ -2007,6 +2260,8 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Factorsub => "factorsub",
         Mode::Factorops => "factorops",
         Mode::Conditions => "conditions",
+        Mode::Calling => "calling",
+        Mode::Restarts => "restarts",
     }
 }
 

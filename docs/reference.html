@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 247 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 252 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 267 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 272 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 247 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 252 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">21</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">35</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">40</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -1467,7 +1467,7 @@
     </section>
     <section class="tutorial-section" id="ch-environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">35 entries</p>
+      <p class="chapter-meta">40 entries</p>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1532,7 +1532,7 @@
         <h3><a class="doc-anchor" href="#doc-withcallinghandlers">#</a> <code>withCallingHandlers</code></h3>
         <pre><code class="lang-r r">withCallingHandlers(expr, ...)
 </code></pre>
-        <p>Evaluate expr with handlers installed, spelled as tryCatch is. Restarts are not implemented, so a handled condition unwinds rather than resuming.</p>
+        <p>Evaluate expr with handlers installed, spelled as tryCatch is, but without unwinding: a matching handler runs at the point the condition was signalled, and when it returns the search continues outward and evaluation resumes there. A handler ends the search by transferring to a restart, which is what invokeRestart("muffleWarning") does.</p>
       </article>
       <article class="doc-entry" id="doc-try">
         <h3><a class="doc-anchor" href="#doc-try">#</a> <code>try</code></h3>
@@ -1586,7 +1586,37 @@
         <h3><a class="doc-anchor" href="#doc-signalcondition">#</a> <code>signalCondition</code></h3>
         <pre><code class="lang-r r">signalCondition(cond)
 </code></pre>
-        <p>Signal a condition object: if an enclosing tryCatch handles one of its classes the handler runs, otherwise the call returns NULL and evaluation continues.</p>
+        <p>Signal a condition object: every enclosing calling handler for one of its classes runs in place, an enclosing tryCatch for one of them unwinds, and with nothing in scope the call returns NULL and evaluation continues.</p>
+      </article>
+      <article class="doc-entry" id="doc-withrestarts">
+        <h3><a class="doc-anchor" href="#doc-withrestarts">#</a> <code>withRestarts</code></h3>
+        <pre><code class="lang-r r">withRestarts(expr, ...)
+</code></pre>
+        <p>Evaluate expr with restarts established. Each named argument is a restart: a handler function, a list(handler =, description =), or a description string. If invokeRestart transfers to one, its handler's value becomes the value of this call.</p>
+      </article>
+      <article class="doc-entry" id="doc-invokerestart">
+        <h3><a class="doc-anchor" href="#doc-invokerestart">#</a> <code>invokeRestart</code></h3>
+        <pre><code class="lang-r r">invokeRestart(r, ...)
+</code></pre>
+        <p>Transfer control to the restart named (or held) by r, passing the remaining arguments to its handler. Does not return: cleanups registered with on.exit and tryCatch's finally still run on the way out, but no handler catches the transfer.</p>
+      </article>
+      <article class="doc-entry" id="doc-computerestarts">
+        <h3><a class="doc-anchor" href="#doc-computerestarts">#</a> <code>computeRestarts</code></h3>
+        <pre><code class="lang-r r">computeRestarts(cond = NULL)
+</code></pre>
+        <p>The restarts currently established, innermost first, ending with the abort restart the evaluator always provides. warning() establishes muffleWarning around itself and message() establishes muffleMessage.</p>
+      </article>
+      <article class="doc-entry" id="doc-restartdescription">
+        <h3><a class="doc-anchor" href="#doc-restartdescription">#</a> <code>restartDescription</code></h3>
+        <pre><code class="lang-r r">restartDescription(r)
+</code></pre>
+        <p>The description string a restart was established with, or NULL when it carries none.</p>
+      </article>
+      <article class="doc-entry" id="doc-isrestart">
+        <h3><a class="doc-anchor" href="#doc-isrestart">#</a> <code>isRestart</code></h3>
+        <pre><code class="lang-r r">isRestart(x)
+</code></pre>
+        <p>Whether x is a restart object, i.e. inherits from class "restart".</p>
       </article>
       <article class="doc-entry" id="doc-recall">
         <h3><a class="doc-anchor" href="#doc-recall">#</a> <code>Recall</code></h3>
@@ -1658,13 +1688,13 @@
         <h3><a class="doc-anchor" href="#doc-suppressmessages">#</a> <code>suppressMessages</code></h3>
         <pre><code class="lang-r r">suppressMessages(expr)
 </code></pre>
-        <p>Return expr. Arguments are evaluated eagerly, so any message has already been written to stderr by the time this runs — the call is accepted for compatibility, not honoured.</p>
+        <p>Evaluate expr with every message discarded, and return its value. The message is muffled at the point it is signalled, so expr carries on from there.</p>
       </article>
       <article class="doc-entry" id="doc-suppresswarnings">
         <h3><a class="doc-anchor" href="#doc-suppresswarnings">#</a> <code>suppressWarnings</code></h3>
         <pre><code class="lang-r r">suppressWarnings(expr)
 </code></pre>
-        <p>Return expr, with the same eager-evaluation caveat as suppressMessages.</p>
+        <p>Evaluate expr with every warning discarded, and return its value. The warning is muffled at the point it is signalled, so expr carries on from there.</p>
       </article>
       <article class="doc-entry" id="doc-suppresspackagestartupmessages">
         <h3><a class="doc-anchor" href="#doc-suppresspackagestartupmessages">#</a> <code>suppressPackageStartupMessages</code></h3>
