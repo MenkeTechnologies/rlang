@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 235 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 247 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 255 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 267 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 235 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 247 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">21</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">23</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">35</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -1467,7 +1467,7 @@
     </section>
     <section class="tutorial-section" id="ch-environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">23 entries</p>
+      <p class="chapter-meta">35 entries</p>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1514,7 +1514,79 @@
         <h3><a class="doc-anchor" href="#doc-usemethod">#</a> <code>UseMethod</code></h3>
         <pre><code class="lang-r r">UseMethod(generic, object)
 </code></pre>
-        <p>S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns. NextMethod does not exist, so dispatch stops at the first match.</p>
+        <p>S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns.</p>
+      </article>
+      <article class="doc-entry" id="doc-nextmethod">
+        <h3><a class="doc-anchor" href="#doc-nextmethod">#</a> <code>NextMethod</code></h3>
+        <pre><code class="lang-r r">NextMethod()
+</code></pre>
+        <p>Continue S3 dispatch from inside a method: run the method for the next class in the vector UseMethod was dispatching on, falling back to the primitive behind the generic when no further method is defined.</p>
+      </article>
+      <article class="doc-entry" id="doc-trycatch">
+        <h3><a class="doc-anchor" href="#doc-trycatch">#</a> <code>tryCatch</code></h3>
+        <pre><code class="lang-r r">tryCatch(expr, ..., finally)
+</code></pre>
+        <p>Evaluate expr with handlers installed. Each named argument other than finally is a handler for the condition class of that name (error, warning, message, condition); if expr signals a matching condition, that handler is called with the condition object and its value becomes the result. finally is evaluated on the way out either way.</p>
+      </article>
+      <article class="doc-entry" id="doc-withcallinghandlers">
+        <h3><a class="doc-anchor" href="#doc-withcallinghandlers">#</a> <code>withCallingHandlers</code></h3>
+        <pre><code class="lang-r r">withCallingHandlers(expr, ...)
+</code></pre>
+        <p>Evaluate expr with handlers installed, spelled as tryCatch is. Restarts are not implemented, so a handled condition unwinds rather than resuming.</p>
+      </article>
+      <article class="doc-entry" id="doc-try">
+        <h3><a class="doc-anchor" href="#doc-try">#</a> <code>try</code></h3>
+        <pre><code class="lang-r r">try(expr, silent = FALSE)
+</code></pre>
+        <p>Evaluate expr, returning its value, or on error an invisible character string of class "try-error" carrying the message (also printed to stderr unless silent is TRUE) rather than aborting.</p>
+      </article>
+      <article class="doc-entry" id="doc-on-exit">
+        <h3><a class="doc-anchor" href="#doc-on-exit">#</a> <code>on.exit</code></h3>
+        <pre><code class="lang-r r">on.exit(expr, add = FALSE)
+</code></pre>
+        <p>Register expr to be evaluated when the enclosing closure exits, whether it returns normally or unwinds with an error. Without add = TRUE a later on.exit replaces the registered expression instead of joining it.</p>
+      </article>
+      <article class="doc-entry" id="doc-conditionmessage">
+        <h3><a class="doc-anchor" href="#doc-conditionmessage">#</a> <code>conditionMessage</code></h3>
+        <pre><code class="lang-r r">conditionMessage(c)
+</code></pre>
+        <p>The message string carried by a condition object.</p>
+      </article>
+      <article class="doc-entry" id="doc-conditioncall">
+        <h3><a class="doc-anchor" href="#doc-conditioncall">#</a> <code>conditionCall</code></h3>
+        <pre><code class="lang-r r">conditionCall(c)
+</code></pre>
+        <p>The call a condition was signalled from. rlang records no call, so this is always NULL.</p>
+      </article>
+      <article class="doc-entry" id="doc-simpleerror">
+        <h3><a class="doc-anchor" href="#doc-simpleerror">#</a> <code>simpleError</code></h3>
+        <pre><code class="lang-r r">simpleError(message)
+</code></pre>
+        <p>Build a condition object of class c("simpleError", "error", "condition").</p>
+      </article>
+      <article class="doc-entry" id="doc-simplewarning">
+        <h3><a class="doc-anchor" href="#doc-simplewarning">#</a> <code>simpleWarning</code></h3>
+        <pre><code class="lang-r r">simpleWarning(message)
+</code></pre>
+        <p>Build a condition object of class c("simpleWarning", "warning", "condition").</p>
+      </article>
+      <article class="doc-entry" id="doc-simplemessage">
+        <h3><a class="doc-anchor" href="#doc-simplemessage">#</a> <code>simpleMessage</code></h3>
+        <pre><code class="lang-r r">simpleMessage(message)
+</code></pre>
+        <p>Build a condition object of class c("simpleMessage", "message", "condition").</p>
+      </article>
+      <article class="doc-entry" id="doc-simplecondition">
+        <h3><a class="doc-anchor" href="#doc-simplecondition">#</a> <code>simpleCondition</code></h3>
+        <pre><code class="lang-r r">simpleCondition(message)
+</code></pre>
+        <p>Build a condition object of class c("simpleCondition", "condition").</p>
+      </article>
+      <article class="doc-entry" id="doc-signalcondition">
+        <h3><a class="doc-anchor" href="#doc-signalcondition">#</a> <code>signalCondition</code></h3>
+        <pre><code class="lang-r r">signalCondition(cond)
+</code></pre>
+        <p>Signal a condition object: if an enclosing tryCatch handles one of its classes the handler runs, otherwise the call returns NULL and evaluation continues.</p>
       </article>
       <article class="doc-entry" id="doc-recall">
         <h3><a class="doc-anchor" href="#doc-recall">#</a> <code>Recall</code></h3>
