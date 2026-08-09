@@ -797,8 +797,23 @@ const PREDICATES: &[Entry] = &[
 const STRINGS: &[Entry] = &[
     (
         "nchar",
-        "nchar(x)",
-        "The number of characters in each string — Unicode code points, not bytes.",
+        "nchar(x, type = \"chars\")",
+        "The size of each string in the unit `type` names: \"chars\" (Unicode code points, the default), \"bytes\" (its UTF-8 length), or \"width\" (terminal columns, where a CJK character counts two and a combining mark none).",
+    ),
+    (
+        "strtrim",
+        "strtrim(x, width)",
+        "The longest prefix of each string that fits in `width` terminal columns, recycling `width`. A double-width character is dropped whole rather than split.",
+    ),
+    (
+        "utf8ToInt",
+        "utf8ToInt(x)",
+        "The Unicode code points of one string, as an integer vector. NA for anything that is not a string.",
+    ),
+    (
+        "intToUtf8",
+        "intToUtf8(x, multiple = FALSE)",
+        "The inverse of utf8ToInt: one string built from all the code points, or — with multiple = TRUE — one string per code point. A 0 is dropped.",
     ),
     (
         "substr",
@@ -810,8 +825,8 @@ const STRINGS: &[Entry] = &[
         "substring(text, first = 1, last = 1000000)",
         "Like substr, but text, first and last all recycle to the longest, so substring(\"hello\", 1:3) returns three pieces.",
     ),
-    ("toupper", "toupper(x)", "Each string converted to upper case, using Unicode case mapping."),
-    ("tolower", "tolower(x)", "Each string converted to lower case, using Unicode case mapping."),
+    ("toupper", "toupper(x)", "Each string converted to upper case, one character at a time — so the result has the same number of characters as the input and toupper(\"straße\") is \"STRAßE\"."),
+    ("tolower", "tolower(x)", "Each string converted to lower case, one character at a time, so the character count is preserved."),
     (
         "casefold",
         "casefold(x, upper = FALSE)",

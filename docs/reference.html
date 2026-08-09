@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 252 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 255 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 272 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 275 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 252 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 255 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -142,7 +142,7 @@
         <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
         <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">21</span></li>
+        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">24</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
         <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">40</span></li>
@@ -1131,12 +1131,30 @@
     </section>
     <section class="tutorial-section" id="ch-strings-and-regular-expressions">
       <h2>Strings and regular expressions</h2>
-      <p class="chapter-meta">21 entries</p>
+      <p class="chapter-meta">24 entries</p>
       <article class="doc-entry" id="doc-nchar">
         <h3><a class="doc-anchor" href="#doc-nchar">#</a> <code>nchar</code></h3>
-        <pre><code class="lang-r r">nchar(x)
+        <pre><code class="lang-r r">nchar(x, type = "chars")
 </code></pre>
-        <p>The number of characters in each string — Unicode code points, not bytes.</p>
+        <p>The size of each string in the unit `type` names: "chars" (Unicode code points, the default), "bytes" (its UTF-8 length), or "width" (terminal columns, where a CJK character counts two and a combining mark none).</p>
+      </article>
+      <article class="doc-entry" id="doc-strtrim">
+        <h3><a class="doc-anchor" href="#doc-strtrim">#</a> <code>strtrim</code></h3>
+        <pre><code class="lang-r r">strtrim(x, width)
+</code></pre>
+        <p>The longest prefix of each string that fits in `width` terminal columns, recycling `width`. A double-width character is dropped whole rather than split.</p>
+      </article>
+      <article class="doc-entry" id="doc-utf8toint">
+        <h3><a class="doc-anchor" href="#doc-utf8toint">#</a> <code>utf8ToInt</code></h3>
+        <pre><code class="lang-r r">utf8ToInt(x)
+</code></pre>
+        <p>The Unicode code points of one string, as an integer vector. NA for anything that is not a string.</p>
+      </article>
+      <article class="doc-entry" id="doc-inttoutf8">
+        <h3><a class="doc-anchor" href="#doc-inttoutf8">#</a> <code>intToUtf8</code></h3>
+        <pre><code class="lang-r r">intToUtf8(x, multiple = FALSE)
+</code></pre>
+        <p>The inverse of utf8ToInt: one string built from all the code points, or — with multiple = TRUE — one string per code point. A 0 is dropped.</p>
       </article>
       <article class="doc-entry" id="doc-substr">
         <h3><a class="doc-anchor" href="#doc-substr">#</a> <code>substr</code></h3>
@@ -1154,13 +1172,13 @@
         <h3><a class="doc-anchor" href="#doc-toupper">#</a> <code>toupper</code></h3>
         <pre><code class="lang-r r">toupper(x)
 </code></pre>
-        <p>Each string converted to upper case, using Unicode case mapping.</p>
+        <p>Each string converted to upper case, one character at a time — so the result has the same number of characters as the input and toupper("straße") is "STRAßE".</p>
       </article>
       <article class="doc-entry" id="doc-tolower">
         <h3><a class="doc-anchor" href="#doc-tolower">#</a> <code>tolower</code></h3>
         <pre><code class="lang-r r">tolower(x)
 </code></pre>
-        <p>Each string converted to lower case, using Unicode case mapping.</p>
+        <p>Each string converted to lower case, one character at a time, so the character count is preserved.</p>
       </article>
       <article class="doc-entry" id="doc-casefold">
         <h3><a class="doc-anchor" href="#doc-casefold">#</a> <code>casefold</code></h3>

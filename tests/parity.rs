@@ -79,3 +79,70 @@ fn corpus_matches_reference_r() {
         failures.join("\n\n")
     );
 }
+
+/// Counts written into prose go stale silently — the corpus was documented as
+/// "121 snippets" in five places while the file held a different number, and
+/// `docs/report.html` still claimed 48. Every count the docs quote is derived
+/// here from the tree that defines it, so a wave that adds a snippet, a fuzz
+/// surface, or a primitive fails until the prose is updated with it.
+#[test]
+fn documented_counts_match_the_tree() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // roff escapes a hyphen as `\-`; unescape so one pattern matches both the
+    // man pages and the HTML.
+    let read = |rel: &str| {
+        std::fs::read_to_string(root.join(rel))
+            .expect(rel)
+            .replace("\\-", "-")
+    };
+
+    let corpus = snippets(&read("tests/data/parity_corpus.R")).len();
+    let primitives = rlang::builtins::PRIMITIVES.len();
+    // The fuzzer's surface count is the length of its `ALL_MODES` table.
+    let fuzz = read("src/bin/parity_fuzz.rs");
+    let modes = fuzz
+        .split_once("const ALL_MODES: &[Mode] = &[")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(body, _)| body.matches("Mode::").count())
+        .expect("ALL_MODES table");
+
+    // (regex over the doc text, what the number must be, what it counts)
+    let claims: [(&str, usize, &str); 5] = [
+        (r"(\d+)-snippet", corpus, "parity corpus snippets"),
+        (r"(\d+) snippets \+", corpus, "parity corpus snippets"),
+        (r"(\d+) surfaces", modes, "parity-fuzz surfaces"),
+        (r"(\d+) primitives", primitives, "primitives"),
+        (r"primitive library \((\d+)\)", primitives, "primitives"),
+    ];
+    let docs = [
+        "README.md",
+        "BUGS.md",
+        "docs/index.html",
+        "docs/report.html",
+        "man/Rscript.1",
+        "man/Rscriptall.1",
+    ];
+
+    let mut wrong = Vec::new();
+    for file in docs {
+        let text = read(file);
+        for (pat, want, what) in &claims {
+            let re = regex::Regex::new(pat).unwrap();
+            for cap in re.captures_iter(&text) {
+                let got: usize = cap[1].parse().unwrap();
+                if got != *want {
+                    wrong.push(format!(
+                        "{file}: {:?} claims {got} {what}, the tree has {want}",
+                        &cap[0]
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} stale count(s) in the docs:\n  {}",
+        wrong.len(),
+        wrong.join("\n  ")
+    );
+}

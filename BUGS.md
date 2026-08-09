@@ -149,6 +149,32 @@ run that compared nothing — no cases generated, or an oracle that never answer
   exact.
 - **No `str()`, `summary()`, or `dput()`.**
 
+## Text
+
+- **Strings are measured in R's three units, and each site uses the right one.**
+  `nchar(type=)` answers in code points, UTF-8 bytes or terminal columns; the
+  `sprintf` field width is a byte count, as in C; and `print`, `format`,
+  `formatC` and `strtrim` lay out in columns, so a CJK character claims two and
+  a combining mark none. The column table is R's own answer for every assigned
+  code point, swept out of the reference `Rscript` (`src/strwidth.rs`).
+  `toupper`/`tolower` map one character to one character the way `towupper` does,
+  so `toupper("straße")` is `"STRAßE"` and the character count never changes.
+  Three limits remain, all of them cases R answers with bytes that are not a
+  valid Rust string:
+  - **A string literal that is not valid UTF-8 is rejected.** `"\xff"` is a raw
+    byte in R and a parse error here; rlang's string type is `String`.
+  - **A surrogate code point is rejected.** R takes `"\uD800"` with a warning.
+  - **`sprintf("%.Ns", x)` cuts on a character boundary,** where R cuts at
+    exactly N bytes and can emit half a sequence.
+- **`sort()` on character orders by code point, not by locale collation.** R
+  collates through the system locale, so it answers `a é z` where rlang answers
+  `a z é`. Matching it needs a collation table rlang does not carry.
+- **190 code points case-map differently**, measured by sweeping every code point
+  against the reference `Rscript`: they are characters R's own case table
+  predates (Vithkuqi `U+10570…`, the `U+A7C0…U+A7DC` Latin additions, `U+1C89`,
+  `U+2C2F`) and therefore leaves unmapped, while Rust's newer tables map them.
+  Everything R maps, rlang maps identically.
+
 ## Syntax
 
 - **`else` may start a new line at top level.** R only allows that inside `{ }`;

@@ -183,70 +183,144 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    /// A string literal is scanned as BYTES, because `\xNN` and `\NNN` name a
+    /// byte rather than a character: R's `"\xc3\xa9"` is one `é`, which only
+    /// falls out if the two escapes land next to each other in the buffer.
     fn string(&mut self, quote: u8) -> Result<(), String> {
         self.pos += 1;
-        let mut s = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
         loop {
             if self.pos >= self.src.len() {
                 return Err(format!("line {}: unterminated string", self.line));
             }
             let c = self.bump();
             match c {
-                b'\\' => {
-                    let e = self.bump();
-                    s.push(match e {
-                        b'n' => '\n',
-                        b't' => '\t',
-                        b'r' => '\r',
-                        b'0' => '\0',
-                        b'\\' => '\\',
-                        b'"' => '"',
-                        b'\'' => '\'',
-                        b'`' => '`',
-                        b'u' | b'U' => self.unicode_escape()?,
-                        other => other as char,
-                    });
-                }
+                b'\\' => self.escape(&mut bytes)?,
                 _ if c == quote => break,
                 b'\n' => {
                     self.line += 1;
-                    s.push('\n');
+                    bytes.push(b'\n');
                 }
-                _ => {
-                    // Multi-byte UTF-8 passes through byte by byte; collect the
-                    // continuation bytes so the char survives intact.
-                    let start = self.pos - 1;
-                    let len = utf8_len(c);
-                    self.pos = start + len;
-                    s.push_str(
-                        std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
-                            format!("line {}: invalid UTF-8 in string literal", self.line)
-                        })?,
-                    );
-                }
+                // Multi-byte UTF-8 passes through byte by byte; the buffer is
+                // validated once, at the end.
+                _ => bytes.push(c),
             }
         }
+        let s = String::from_utf8(bytes)
+            .map_err(|_| format!("line {}: invalid UTF-8 in string literal", self.line))?;
         self.push(Tok::Str(s));
         Ok(())
     }
 
-    /// `\uXXXX` / `\u{XXXX}` inside a string literal.
-    fn unicode_escape(&mut self) -> Result<char, String> {
-        let braced = self.peek() == b'{';
-        if braced {
-            self.pos += 1;
+    /// One backslash escape, appended to `out`.
+    ///
+    /// R's escape set is closed — anything outside it is a parse error, not a
+    /// literal character — and each numeric form has its own digit budget:
+    /// `\NNN` is up to three octal digits, `\xNN` up to two hex, `\uXXXX` up to
+    /// four (capped at `U+FFFF`), `\UXXXXXXXX` up to eight. Reading a digit past
+    /// the budget silently swallows the next character of the string, which is
+    /// how `"　b"` used to lex as `U+3000B` instead of `U+3000` then `b`.
+    fn escape(&mut self, out: &mut Vec<u8>) -> Result<(), String> {
+        let e = self.bump();
+        let byte = match e {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0C,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0B,
+            b'\\' | b'"' | b'\'' | b'`' | b' ' => e,
+            b'0'..=b'7' => {
+                // Octal, this digit included, at most three, at most \377.
+                let mut v = u32::from(e - b'0');
+                for _ in 0..2 {
+                    match self.peek() {
+                        d @ b'0'..=b'7' => {
+                            v = v * 8 + u32::from(d - b'0');
+                            self.pos += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                if v > 0o377 {
+                    return Err(format!(
+                        "line {}: \\{v:o} exceeds maximum allowed octal value \\377",
+                        self.line
+                    ));
+                }
+                v as u8
+            }
+            b'x' => {
+                let v = self.hex_digits(2);
+                let Some(v) = v else {
+                    return Err(format!(
+                        "line {}: '\\x' used without hex digits in character string",
+                        self.line
+                    ));
+                };
+                v as u8
+            }
+            b'u' | b'U' => {
+                let (max_digits, max_val) = if e == b'u' {
+                    (4, 0xFFFF)
+                } else {
+                    (8, 0x10FFFF)
+                };
+                let braced = self.peek() == b'{';
+                if braced {
+                    self.pos += 1;
+                }
+                let v = self.hex_digits(if braced { 8 } else { max_digits });
+                if braced && self.peek() == b'}' {
+                    self.pos += 1;
+                }
+                let Some(v) = v else {
+                    return Err(format!(
+                        "line {}: '\\{}' used without hex digits in character string",
+                        self.line, e as char
+                    ));
+                };
+                if v > max_val {
+                    return Err(format!(
+                        "line {}: invalid \\{}{{xxxx}} sequence",
+                        self.line, e as char
+                    ));
+                }
+                if v == 0 {
+                    return Err(format!("line {}: nul character not allowed", self.line));
+                }
+                let c = char::from_u32(v).ok_or_else(|| {
+                    format!("line {}: invalid \\{} value {v:x}", self.line, e as char)
+                })?;
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                return Ok(());
+            }
+            other => {
+                return Err(format!(
+                    "line {}: '\\{}' is an unrecognized escape in character string",
+                    self.line, other as char
+                ))
+            }
+        };
+        // A nul from an octal or hex escape is dropped rather than stored: R's
+        // strings are C strings, so `"a\0b"` is "ab".
+        if byte != 0 {
+            out.push(byte);
         }
-        let mut hex = String::new();
-        while self.peek().is_ascii_hexdigit() && hex.len() < 8 {
-            hex.push(self.bump() as char);
+        Ok(())
+    }
+
+    /// Up to `max` hex digits as a value, or `None` if there is not even one.
+    fn hex_digits(&mut self, max: usize) -> Option<u32> {
+        let mut v: u32 = 0;
+        let mut n = 0;
+        while n < max && self.peek().is_ascii_hexdigit() {
+            v = v * 16 + char::from(self.bump()).to_digit(16)?;
+            n += 1;
         }
-        if braced && self.peek() == b'}' {
-            self.pos += 1;
-        }
-        u32::from_str_radix(&hex, 16)
-            .ok()
-            .and_then(char::from_u32)
-            .ok_or_else(|| format!("line {}: invalid \\u escape", self.line))
+        (n > 0).then_some(v)
     }
 
     fn backtick_ident(&mut self) -> Result<(), String> {
@@ -521,16 +595,6 @@ fn is_ident_start(c: u8) -> bool {
 
 fn is_ident_part(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c >= 0x80
-}
-
-/// Byte length of the UTF-8 sequence starting with `b`.
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0x00..=0x7f => 1,
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => 4,
-    }
 }
 
 #[cfg(test)]

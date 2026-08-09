@@ -2067,6 +2067,9 @@ pub const PRIMITIVES: &[&str] = &[
     "nchar",
     "substr",
     "substring",
+    "strtrim",
+    "utf8ToInt",
+    "intToUtf8",
     "toupper",
     "tolower",
     "casefold",
@@ -2715,25 +2718,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .and_then(|v| num1(&v))
                 .unwrap_or(0.0)
                 .max(0.0) as usize;
+            // The common width is measured in terminal columns, so a CJK cell
+            // lines up with an ASCII one: `format(c("日本語", "ab"))` pads "ab"
+            // to six columns, not to three characters.
             let out = if out.len() > 1 || width > 0 {
                 let w = out
                     .iter()
                     .flatten()
-                    .map(|s| s.chars().count())
+                    .map(|s| crate::strwidth::display_width(s))
                     .max()
                     .unwrap_or(0)
                     .max(width);
                 let left = matches!(data(&x), RData::Str(_));
                 out.into_iter()
-                    .map(|s| {
-                        s.map(|s| {
-                            if left {
-                                format!("{s:<w$}")
-                            } else {
-                                format!("{s:>w$}")
-                            }
-                        })
-                    })
+                    .map(|s| s.map(|s| crate::strwidth::pad_display(&s, w, left)))
                     .collect()
             } else {
                 out
@@ -3877,12 +3875,25 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
 
         // ── strings ─────────────────────────────────────────────────────
-        "nchar" => Ok(mk_int(
-            as_str(&a.req(0, "x")?)
-                .iter()
-                .map(|s| s.as_ref().map(|s| s.chars().count() as i64))
-                .collect(),
-        )),
+        "nchar" => {
+            // `type=` names the unit: code points, UTF-8 bytes, or terminal
+            // columns. They only coincide for ASCII.
+            let ty = a
+                .get(1, "type")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "chars".into());
+            let count: fn(&str) -> i64 = match ty.as_str() {
+                "bytes" => |s: &str| s.len() as i64,
+                "width" => |s: &str| crate::strwidth::display_width(s) as i64,
+                _ => |s: &str| s.chars().count() as i64,
+            };
+            Ok(mk_int(
+                as_str(&a.req(0, "x")?)
+                    .iter()
+                    .map(|s| s.as_deref().map(count))
+                    .collect(),
+            ))
+        }
         "toupper" | "tolower" | "casefold" => {
             // `casefold(x, upper = FALSE)` is `tolower`/`toupper` behind a flag.
             let upper = if name == "casefold" {
@@ -3890,17 +3901,65 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             } else {
                 name == "toupper"
             };
-            let f: fn(&str) -> String = if upper {
-                |s| s.to_uppercase()
+            // R maps one character to one character (`towupper`), so the result
+            // never changes length — `toupper("straße")` is "STRAßE", not
+            // "STRASSE" (see `strwidth::simple_upper`).
+            let f: fn(char) -> char = if upper {
+                crate::strwidth::simple_upper
             } else {
-                |s| s.to_lowercase()
+                crate::strwidth::simple_lower
             };
             Ok(mk_str(
                 as_str(&a.req(0, "x")?)
                     .iter()
-                    .map(|s| s.as_deref().map(f))
+                    .map(|s| s.as_deref().map(|s| crate::strwidth::map_chars(s, f)))
                     .collect(),
             ))
+        }
+        "strtrim" => {
+            // `strtrim(x, width)` cuts to *display columns*, recycling `width`.
+            let x = as_str(&a.req(0, "x")?);
+            let w = as_int(&a.req(1, "width")?);
+            Ok(mk_str(
+                x.iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let wi = w.get(i % w.len().max(1)).and_then(|e| *e).unwrap_or(0);
+                        s.as_deref()
+                            .map(|s| crate::strwidth::trim_to_width(s, wi.max(0) as usize))
+                    })
+                    .collect(),
+            ))
+        }
+        "utf8ToInt" => {
+            // One string in, its code points out — `NA` for a non-string.
+            let x = a.req(0, "x")?;
+            let Some(s) = str1(&x) else {
+                return Ok(mk_int(vec![None]));
+            };
+            Ok(mk_int(s.chars().map(|c| Some(c as i64)).collect()))
+        }
+        "intToUtf8" => {
+            // The inverse. `multiple = TRUE` gives one string per code point
+            // instead of one string of them all; a 0 code point is dropped.
+            let x = as_int(&a.req(0, "x")?);
+            let multiple = a.get(1, "multiple").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let chr = |e: &Option<i64>| -> Option<char> {
+                u32::try_from(e.filter(|&v| v != 0)?)
+                    .ok()
+                    .and_then(char::from_u32)
+            };
+            if multiple {
+                return Ok(mk_str(
+                    x.iter()
+                        .map(|e| e.map(|_| chr(e).map(String::from).unwrap_or_default()))
+                        .collect(),
+                ));
+            }
+            if x.iter().any(|e| e.is_none()) {
+                return Ok(mk_str(vec![None]));
+            }
+            Ok(scalar_str(x.iter().filter_map(chr).collect::<String>()))
         }
         "trimws" => {
             let which = a
@@ -6504,8 +6563,15 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                         .cloned()
                         .flatten()
                         .unwrap_or_else(|| "NA".into());
+                    // A `%.Ns` precision is a byte budget in C. Cut on the last
+                    // character boundary that fits rather than mid-sequence:
+                    // R emits the partial bytes, which is not a representable
+                    // Rust string.
                     let text: String = match precision {
-                        Some(p) => v.chars().take(p).collect(),
+                        Some(p) => {
+                            let end = (0..=p.min(v.len())).rev().find(|&i| v.is_char_boundary(i));
+                            v[..end.unwrap_or(0)].to_string()
+                        }
                         None => v,
                     };
                     // Strings ignore the `0` flag (they pad with spaces).
@@ -6527,6 +6593,23 @@ fn format_c(a: &Args) -> Result<Value, String> {
     let width = a.named("width").and_then(|v| num1(&v));
     let digits = a.named("digits").and_then(|v| num1(&v));
     let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
+    // A character `x` defaults to `format = "s"`, and — unlike `sprintf`, which
+    // is C and counts bytes — R pads it to a *display* width. Handle it here
+    // rather than routing through the printf spec.
+    if matches!(data(&x), RData::Str(_)) && a.named("format").is_none() {
+        let w = width.unwrap_or(0.0);
+        let left = flag.contains('-') || w < 0.0;
+        let w = w.abs() as usize;
+        return Ok(mk_str(
+            as_str(&x)
+                .iter()
+                .map(|s| {
+                    s.as_deref()
+                        .map(|s| crate::strwidth::pad_display(s, w, left))
+                })
+                .collect(),
+        ));
+    }
     let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
     let format = a.named("format").and_then(|v| str1(&v)).unwrap_or_else(|| {
         if is_int {
@@ -6686,10 +6769,13 @@ fn pad(text: &str, width: Option<usize>, flags: &str) -> String {
     let Some(w) = width else {
         return text.to_string();
     };
-    if text.chars().count() >= w {
+    // C — and therefore R's `sprintf` — counts a field width in BYTES, so
+    // `sprintf("%6s", "café")` pads by one, not two (the string is 5 bytes and 4
+    // characters). Numeric fields are ASCII, where the two agree.
+    if text.len() >= w {
         return text.to_string();
     }
-    let fill = w - text.chars().count();
+    let fill = w - text.len();
     if flags.contains('-') {
         format!("{text}{}", " ".repeat(fill))
     } else if flags.contains('0') {
@@ -7844,7 +7930,7 @@ fn layout_named(names: &[Option<String>], cells: &[String]) -> Vec<String> {
     let w = labels
         .iter()
         .chain(cells.iter())
-        .map(|s| s.chars().count())
+        .map(|s| crate::strwidth::display_width(s))
         .max()
         .unwrap_or(1);
     let per_line = (WIDTH / (w + 1)).max(1);
@@ -7854,7 +7940,7 @@ fn layout_named(names: &[Option<String>], cells: &[String]) -> Vec<String> {
         let take = per_line.min(n - i);
         let row = |src: &[String]| {
             (i..i + take)
-                .map(|k| format!("{:>w$}", src[k], w = w))
+                .map(|k| crate::strwidth::pad_display(&src[k], w, false))
                 .collect::<Vec<_>>()
                 .join(" ")
                 + " "
@@ -7885,19 +7971,19 @@ fn format_vector(v: &Value) -> Vec<String> {
     // Character vectors are left-justified; everything else is right-justified.
     // A *named* vector right-justifies both rows regardless of type.
     let left_align = matches!(data(v), RData::Str(_)) && names.is_empty();
-    let justify = |cell: &str, w: usize| {
-        if left_align {
-            format!("{cell:<w$}")
-        } else {
-            format!("{cell:>w$}")
-        }
-    };
+    let justify = |cell: &str, w: usize| crate::strwidth::pad_display(cell, w, left_align);
 
     if !names.is_empty() {
         return layout_named(&names, &cells);
     }
 
-    let cell_w = cells.iter().map(|c| c.chars().count()).max().unwrap_or(1);
+    // Column budget is terminal columns, not code points — a double-width
+    // character occupies two.
+    let cell_w = cells
+        .iter()
+        .map(|c| crate::strwidth::display_width(c))
+        .max()
+        .unwrap_or(1);
     let idx_w = format!("[{n}]").len();
     let per_line = ((WIDTH - idx_w) / (cell_w + 1)).max(1);
     let mut out = Vec::new();
@@ -7928,17 +8014,15 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     let col_labels: Vec<String> = (0..nc)
         .map(|c| dn_at(1, c).unwrap_or_else(|| format!("[,{}]", c + 1)))
         .collect();
-    let label_w = row_labels.iter().map(|s| s.len()).max().unwrap_or(0);
+    // Every width here is terminal columns: a dimname or a cell holding a
+    // double-width character claims two per character.
+    let dw = |s: &str| crate::strwidth::display_width(s);
+    let label_w = row_labels.iter().map(|s| dw(s)).max().unwrap_or(0);
     let widths: Vec<usize> = (0..nc)
         .map(|c| {
             (0..nr)
-                .map(|r| {
-                    cells
-                        .get(c * nr + r)
-                        .map(|s| s.chars().count())
-                        .unwrap_or(2)
-                })
-                .chain(std::iter::once(col_labels[c].len()))
+                .map(|r| cells.get(c * nr + r).map(|s| dw(s)).unwrap_or(2))
+                .chain(std::iter::once(dw(&col_labels[c])))
                 .max()
                 .unwrap_or(1)
         })
@@ -7946,13 +8030,7 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     // Character matrices are left-justified (cells and column headers alike),
     // like character vectors; numeric matrices are right-justified.
     let left = matches!(data(v), RData::Str(_));
-    let just = |s: &str, w: usize| {
-        if left {
-            format!("{s:<w$}")
-        } else {
-            format!("{s:>w$}")
-        }
-    };
+    let just = |s: &str, w: usize| crate::strwidth::pad_display(s, w, left);
     let mut out = Vec::with_capacity(nr + 1);
     let header = (0..nc)
         .map(|c| just(&col_labels[c], widths[c]))
@@ -7969,7 +8047,10 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        out.push(format!("{label:<label_w$} {row}"));
+        out.push(format!(
+            "{} {row}",
+            crate::strwidth::pad_display(label, label_w, true)
+        ));
     }
     out
 }

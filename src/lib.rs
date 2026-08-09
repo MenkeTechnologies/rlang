@@ -20,6 +20,7 @@ pub mod host;
 pub mod intercepts;
 pub mod lexer;
 pub mod parser;
+pub mod strwidth;
 
 // Native-only: Cranelift AOT, the on-disk cache, and the LSP/DAP/REPL/CLI
 // frontends all need a real OS and are excluded from the wasm build.
