@@ -286,9 +286,11 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 43 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across 55 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, set/bit ops, trig, gamma/`choose`,
-`pmax`/`pmin`, string translation, …) and runs each through the
+`pmax`/`pmin`, string translation, closure deparse, `rbind`/`cbind` seam labels,
+`dimnames` replacement, `sort`/`order` with missing values, `NA`-versus-`NaN`
+propagation, S3 methods on the generic primitives, `cat` argument handling, …) and runs each through the
 reference `Rscript --vanilla -e` and rlang's own `Rscript -e`, reporting every
 case where stdout or exit code diverges. Both binaries share the name `Rscript`,
 so each is resolved by absolute path — the reference from a system path, rlang's
@@ -306,7 +308,7 @@ cargo build --bin parity-fuzz
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 43 surfaces over
+The fuzzer currently reports **zero** divergences across its 55 surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,
@@ -326,9 +328,11 @@ byte-for-byte.
 
 Arguments are evaluated eagerly rather than as promises, so `substitute()` /
 `quote()` / non-standard evaluation are not available; `tryCatch` and the
-condition system, data frames, complex numbers, and most of the linear-algebra
-surface (`outer`, `solve`, `crossprod`, `cbind`/`rbind`) are not implemented yet.
-Factors, `table`, `%*%`, and `apply` over matrix margins now work. See
+condition system, data frames, complex numbers, and part of the linear-algebra
+surface (`solve`, `det`, `eigen`) are not implemented yet. Factors, `table`,
+`%*%`, `outer`, `crossprod`, `cbind`/`rbind` with R's deparsed seam labels, and
+`apply` over matrix margins (carrying the margin's `dimnames`) all work, and a
+closure prints and deparses its own source. See
 [`BUGS.md`](BUGS.md) for the full known-gaps list.
 
 ---

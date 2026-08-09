@@ -248,7 +248,7 @@ const ATTRIBUTES: &[Entry] = &[
     (
         "dimnames",
         "dimnames(x)",
-        "The `dimnames` attribute — a list of one label vector per dimension — or NULL. Labels are stored for 2-D only, and there is no dimnames<- replacement: matrix(dimnames = ) and the cbind/rbind seam labels are the ways to attach them.",
+        "The `dimnames` attribute — a list of one label vector per dimension — or NULL. Assignable through dimnames(x) <- list(...), rownames(x) <- and colnames(x) <-, and also produced by matrix(dimnames = ) and the cbind/rbind seam labels.",
     ),
 ];
 
@@ -266,12 +266,12 @@ const OUTPUT: &[Entry] = &[
     (
         "print",
         "print(x, digits)",
-        "Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call. This is the internal print: a user-defined print.myclass method is never reached.",
+        "Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call. A user-defined print.<class> method takes over first, for both print(x) and top-level autoprint. A closure prints its deparsed source; a class with no method is followed by its attr(,\"class\") block.",
     ),
     (
         "cat",
         "cat(..., sep = \" \")",
-        "Write every argument's elements with no quotes and no trailing newline, joined by `sep`. A separator containing a newline also ends the output with one, matching R.",
+        "Write every argument's elements with no quotes and no trailing newline, joined by `sep`. The separator sits between arguments as well as between elements, so a leading zero-length argument still earns its successor one: cat(NULL, \"x\") writes \" x\". A separator containing a newline also ends the output with one. A list or a function argument is an error, as in R.",
     ),
     (
         "message",
@@ -306,7 +306,7 @@ const OUTPUT: &[Entry] = &[
     (
         "paste",
         "paste(..., sep = \" \", collapse = NULL)",
-        "Join the arguments elementwise with recycling to the longest, separated by `sep`. A non-NULL `collapse` then joins the result into a single string. NA elements render as \"NA\".",
+        "Join the arguments elementwise with recycling to the longest, separated by `sep`. Every argument contributes a field, so a zero-length one contributes an empty string and paste(\"a\", NULL, \"b\") is \"a  b\". A non-NULL `collapse` then joins the result into a single string, and collapsing nothing gives \"\". NA elements render as \"NA\".",
     ),
     (
         "paste0",
@@ -321,12 +321,12 @@ const OUTPUT: &[Entry] = &[
     (
         "deparse",
         "deparse(expr)",
-        "R source text for a value: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, and longer vectors are wrapped in c(). Because arguments are evaluated eagerly, this deparses the value, never the unevaluated expression.",
+        "R source text for a value: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, and longer vectors are wrapped in c(). A closure deparses to its source lines, one character element per line, under R's own keep.source = FALSE layout rules. Because arguments are evaluated eagerly, this deparses the value, never the unevaluated expression.",
     ),
     (
         "format",
-        "format(x, nsmall = 0, digits, big.mark = \"\")",
-        "Format to character with a common decimal count across the vector, then pad to a common width — numbers right-justified, strings left. `digits` is the minimum significant digits, `nsmall` the minimum decimals. R's `width`, `justify` and per-call scientific control are not implemented.",
+        "format(x, nsmall = 0, digits, big.mark = \"\", width = 0, scientific)",
+        "Format to character. A numeric vector takes whichever of fixed and scientific notation is narrower — the same rule print uses, so format(1e6) is \"1e+06\" — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.",
     ),
     (
         "formatC",
@@ -341,7 +341,7 @@ const OUTPUT: &[Entry] = &[
     (
         "sprintf",
         "sprintf(fmt, ...)",
-        "C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does.",
+        "C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. A `*` takes the width (or precision) from the preceding argument.",
     ),
 ];
 
@@ -358,8 +358,8 @@ const SEQUENCES: &[Entry] = &[
     ),
     (
         "seq",
-        "seq(from, to, by, length.out)",
-        "Build a sequence. With one argument it is seq_len(from). The third positional argument is `by`, so seq(0, 1, 0.25) steps by a quarter; `length.out` computes the step instead. The result stays integer when every element and the step are whole.",
+        "seq(from, to, by, length.out, along.with)",
+        "Build a sequence. With one argument it is 1:from, which counts down when from < 1. The third positional argument is `by`, so seq(0, 1, 0.25) steps by a quarter; `length.out` fixes the term count instead, and `along.with` gives the indices of its argument. A `by` that cannot reach `to` is an error, as in R. The result stays integer when every element and the step are whole.",
     ),
     (
         "seq.int",
@@ -411,13 +411,13 @@ const SEQUENCES: &[Entry] = &[
 const ORDERING: &[Entry] = &[
     (
         "sort",
-        "sort(x, decreasing = FALSE, index.return = FALSE)",
-        "The sorted values with NA and NaN dropped, names carried along. With index.return = TRUE the result is a list of $x and the ordering $ix.",
+        "sort(x, decreasing = FALSE, na.last = NA, index.return = FALSE)",
+        "The sorted values, names carried along. na.last places the missing values: NA (the default) drops them, TRUE puts them last, FALSE first. Ties keep their original order in both directions. With index.return = TRUE the result is a list of $x and the ordering $ix.",
     ),
     (
         "order",
-        "order(x, decreasing = FALSE)",
-        "The 1-based permutation that sorts x, with NA positions dropped. Only one sort key is supported.",
+        "order(..., decreasing = FALSE, na.last = TRUE)",
+        "The 1-based permutation that sorts the first key, later keys breaking its ties. A position missing in any key is placed by na.last: last by default, first for FALSE, dropped for NA. Ties keep their original ascending order even when decreasing.",
     ),
     (
         "unique",
@@ -480,7 +480,7 @@ const SUMMARIES: &[Entry] = &[
     (
         "sum",
         "sum(..., na.rm = FALSE)",
-        "The total over every element of every argument. The result stays integer when all arguments are integer or logical, otherwise it is a double. Integer overflow widens to a double instead of producing NA.",
+        "The total over every element of every argument. The result stays integer when all arguments are integer or logical, otherwise it is a double. A missing value propagates, NA outranking NaN. Integer overflow widens to a double instead of producing NA.",
     ),
     (
         "prod",
@@ -490,7 +490,7 @@ const SUMMARIES: &[Entry] = &[
     (
         "mean",
         "mean(x, na.rm = FALSE)",
-        "The arithmetic mean of one vector. An empty vector gives NaN, and without na.rm a single NA or NaN makes the whole result NA. R's `trim` argument is accepted and ignored.",
+        "The arithmetic mean of one vector. An empty vector gives NaN. Without na.rm a missing value propagates as the first one met, so mean(c(1, NA, NaN)) is NA and mean(c(1, NaN, NA)) is NaN, matching R's IEEE accumulation. R's `trim` argument is accepted and ignored.",
     ),
     (
         "median",
@@ -722,8 +722,10 @@ const PREDICATES: &[Entry] = &[
     (
         "is.numeric",
         "is.numeric(x)",
-        "TRUE for a double or integer vector. A factor is stored as an integer vector with attributes, so this answers TRUE for one where GNU R answers FALSE.",
+        "TRUE for a double or integer vector, and FALSE for a factor — which R excludes explicitly even though a factor is stored as an integer vector.",
     ),
+    ("is.double", "is.double(x)", "TRUE only for a double vector: is.double(1L) is FALSE where is.numeric(1L) is TRUE."),
+    ("is.integer", "is.integer(x)", "TRUE only for an integer vector, and FALSE for a factor, matching R's own factor exclusion."),
     ("is.character", "is.character(x)", "TRUE for a character vector, whatever attributes it carries."),
     ("is.logical", "is.logical(x)", "TRUE for a logical vector, whatever attributes it carries."),
     ("is.list", "is.list(x)", "TRUE for a list, including a list carrying a class attribute."),
@@ -735,7 +737,7 @@ const PREDICATES: &[Entry] = &[
     (
         "is.vector",
         "is.vector(x)",
-        "TRUE for any atomic vector or list. Attributes are not inspected, so an object carrying a class still answers TRUE where GNU R answers FALSE.",
+        "TRUE for an atomic vector or list carrying no attribute other than `names` — a matrix, a factor, or anything with a stray attr answers FALSE, as in R.",
     ),
     (
         "any",
@@ -999,7 +1001,7 @@ const MATRICES: &[Entry] = &[
     (
         "apply",
         "apply(X, MARGIN, FUN)",
-        "Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A slice of rank 2 or more keeps its dim, so FUN sees a matrix. Several margins with scalar results reshape into an array.",
+        "Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A slice keeps the labels of the dimensions it spans — its dim and dimnames at rank 2 or more, its names at rank 1 — so FUN sees a named row or a matrix. Several margins with scalar results reshape into an array, and the margins' labels land on the result.",
     ),
     (
         "diag",
@@ -1033,13 +1035,13 @@ const MATRICES: &[Entry] = &[
     ),
     (
         "cbind",
-        "cbind(...)",
-        "Bind the arguments as columns, recycling each to the tallest. Argument tags become column names. Every input is coerced to double, so character arguments do not survive — that differs from R, which would build a character matrix.",
+        "cbind(..., deparse.level = 1)",
+        "Bind the arguments as columns, recycling each to the tallest and promoting to the widest type present, as c() does. Column names come from an argument's tag, from a matrix argument's own dimnames, or from the deparsed argument expression — a bare symbol at deparse.level 1, any expression at 2, none at 0. NULL and zero-length arguments are dropped.",
     ),
     (
         "rbind",
-        "rbind(...)",
-        "Bind the arguments as rows, with the same recycling, naming and double-coercion rules as cbind. Deparse-derived row labels are not synthesised, because builtins receive values rather than expressions.",
+        "rbind(..., deparse.level = 1)",
+        "Bind the arguments as rows, with the same recycling, promotion and naming rules as cbind — so rbind(x, x) carries the rownames \"x\", \"x\". The deparsed labels come from the call site, so they are unavailable when the arguments arrive through `...`.",
     ),
     (
         "rowSums",

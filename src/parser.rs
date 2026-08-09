@@ -458,7 +458,7 @@ impl Parser {
                 let e = self.expr()?;
                 self.nl();
                 self.expect(Tok::RParen)?;
-                Ok(e)
+                Ok(Expr::Paren(Box::new(e)))
             }
             Tok::LBrace => {
                 let mut body = Vec::new();

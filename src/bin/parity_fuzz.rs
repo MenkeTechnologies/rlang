@@ -1397,6 +1397,18 @@ enum Mode {
     Combinator,
     Arrays,
     Stat2,
+    Deparsefn,
+    Bindlabels,
+    Dimnames,
+    Ordering,
+    Missing,
+    S3methods,
+    Catargs,
+    Pastex,
+    Formatsci,
+    Parens,
+    Seqfmt,
+    Typepred,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1443,6 +1455,18 @@ const ALL_MODES: &[Mode] = &[
     Mode::Combinator,
     Mode::Arrays,
     Mode::Stat2,
+    Mode::Deparsefn,
+    Mode::Bindlabels,
+    Mode::Dimnames,
+    Mode::Ordering,
+    Mode::Missing,
+    Mode::S3methods,
+    Mode::Catargs,
+    Mode::Pastex,
+    Mode::Formatsci,
+    Mode::Parens,
+    Mode::Seqfmt,
+    Mode::Typepred,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1490,7 +1514,323 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Combinator => gen_combinator(seed),
         Mode::Arrays => gen_arrays(seed),
         Mode::Stat2 => gen_stat2(seed),
+        Mode::Deparsefn => gen_deparsefn(seed),
+        Mode::Bindlabels => gen_bindlabels(seed),
+        Mode::Dimnames => gen_dimnames(seed),
+        Mode::Ordering => gen_ordering(seed),
+        Mode::Missing => gen_missing(seed),
+        Mode::S3methods => gen_s3methods(seed),
+        Mode::Catargs => gen_catargs(seed),
+        Mode::Pastex => gen_pastex(seed),
+        Mode::Formatsci => gen_formatsci(seed),
+        Mode::Parens => gen_parens(seed),
+        Mode::Seqfmt => gen_seqfmt(seed),
+        Mode::Typepred => gen_typepred(seed),
     }
+}
+
+/// Closure printing and deparse. Every function here is defined at top level so
+/// its environment is the global one — R appends `<environment: 0x…>` to a
+/// closure printed from anywhere else, and that address is not reproducible.
+fn gen_deparsefn(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let body = match r.below(10) {
+        0 => format!("x {} {}", r.pick(&["+", "-", "*", "/", "^"]), ii(r)),
+        1 => format!("if (x > {}) x else {}", si(r), si(r)),
+        2 => format!("{{\n  y <- x * {}\n  if (y > {}) y else {}\n  y\n}}", ii(r), si(r), si(r)),
+        3 => format!("{{\n  for (i in 1:{}) x <- x + i\n  x\n}}", r.range(1, 5)),
+        4 => format!("{{\n  while (x > {}) x <- x - 1\n  x\n}}", ii(r)),
+        5 => format!("(x + {}) * {}", si(r), ii(r)),
+        6 => format!("c(a = {}, b = \"{}\")", ff(r), ww(r)),
+        7 => "function(y) x + y".to_string(),
+        8 => format!("{{\n  if (x) {{\n    {}\n  }} else {{\n    {}\n  }}\n}}", ii(r), ii(r)),
+        _ => format!("x[[{}]]$k", r.range(1, 3)),
+    };
+    let params = match r.below(4) {
+        0 => "x".to_string(),
+        1 => format!("x, y = {}", ii(r)),
+        2 => format!("x, y = c({}, {}), z = \"{}\"", ff(r), ff(r), ww(r)),
+        _ => "x, ...".to_string(),
+    };
+    let show = match r.below(3) {
+        0 => "print(f)",
+        1 => "print(deparse(f))",
+        _ => "print(format(f))",
+    };
+    vec![format!("f <- function({params}) {body}"), show.to_string()]
+}
+
+/// `rbind`/`cbind` seam labels: the deparsed argument, an explicit tag, a
+/// matrix's own dimnames, and `deparse.level`.
+fn gen_bindlabels(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = r.pick(&["rbind", "cbind"]);
+    let setup = vec![
+        format!("x <- c({}, {}, {})", si(r), si(r), si(r)),
+        format!("y <- c({}, {}, {})", si(r), si(r), si(r)),
+    ];
+    let call = match r.below(9) {
+        0 => format!("{f}(x, y)"),
+        1 => format!("{f}(x, x)"),
+        2 => format!("{f}(a = x, y)"),
+        3 => format!("{f}(x, c({}, {}, {}))", si(r), si(r), si(r)),
+        4 => format!("{f}(x, y, deparse.level = 0)"),
+        5 => format!("{f}(x, y, deparse.level = 2)"),
+        6 => format!("{f}(x + 0, y)"),
+        7 => format!("{f}({f}(x, y), x)"),
+        _ => format!("{f}(x)"),
+    };
+    let mut out = setup;
+    out.push(format!("print({call})"));
+    out
+}
+
+/// `dimnames`/`rownames`/`colnames` as replacement targets, and the labelled
+/// `apply` results that ride on them.
+fn gen_dimnames(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let mut out = vec![format!("m <- matrix(1:6, nrow = 2{})",
+        if r.below(2) == 0 { ", byrow = TRUE" } else { "" })];
+    match r.below(8) {
+        0 => {
+            out.push("dimnames(m) <- list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\", \"c3\"))".into());
+            out.push("print(m)".into());
+        }
+        1 => {
+            out.push("rownames(m) <- c(\"p\", \"q\")".into());
+            out.push("print(m)".into());
+            out.push("print(dimnames(m))".into());
+        }
+        2 => {
+            out.push("colnames(m) <- c(\"i\", \"j\", \"k\")".into());
+            out.push("print(m)".into());
+            out.push("print(colnames(m))".into());
+        }
+        3 => {
+            out.push("dimnames(m) <- list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\", \"c3\"))".into());
+            out.push(format!("print(apply(m, {}, sum))", r.range(1, 2)));
+        }
+        4 => {
+            out.push("dimnames(m) <- list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\", \"c3\"))".into());
+            out.push(format!("print(apply(m, {}, range))", r.range(1, 2)));
+        }
+        5 => {
+            out.push("rownames(m) <- c(\"p\", \"q\")".into());
+            out.push("rownames(m) <- NULL".into());
+            out.push("print(m)".into());
+        }
+        6 => {
+            out.push("dimnames(m) <- list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\", \"c3\"))".into());
+            out.push("print(m[\"r1\", ])".into());
+            out.push("print(m[, \"c2\"])".into());
+        }
+        _ => {
+            out.push("dimnames(m) <- list(NULL, c(\"c1\", \"c2\", \"c3\"))".into());
+            out.push("print(m)".into());
+        }
+    }
+    out
+}
+
+/// `sort`/`order`/`rank` with missing values, ties, `na.last` and extra keys.
+fn gen_ordering(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = format!("c({}, NA, {}, {})", si(r), si(r), si(r));
+    let s = format!("c(\"{}\", NA, \"{}\")", ww(r), ww(r));
+    one(match r.below(10) {
+        0 => format!("print(sort({v}))"),
+        1 => format!("print(sort({v}, na.last = TRUE))"),
+        2 => format!("print(sort({v}, na.last = FALSE))"),
+        3 => format!("print(order({v}))"),
+        4 => format!("print(order({v}, na.last = FALSE))"),
+        5 => format!("print(order({v}, decreasing = TRUE))"),
+        6 => format!("print(sort({s}, na.last = TRUE))"),
+        7 => format!(
+            "print(order(c({a}, {a}, {b}), c({c}, {d}, {d})))",
+            a = ii(r),
+            b = ii(r),
+            c = ii(r),
+            d = ii(r)
+        ),
+        8 => format!("print(sort(c({a}, {a}, {b}), decreasing = TRUE))", a = ii(r), b = ii(r)),
+        _ => format!("print(order(c({a}, {a}, {b}), decreasing = TRUE))", a = ii(r), b = ii(r)),
+    })
+}
+
+/// `NA` versus `NaN` through the summaries, which do not agree on which one
+/// survives (`mean` keeps the first it meets, `median` always answers NA).
+fn gen_missing(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = r.pick(&["mean", "median", "sum", "prod", "max", "min", "var", "sd", "range"]);
+    let v = match r.below(6) {
+        0 => format!("c({}, NA)", ff(r)),
+        1 => format!("c({}, NaN)", ff(r)),
+        2 => "c(NA, NaN)".to_string(),
+        3 => "c(NaN, NA)".to_string(),
+        4 => format!("c({}, NA, NaN, {})", ff(r), ff(r)),
+        _ => format!("c({}, {}, NA)", ff(r), ff(r)),
+    };
+    one(if r.below(2) == 0 {
+        format!("print({f}({v}))")
+    } else {
+        format!("print({f}({v}, na.rm = TRUE))")
+    })
+}
+
+/// S3 methods for the primitives R dispatches on, and the `attr(,"class")`
+/// block `print.default` shows for a class with no method.
+fn gen_s3methods(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let body = match r.below(3) {
+        0 => format!("c({}, {})", ii(r), ii(r)),
+        1 => format!("list({}, \"{}\")", ii(r), ww(r)),
+        _ => format!("\"{}\"", ww(r)),
+    };
+    let mut out = vec![format!("obj <- structure({body}, class = \"kk\")")];
+    match r.below(6) {
+        0 => {
+            out.push("print.kk <- function(x, ...) cat(\"<kk>\\n\")".into());
+            out.push("print(obj)".into());
+            out.push("obj".into());
+        }
+        1 => {
+            out.push(format!("format.kk <- function(x, ...) \"{}\"", ww(r)));
+            out.push("print(format(obj))".into());
+        }
+        2 => {
+            out.push(format!("as.character.kk <- function(x, ...) \"{}\"", ww(r)));
+            out.push("print(as.character(obj))".into());
+        }
+        3 => {
+            out.push(format!("length.kk <- function(x) {}L", r.range(1, 9)));
+            out.push("print(length(obj))".into());
+        }
+        4 => out.push("print(obj)".into()),
+        _ => out.push("obj".into()),
+    }
+    out
+}
+
+/// `cat` argument handling: the separator sits between *arguments*, so a
+/// zero-length one still earns its successor a separator, and a list is a
+/// hard error.
+fn gen_catargs(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(10) {
+        0 => format!("cat(NULL, \"{}\")", ww(r)),
+        1 => format!("cat(character(0), \"{}\", \"\\n\")", ww(r)),
+        2 => format!("cat(\"{}\", NULL, \"{}\", \"\\n\")", ww(r), ww(r)),
+        3 => format!("cat(list({}), \"\\n\")", ii(r)),
+        4 => "cat(list())".to_string(),
+        5 => format!("cat({}, {}, sep = \"\")", ii(r), ii(r)),
+        6 => format!("cat(c(\"{}\", \"{}\"), sep = \"\\n\")", ww(r), ww(r)),
+        7 => format!("cat(\"{}\", list({}))", ww(r), ii(r)),
+        8 => format!("cat({}:{}, \"\\n\")", ii(r), r.range(3, 8)),
+        _ => format!("cat(NULL, NULL, \"{}\")", ww(r)),
+    })
+}
+
+/// `paste`/`paste0` recycling, `collapse`, and the empty field a zero-length
+/// argument contributes.
+fn gen_pastex(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(9) {
+        0 => format!("print(paste(\"{}\", NULL, \"{}\"))", ww(r), ww(r)),
+        1 => format!("print(paste(\"{}\", character(0), \"{}\"))", ww(r), ww(r)),
+        2 => format!("print(paste0(\"{}\", NULL))", ww(r)),
+        3 => "print(paste(NULL))".to_string(),
+        4 => format!("print(paste(NULL, collapse = \"{}\"))", ww(r)),
+        5 => format!("print(paste(1:{}, 1:{}))", r.range(2, 3), r.range(4, 6)),
+        6 => format!("print(paste(\"{}\", 1:{}, sep = \"-\"))", ww(r), r.range(1, 4)),
+        7 => format!("print(paste(c(\"{}\", NA), \"{}\"))", ww(r), ww(r)),
+        _ => format!(
+            "print(paste(c(\"{}\", \"{}\"), collapse = \"{}\"))",
+            ww(r),
+            ww(r),
+            r.pick(&["+", "", ", "])
+        ),
+    })
+}
+
+/// `format`'s fixed-versus-scientific choice, which `digits`, `nsmall`,
+/// `big.mark` and `scientific` all interact with.
+fn gen_formatsci(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let big = ["1e6", "1e5", "123456", "1234567", "1e-4", "1e-10", "0.0001", "100000"];
+    let v = r.pick(&big);
+    one(match r.below(9) {
+        0 => format!("print(format({v}))"),
+        1 => format!("print(format({v}, big.mark = \",\"))"),
+        2 => format!("print(format({v}, nsmall = {}))", r.range(1, 4)),
+        3 => format!("print(format({v}, digits = {}))", r.range(1, 5)),
+        4 => format!("print(format({v}, scientific = FALSE))"),
+        5 => format!("print(format({v}, scientific = TRUE))"),
+        6 => format!("print(format(c({v}, {})))", ii(r)),
+        7 => format!("print(format({v}, width = {}))", r.range(1, 12)),
+        _ => format!("print(format(c({v}, NA, Inf)))"),
+    })
+}
+
+/// `(` as a value-returning function: it makes an otherwise invisible result
+/// echo at top level.
+fn gen_parens(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(7) {
+        0 => format!("(x <- {})", ii(r)),
+        1 => format!("x <- {}\n(x)", ii(r)),
+        2 => format!("(invisible({}))", ii(r)),
+        3 => format!("print(({} + {}) * {})", ii(r), ii(r), ii(r)),
+        4 => format!("f <- function() invisible({})\n(f())", ii(r)),
+        5 => format!("(({}))", ii(r)),
+        _ => format!("x <- c({}, {})\n(x[1])", ii(r), ii(r)),
+    })
+}
+
+/// `seq` argument forms and `sprintf`'s `*` width, both of which take a value
+/// from an argument rather than the literal spec.
+fn gen_seqfmt(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    one(match r.below(9) {
+        0 => format!("print(seq(along.with = c({}, {}, {})))", ii(r), ii(r), ii(r)),
+        1 => format!("print(seq({}, {}, length.out = {}))", ii(r), r.range(5, 20), r.range(2, 5)),
+        2 => format!("print(seq({}, {}, by = {}))", ii(r), r.range(5, 20), r.range(2, 4)),
+        3 => format!("print(seq_len({}))", r.range(0, 5)),
+        4 => format!("print(sprintf(\"%*d\", {}, {}))", r.range(1, 8), r.range(1, 999)),
+        5 => format!("print(sprintf(\"%-*d|\", {}, {}))", r.range(1, 8), r.range(1, 999)),
+        6 => format!("print(sprintf(\"%.*f\", {}, {}))", r.range(0, 5), ff(r)),
+        7 => format!("print(sprintf(\"%*s|\", {}, \"{}\"))", r.range(1, 9), ww(r)),
+        _ => format!("print(seq({}))", r.range(0, 6)),
+    })
+}
+
+/// The type predicates, which disagree about factors and about `1` versus `1L`.
+fn gen_typepred(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let f = r.pick(&[
+        "is.numeric",
+        "is.double",
+        "is.integer",
+        "is.character",
+        "is.logical",
+        "is.vector",
+        "is.list",
+        "is.null",
+    ]);
+    let v = match r.below(8) {
+        0 => format!("{}L", ii(r)),
+        1 => ff(r).to_string(),
+        2 => format!("\"{}\"", ww(r)),
+        3 => format!("factor(c(\"{}\", \"{}\"))", ww(r), ww(r)),
+        4 => "TRUE".to_string(),
+        5 => "NULL".to_string(),
+        6 => format!("list({})", ii(r)),
+        _ => format!("1:{}", r.range(2, 5)),
+    };
+    one(match r.below(3) {
+        0 => format!("print({f}({v}))"),
+        1 => format!("print(class({v}))"),
+        _ => format!("print(c(class({v}), typeof({v})))"),
+    })
 }
 
 fn mode_name(m: Mode) -> &'static str {
@@ -1538,6 +1878,18 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Combinator => "combinator",
         Mode::Arrays => "arrays",
         Mode::Stat2 => "stat2",
+        Mode::Deparsefn => "deparsefn",
+        Mode::Bindlabels => "bindlabels",
+        Mode::Dimnames => "dimnames",
+        Mode::Ordering => "ordering",
+        Mode::Missing => "missing",
+        Mode::S3methods => "s3methods",
+        Mode::Catargs => "catargs",
+        Mode::Pastex => "pastex",
+        Mode::Formatsci => "formatsci",
+        Mode::Parens => "parens",
+        Mode::Seqfmt => "seqfmt",
+        Mode::Typepred => "typepred",
     }
 }
 

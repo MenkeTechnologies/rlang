@@ -113,6 +113,11 @@ pub enum Expr {
     Repeat(Box<Expr>),
     /// `{ ... }` — a braced sequence; its value is the last expression's.
     Block(Vec<Expr>),
+    /// `( ... )`. Kept in the tree because R keeps it: `(` is a function that
+    /// returns its argument *visibly*, so `(x <- 5)` echoes where `x <- 5` does
+    /// not, and `deparse` reproduces the parentheses the source wrote instead
+    /// of re-deriving them from precedence.
+    Paren(Box<Expr>),
     /// `<-`, `=`, `->` (normalized to `<-`), and `<<-`/`->>` (`super = true`).
     Assign {
         target: Box<Expr>,

@@ -106,6 +106,10 @@ pub mod ops {
     pub const RANGE_FROM: u16 = 52;
     pub const RANGE_STEP: u16 = 53;
     pub const RANGE_LEN: u16 = 54;
+    /// `[v]` → v, marked visible. What `(` does in R: it is a function whose
+    /// value is its argument, and evaluating a call sets the visibility flag —
+    /// so `(x <- 5)` echoes while `x <- 5` does not.
+    pub const SET_VISIBLE: u16 = 55;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -124,14 +128,21 @@ fn new_env(parent: Option<Env>) -> Env {
     }))
 }
 
-/// A compiled `function(...)`: its formals and its body chunk. Defaults are not
-/// stored here — the compiler emits them as a body prologue
-/// (`if (missing(p)) p <- <default>`), which is what makes an R default able to
-/// refer to another argument.
+/// A compiled `function(...)`: its formals, its body chunk, and its deparsed
+/// source. Defaults are not stored as expressions here — the compiler emits
+/// them as a body prologue (`if (missing(p)) p <- <default>`), which is what
+/// makes an R default able to refer to another argument.
+///
+/// `src` is the closure rendered by [`crate::deparse::deparse_closure`] at
+/// compile time — the lines `print(f)`, `deparse(f)` and `format(f)` return.
+/// It is computed from the AST before the body is lowered, because the AST does
+/// not survive compilation and the default-argument expressions survive only as
+/// prologue bytecode.
 #[derive(Clone)]
 pub struct ClosureDef {
     pub params: Vec<String>,
     pub chunk: Chunk,
+    pub src: Vec<String>,
 }
 
 /// The non-local control transfers a builtin can raise.
@@ -686,8 +697,12 @@ impl RHost {
                 return cs;
             }
         }
-        if self.attr(v, "dim").map(|d| self.length(&d)) == Some(2) {
-            return vec!["matrix".into(), "array".into()];
+        // R's implicit class for a dimensioned object: rank 2 is a matrix (and
+        // an array), any other rank is an array.
+        match self.attr(v, "dim").map(|d| self.length(&d)) {
+            Some(2) => return vec!["matrix".into(), "array".into()],
+            Some(n) if n > 0 => return vec!["array".into()],
+            _ => {}
         }
         match unboxed(v) {
             Some(Ub::I(_)) => return vec!["integer".into()],

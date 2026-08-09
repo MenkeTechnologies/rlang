@@ -74,6 +74,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::IS_TRUE, b_is_true);
     vm.register_builtin(ops::MISSING, b_missing);
     vm.register_builtin(ops::NULL_INVISIBLE, b_null_invisible);
+    vm.register_builtin(ops::SET_VISIBLE, b_set_visible);
     vm.register_builtin(ops::SWITCH_INDEX, b_switch_index);
 }
 
@@ -147,6 +148,11 @@ fn class_of(v: &Value) -> Vec<String> {
 }
 fn elements(v: &Value) -> Vec<Value> {
     with_host(|h| h.elements(v))
+}
+/// Whether `v` carries the `factor` class — the one integer vector R's type
+/// predicates refuse to call numeric.
+fn is_factor(v: &Value) -> bool {
+    class_of(v).iter().any(|c| c == "factor")
 }
 /// The element of a named list/vector bound to `name`, if present (`x$name`).
 fn element_field(v: &Value, name: &str) -> Option<Value> {
@@ -471,6 +477,14 @@ fn b_const_null(_: &mut VM, _: u8) -> Value {
 fn b_null_invisible(_: &mut VM, _: u8) -> Value {
     with_host(|h| h.visible = false);
     null()
+}
+
+/// `(x)` — the value unchanged, but visible. Native scalars pass through
+/// untouched so a parenthesized expression stays on the unboxed path.
+fn b_set_visible(vm: &mut VM, _: u8) -> Value {
+    let v = vm.pop();
+    with_host(|h| h.visible = true);
+    v
 }
 
 /// `switch` dispatch: the stack holds `EXPR` then each branch name (as string
@@ -899,7 +913,13 @@ fn b_autoprint(vm: &mut VM, _: u8) -> Value {
         s
     });
     if show {
-        print_value(&v);
+        // R autoprints by calling `print`, so a user's `print.myclass` runs for
+        // a bare `obj` at top level exactly as it does for `print(obj)`.
+        match s3_primitive_method("print", std::slice::from_ref(&(None, v.clone()))) {
+            Some(Err(e)) => return abort(vm, e),
+            Some(Ok(_)) => {}
+            None => print_value(&v),
+        }
     }
     propagate(vm, v)
 }
@@ -1563,6 +1583,50 @@ fn replacement(
             with_host(|h| h.set_attr(&out, "levels", mk_str(as_str(value))));
             Ok(out)
         }
+        "dimnames" => {
+            // Each element is a character vector or `NULL` (that margin has no
+            // labels); a `NULL` list drops the attribute entirely.
+            let dn = if is_null(value) {
+                null()
+            } else {
+                mk_list(
+                    elements(value)
+                        .iter()
+                        .map(|e| if is_null(e) { null() } else { mk_str(as_str(e)) })
+                        .collect(),
+                )
+            };
+            with_host(|h| h.set_attr(&out, "dimnames", dn));
+            Ok(out)
+        }
+        // `rownames(x) <- v` / `colnames(x) <- v` rewrite one margin of
+        // `dimnames` and leave the others as they were.
+        "rownames" | "colnames" => {
+            let idx = usize::from(fname == "colnames");
+            let ndim = with_host(|h| h.attr(&out, "dim"))
+                .map(|d| len(&d))
+                .unwrap_or(2)
+                .max(idx + 1);
+            let old = dimnames_of(&out);
+            let mut margins: Vec<Value> = (0..ndim)
+                .map(|k| match old.get(k).cloned().flatten() {
+                    Some(names) => mk_str(names),
+                    None => null(),
+                })
+                .collect();
+            margins[idx] = if is_null(value) {
+                null()
+            } else {
+                mk_str(as_str(value))
+            };
+            let dn = if margins.iter().all(is_null) {
+                null()
+            } else {
+                mk_list(margins)
+            };
+            with_host(|h| h.set_attr(&out, "dimnames", dn));
+            Ok(out)
+        }
         "substr" => {
             // `substr(x, start, stop) <- value`: overwrite chars start..=stop in
             // place, taking at most `stop-start+1` characters from `value` and
@@ -1743,6 +1807,8 @@ pub const PRIMITIVES: &[&str] = &[
     "is.infinite",
     "anyNA",
     "complete.cases",
+    "is.double",
+    "is.integer",
     "is.numeric",
     "is.character",
     "is.logical",
@@ -1918,6 +1984,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         .any(|(_, v)| matches!(data(v), RData::RForeign(_)))
     {
         return cran_call(name, &args);
+    }
+    // A primitive R treats as generic hands off to a user's S3 method before
+    // running its own implementation, so `print.myclass` wins over the default
+    // layout the way it does in R.
+    if let Some(res) = s3_primitive_method(name, &args) {
+        return res;
     }
     let a = Args::new(args);
     match name {
@@ -2139,20 +2211,48 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("sep")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| " ".into());
-            let mut parts: Vec<String> = Vec::new();
-            for (tag, v) in a.all.iter() {
-                if tag.as_deref() == Some("sep") || tag.as_deref() == Some("fill") {
+            // R's `do_cat` walks the `...` objects, not a flattened element
+            // list: a separator goes before every non-empty object after the
+            // first, and between the elements within one. The two are not the
+            // same — a leading zero-length argument still earns its successor a
+            // separator, so `cat(NULL, "x")` prints " x", while
+            // `cat("a", NULL, "b")` prints "a b" and not "a  b".
+            let objs: Vec<&Value> = a
+                .all
+                .iter()
+                .filter(|(t, _)| !CAT_CONTROL_ARGS.contains(&t.as_deref().unwrap_or("")))
+                .map(|(_, v)| v)
+                .collect();
+            let mut out = String::new();
+            for (i, v) in objs.iter().enumerate() {
+                let n = len(v);
+                if i != 0 && n > 0 {
+                    out.push_str(&sep);
+                }
+                if n == 0 {
                     continue;
                 }
-                for s in as_str(v) {
-                    parts.push(s.unwrap_or_else(|| "NA".into()));
+                // A list or a function has no `cat` representation. R rejects it
+                // *after* writing everything up to that point, so flush first.
+                if let Some(kind) = uncatable(v) {
+                    crate::host::emit(&out);
+                    return Err(format!(
+                        "argument {} (type '{kind}') cannot be handled by 'cat'",
+                        i + 1
+                    ));
+                }
+                for (k, s) in as_str(v).into_iter().enumerate() {
+                    out.push_str(&s.unwrap_or_else(|| "NA".into()));
+                    if k + 1 < n {
+                        out.push_str(&sep);
+                    }
                 }
             }
             // R ends `cat` output with a newline whenever the separator itself
             // contains one — `cat(c("a", "b"), sep = "\n")` prints three lines'
             // worth of output, not two.
             let tail = if sep.contains('\n') { "\n" } else { "" };
-            crate::host::emit(&format!("{}{tail}", parts.join(&sep)));
+            crate::host::emit(&format!("{out}{tail}"));
             with_host(|h| h.visible = false);
             Ok(null())
         }
@@ -2194,9 +2294,21 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect();
             Ok(scalar_str(parts.join(", ")))
         }
-        "deparse" => Ok(scalar_str(deparse_value(&a.req(0, "expr")?))),
+        "deparse" => {
+            let x = a.req(0, "expr")?;
+            // A function deparses to its source *lines* — one character element
+            // per line, not one string with embedded newlines.
+            if let Some(src) = function_src(&x) {
+                return Ok(mk_str(src.into_iter().map(Some).collect()));
+            }
+            Ok(scalar_str(deparse_value(&x)))
+        }
         "format" => {
             let x = a.req(0, "x")?;
+            // `format` of a function is its deparsed source, like `deparse`.
+            if let Some(src) = function_src(&x) {
+                return Ok(mk_str(src.into_iter().map(Some).collect()));
+            }
             let nsmall = a.named("nsmall").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
             let digits = a.named("digits").and_then(|v| num1(&v)).map(|d| d as i32);
             let big = a
@@ -2204,35 +2316,57 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .and_then(|v| str1(&v))
                 .unwrap_or_default();
             let numeric = matches!(data(&x), RData::Dbl(_) | RData::Int(_));
-            // `digits` sets the minimum significant digits: the decimals shown
-            // are `digits - 1 - floor(log10|v|)`, so the whole integer part
-            // always survives (`format(123.456, digits = 2)` is "123").
-            // `nsmall` sets the minimum decimal places, rendered from the true
-            // value (not padded onto the 7-sig repr), so `format(x, nsmall = 5)`
-            // shows five accurate decimals.
+            // `scientific = TRUE/FALSE` forces a notation; otherwise the whole
+            // vector takes whichever of the two is narrower — the same rule
+            // `print` uses, which is why `format(1e6)` is "1e+06" and not
+            // "1000000".
+            let scientific = a.named("scientific").and_then(|v| lgl1(&v));
             let is_dbl = matches!(data(&x), RData::Dbl(_));
             let base: Vec<Option<String>> = if numeric && (is_dbl || digits.is_some() || nsmall > 0)
             {
-                // Decimals each element needs, then a common count (max) so the
-                // whole vector shares one width — R aligns the decimal point.
+                // `digits` is the significant-digit count, which is exactly what
+                // the print-layout renderers read, so set it for this call and
+                // restore it afterwards.
+                let restore = digits.map(|d| crate::host::set_print_digits(d.max(1) as usize));
                 let dbl = as_dbl(&x);
-                let per: Vec<usize> = dbl
+                let finite: Vec<f64> = dbl.iter().flatten().copied().filter(|v| v.is_finite()).collect();
+                // A common decimal count across the vector — R aligns the
+                // decimal point.
+                let fixed_d = finite
                     .iter()
-                    .map(|e| match e {
-                        Some(v) if v.is_finite() => match digits {
-                            Some(d) if *v != 0.0 => {
-                                (d - 1 - v.abs().log10().floor() as i32).max(0) as usize
-                            }
-                            Some(_) => 0,
-                            None => crate::host::fixed_decimals(*v),
-                        },
-                        _ => 0,
+                    .map(|v| crate::host::fixed_decimals(*v))
+                    .max()
+                    .unwrap_or(0);
+                let sci_d = finite
+                    .iter()
+                    .map(|v| crate::host::sci_decimals(*v))
+                    .max()
+                    .unwrap_or(0);
+                let width = |f: &dyn Fn(f64) -> String| {
+                    finite.iter().map(|v| f(*v).chars().count()).max().unwrap_or(0)
+                };
+                let use_sci = scientific.unwrap_or_else(|| {
+                    width(&|v| render_sci(v, sci_d)) < width(&|v| render_fixed(v, fixed_d))
+                });
+                // `nsmall` raises the decimal count only in fixed notation, and
+                // only after the notation is chosen — R's `do_format` applies it
+                // under `if (!e)`. So `format(1, nsmall = 5)` is "1.00000" while
+                // `format(1e6, nsmall = 2)` stays "1e+06".
+                let fixed_d = fixed_d.max(nsmall);
+                let out = dbl
+                    .iter()
+                    .map(|e| {
+                        e.map(|v| match (v.is_finite(), use_sci) {
+                            (true, true) => render_sci(v, sci_d),
+                            (true, false) => render_fixed(v, fixed_d),
+                            (false, _) => render_fixed(v, 0),
+                        })
                     })
                     .collect();
-                let common = per.into_iter().max().unwrap_or(0).max(nsmall);
-                dbl.into_iter()
-                    .map(|e| e.map(|v| render_fixed(v, common)))
-                    .collect()
+                if let Some(prev) = restore {
+                    crate::host::set_print_digits(prev);
+                }
+                out
             } else {
                 as_str(&x)
             };
@@ -2305,7 +2439,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = len(&a.req(0, "along.with")?) as i64;
             Ok(mk_int((1..=n).map(Some).collect()))
         }
-        "seq" | "seq.int" => Ok(seq(&a)),
+        "seq" | "seq.int" => seq(&a),
         "rep" => Ok(rep(&a)),
         "rep_len" => {
             let x = a.req(0, "x")?;
@@ -2409,13 +2543,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("decreasing")
                 .and_then(|v| lgl1(&v))
                 .unwrap_or(false);
-            let sorted = sort_value(&x, decreasing);
+            // `na.last` defaults to `NA` for `sort` (drop the missing values)
+            // and to `TRUE` for `order` (keep them, at the end).
+            let na_last = na_last_arg(&a, None);
+            let sorted = sort_value(&x, decreasing, na_last);
             // `index.return = TRUE` also returns the ordering as `$ix`.
             if a.named("index.return")
                 .and_then(|v| lgl1(&v))
                 .unwrap_or(false)
             {
-                let ix = order_value(&x, decreasing);
+                let ix = order_value(&x, decreasing, na_last);
                 let out = mk_list(vec![sorted, ix]);
                 set_names(&out, vec![Some("x".into()), Some("ix".into())]);
                 Ok(out)
@@ -2423,12 +2560,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 Ok(sorted)
             }
         }
-        "order" => Ok(order_value(
-            &a.req(0, "x")?,
-            a.named("decreasing")
+        "order" => {
+            // Every untagged argument is a sort key; later ones break ties.
+            let keys: Vec<Value> = a
+                .all
+                .iter()
+                .filter(|(t, _)| t.is_none())
+                .map(|(_, v)| v.clone())
+                .collect();
+            if keys.is_empty() {
+                return Err("argument \"x\" is missing, with no default".into());
+            }
+            let decreasing = a
+                .named("decreasing")
                 .and_then(|v| lgl1(&v))
-                .unwrap_or(false),
-        )),
+                .unwrap_or(false);
+            Ok(mk_int(
+                order_by_keys(&keys, decreasing, na_last_arg(&a, Some(true)))
+                    .into_iter()
+                    .map(|i| Some(i as i64 + 1))
+                    .collect(),
+            ))
+        }
         "unique" => {
             let x = a.req(0, "x")?;
             let keys = as_str(&x);
@@ -2593,7 +2746,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── numeric summaries ───────────────────────────────────────────
         "sum" | "prod" => {
             let mut acc = if name == "sum" { 0.0 } else { 1.0 };
-            let mut na = false;
+            // Missing values propagate, and `NA` outranks `NaN`: R answers NA
+            // for `sum(c(1, NaN, NA))` whichever order they appear in, but NaN
+            // for `sum(c(1, NaN))`.
+            let (mut na, mut nan) = (false, false);
             let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
             let all_int = a
                 .all
@@ -2614,13 +2770,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                                 acc *= x
                             }
                         }
-                        _ if !narm => na = true,
+                        Some(_) if !narm => nan = true,
+                        None if !narm => na = true,
                         _ => {}
                     }
                 }
             }
             Ok(if na {
                 mk_dbl(vec![None])
+            } else if nan {
+                scalar_dbl(f64::NAN)
             } else if all_int && name == "sum" {
                 scalar_int(acc as i64)
             } else {
@@ -2628,6 +2787,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             })
         }
         "mean" => {
+            if let Some(v) = missing_result(&a, &a.req(0, "x")?, true) {
+                return Ok(v);
+            }
             let xs = numeric_arg(&a, 0, "x")?;
             Ok(if xs.is_empty() {
                 // Mean of nothing is NaN (0/0), not NA.
@@ -2637,6 +2799,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             })
         }
         "median" => {
+            if let Some(v) = missing_result(&a, &a.req(0, "x")?, false) {
+                return Ok(v);
+            }
             let mut xs = numeric_arg(&a, 0, "x")?;
             if xs.is_empty() {
                 return Ok(mk_dbl(vec![None]));
@@ -3199,20 +3364,47 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             Ok(mk_lgl(na.into_iter().map(|n: bool| Some(!n)).collect()))
         }
-        "is.numeric" => Ok(scalar_lgl(matches!(
-            data(&a.req(0, "x")?),
-            RData::Dbl(_) | RData::Int(_)
-        ))),
+        // `is.numeric` is true for both numeric types; `is.double` and
+        // `is.integer` distinguish them (`is.double(1L)` is FALSE). All three
+        // answer FALSE for a factor, which R excludes explicitly even though a
+        // factor is stored as an integer vector.
+        "is.numeric" => {
+            let x = a.req(0, "x")?;
+            Ok(scalar_lgl(
+                matches!(data(&x), RData::Dbl(_) | RData::Int(_)) && !is_factor(&x),
+            ))
+        }
+        "is.double" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Dbl(_)))),
+        "is.integer" => {
+            let x = a.req(0, "x")?;
+            Ok(scalar_lgl(matches!(data(&x), RData::Int(_)) && !is_factor(&x)))
+        }
         "is.character" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Str(_)))),
         "is.logical" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Lgl(_)))),
         "is.list" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::List(_)))),
         "is.function" => Ok(scalar_lgl(with_host(|h| {
             h.is_function(&a.req(0, "x").unwrap_or(Value::Undef))
         }))),
-        "is.vector" => Ok(scalar_lgl(matches!(
-            data(&a.req(0, "x")?),
-            RData::Dbl(_) | RData::Int(_) | RData::Str(_) | RData::Lgl(_) | RData::List(_)
-        ))),
+        // R's `is.vector` is not just a type test: an object carrying any
+        // attribute other than `names` is not a vector, so a matrix, a factor
+        // and anything with a stray `attr` all answer FALSE.
+        "is.vector" => {
+            let x = a.req(0, "x")?;
+            let plain = with_host(|h| h.attrs_of(&x))
+                .iter()
+                .all(|(k, _)| k == "names");
+            Ok(scalar_lgl(
+                plain
+                    && matches!(
+                        data(&x),
+                        RData::Dbl(_)
+                            | RData::Int(_)
+                            | RData::Str(_)
+                            | RData::Lgl(_)
+                            | RData::List(_)
+                    ),
+            ))
+        }
         "any" | "all" => {
             let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
             let mut saw_na = false;
@@ -4109,6 +4301,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             for d in 1..dims.len() {
                 stride[d] = stride[d - 1] * dims[d - 1];
             }
+            let dn = dimnames_of(&x);
             let margin_shape: Vec<usize> = margins.iter().map(|&d| dims[d]).collect();
             let other_shape: Vec<usize> = others.iter().map(|&d| dims[d]).collect();
             let mtotal: usize = margin_shape.iter().product::<usize>().max(1);
@@ -4139,10 +4332,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     }
                 }
                 let slice = take_positions(&x, &slice_pos);
-                // A rank ≥ 2 sub-array keeps its `dim` so FUN sees a matrix.
+                // A rank ≥ 2 sub-array keeps its `dim` so FUN sees a matrix; a
+                // 1-D slice keeps the labels of the dimension it runs along, so
+                // `apply(m, 1, f)` hands `f` a *named* row.
                 if other_shape.len() >= 2 {
                     let d = mk_int(other_shape.iter().map(|&n| Some(n as i64)).collect());
                     with_host(|h| h.set_attr(&slice, "dim", d));
+                    let labels = mk_list(
+                        others
+                            .iter()
+                            .map(|&d| match dn.get(d).cloned().flatten() {
+                                Some(names) => mk_str(names),
+                                None => null(),
+                            })
+                            .collect(),
+                    );
+                    if elements(&labels).iter().any(|e| !is_null(e)) {
+                        with_host(|h| h.set_attr(&slice, "dimnames", labels));
+                    }
+                } else if let Some(Some(names)) =
+                    others.first().map(|&d| dn.get(d).cloned().flatten())
+                {
+                    set_names(&slice, names);
                 }
                 results.push(call_value(&f, vec![(None, slice)], None)?);
                 for k in 0..margins.len() {
@@ -4153,11 +4364,46 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     midx[k] = 0;
                 }
             }
+            // The labels of the margins iterated over, and of one result — R
+            // carries both onto the answer: the margin labels name the slots the
+            // results landed in, the result's own names label what FUN returned.
+            let margin_dn: Vec<Option<Vec<Option<String>>>> =
+                margins.iter().map(|&d| dn.get(d).cloned().flatten()).collect();
+            let result_names = results
+                .first()
+                .map(names_of)
+                .filter(|n| n.iter().any(|e| e.is_some()));
             let out = simplify(&mk_list(results));
-            // Several margins with scalar results reshape to an array.
-            if margins.len() >= 2 && with_host(|h| h.attr(&out, "dim")).is_none() {
+            let has_dim = with_host(|h| h.attr(&out, "dim")).is_some();
+            if margins.len() >= 2 && !has_dim {
+                // Several margins with scalar results reshape to an array over
+                // those margins, labels and all.
                 let d = mk_int(margin_shape.iter().map(|&n| Some(n as i64)).collect());
                 with_host(|h| h.set_attr(&out, "dim", d));
+                if margin_dn.iter().any(|m| m.is_some()) {
+                    let labels = mk_list(
+                        margin_dn
+                            .iter()
+                            .map(|m| match m {
+                                Some(names) => mk_str(names.clone()),
+                                None => null(),
+                            })
+                            .collect(),
+                    );
+                    with_host(|h| h.set_attr(&out, "dimnames", labels));
+                }
+            } else if !has_dim {
+                // One margin, one value per slice: a vector named by the margin.
+                if let Some(Some(names)) = margin_dn.first() {
+                    if len(&out) == names.len() {
+                        set_names(&out, names.clone());
+                    }
+                }
+            } else if margins.len() == 1 {
+                // One margin, a vector per slice: R stacks them column-wise, so
+                // the result's own names become the rows and the margin's the
+                // columns.
+                set_dimnames(&out, result_names, margin_dn[0].clone());
             }
             Ok(out)
         }
@@ -4579,6 +4825,27 @@ impl Args {
     }
 }
 
+/// The missing value a summary of `x` yields when `na.rm` is off, or `None`
+/// when `x` has none.
+///
+/// R distinguishes `NA` from `NaN` here and the two summaries disagree on how.
+/// `mean` accumulates in IEEE arithmetic, so the *first* missing value met
+/// decides: `mean(c(1, NA, NaN))` is NA and `mean(c(1, NaN, NA))` is NaN — pass
+/// `first_kind = true` for that. `median` tests `is.na` up front and returns a
+/// typed `NA` whichever it found, so `median(c(NaN, 1, 2))` is NA.
+fn missing_result(a: &Args, x: &Value, first_kind: bool) -> Option<Value> {
+    if a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false) {
+        return None;
+    }
+    let xs = as_dbl(x);
+    let first = xs.iter().find(|e| e.map(f64::is_nan).unwrap_or(true))?;
+    Some(if first_kind && first.is_some() {
+        scalar_dbl(f64::NAN)
+    } else {
+        mk_dbl(vec![None])
+    })
+}
+
 fn numeric_arg(a: &Args, i: usize, name: &str) -> Result<Vec<f64>, String> {
     let v = a.req(i, name)?;
     let narm = a.named("na.rm").and_then(|x| lgl1(&x)).unwrap_or(false);
@@ -4726,17 +4993,26 @@ fn paste(a: &Args, zero: bool) -> Value {
         .iter()
         .filter(|(t, _)| !matches!(t.as_deref(), Some("sep") | Some("collapse")))
         .map(|(_, v)| as_str(v))
-        .filter(|v| !v.is_empty())
         .collect();
-    if parts.is_empty() {
+    // Every argument contributes a field, even a zero-length one — it just
+    // contributes the empty string. That is why `paste("a", NULL, "b")` is
+    // "a  b" (two separators, one empty field) and not "a b". If *every*
+    // argument is zero-length the result is `character(0)`.
+    // `collapse` always yields one string, so an empty result collapses to ""
+    // rather than to `character(0)`.
+    let n = parts.iter().map(|p| p.len()).max().unwrap_or(0);
+    if n == 0 && collapse.is_none() {
         return mk_str(vec![]);
     }
-    let n = parts.iter().map(|p| p.len()).max().unwrap_or(0);
     let joined: Vec<String> = (0..n)
         .map(|i| {
             parts
                 .iter()
-                .map(|p| p[i % p.len()].clone().unwrap_or_else(|| "NA".into()))
+                .map(|p| match p.get(i % p.len().max(1)) {
+                    Some(Some(s)) => s.clone(),
+                    Some(None) => "NA".into(),
+                    None => String::new(),
+                })
                 .collect::<Vec<_>>()
                 .join(&sep)
         })
@@ -4748,7 +5024,12 @@ fn paste(a: &Args, zero: bool) -> Value {
 }
 
 /// `seq(from, to, by=, length.out=)`.
-fn seq(a: &Args) -> Value {
+fn seq(a: &Args) -> Result<Value, String> {
+    // `seq(along.with = x)` is `seq_along(x)`: the indices of `x`, whatever its
+    // values are. It short-circuits the rest of the signature.
+    if let Some(v) = a.named("along.with") {
+        return Ok(mk_int((1..=len(&v) as i64).map(Some).collect()));
+    }
     let from = a.get(0, "from").and_then(|v| num1(&v)).unwrap_or(1.0);
     let to = a.get(1, "to").and_then(|v| num1(&v));
     // R's signature is `seq(from, to, by, length.out, ...)`, so a third
@@ -4756,13 +5037,28 @@ fn seq(a: &Args) -> Value {
     // fall through to the default step of 1.
     let by = a.get(2, "by").and_then(|v| num1(&v));
     let length_out = a.named("length.out").and_then(|v| num1(&v));
-    // `seq(n)` with one argument means `seq_len(n)`.
-    let Some(to) = to else {
-        return match length_out {
-            Some(n) => mk_int((1..=n as i64).map(Some).collect()),
-            None => mk_int((1..=from as i64).map(Some).collect()),
-        };
+    // With no `to`, R's signature supplies one: `length.out` counts terms
+    // forward from `from`, a bare `by` leaves `to` at its default of 1 (so
+    // `seq(5, by = 2)` is a wrong-sign error while `seq(5, by = -2)` is 5 3 1),
+    // and the one-argument form is `1:n` — which counts *down* when n < 1, so
+    // `seq(0)` is `c(1, 0)` and not the empty sequence `seq_len(0)` gives.
+    let (from, to) = match to {
+        Some(t) => (from, t),
+        None => match (length_out, by) {
+            (Some(n), _) => (from, from + by.unwrap_or(1.0) * (n - 1.0).max(0.0)),
+            (None, Some(_)) => (from, 1.0),
+            (None, None) => (1.0, from),
+        },
     };
+    // R refuses a step that cannot reach `to` rather than emitting one element.
+    if let Some(b) = by {
+        if b == 0.0 && to != from {
+            return Err("invalid '(to - from)/by'".into());
+        }
+        if (to - from) * b < 0.0 {
+            return Err("wrong sign in 'by' argument".into());
+        }
+    }
     let step = match (by, length_out) {
         (Some(b), _) => b,
         (None, Some(n)) if n > 1.0 => (to - from) / (n - 1.0),
@@ -4776,7 +5072,13 @@ fn seq(a: &Args) -> Value {
         }
     };
     let mut out = Vec::new();
-    if step == 0.0 {
+    if let Some(n) = length_out {
+        // `length.out` fixes the count exactly, even when the step is zero:
+        // `seq(5, 5, length.out = 4)` repeats the value four times.
+        out = (0..n.max(0.0) as usize)
+            .map(|k| Some(from + step * k as f64))
+            .collect();
+    } else if step == 0.0 {
         out.push(Some(from));
     } else {
         let count = ((to - from) / step).floor() as i64;
@@ -4788,11 +5090,11 @@ fn seq(a: &Args) -> Value {
         .iter()
         .flatten()
         .all(|x| *x == x.trunc() && x.abs() < 1e15);
-    if whole && by.map(|b| b == b.trunc()).unwrap_or(true) {
+    Ok(if whole && by.map(|b| b == b.trunc()).unwrap_or(true) {
         mk_int(out.into_iter().map(|e| e.map(|x| x as i64)).collect())
     } else {
         mk_dbl(out)
-    }
+    })
 }
 
 /// `rep(x, times=, each=)`.
@@ -4849,8 +5151,8 @@ fn rep(a: &Args) -> Value {
     take_positions(&x, &pos)
 }
 
-fn sort_value(x: &Value, decreasing: bool) -> Value {
-    let idx = order_positions(x, decreasing);
+fn sort_value(x: &Value, decreasing: bool, na_last: Option<bool>) -> Value {
+    let idx = order_positions(x, decreasing, na_last);
     let pos: Vec<Option<usize>> = idx.into_iter().map(Some).collect();
     let out = take_positions(x, &pos);
     let nm = names_of(x);
@@ -4865,32 +5167,97 @@ fn sort_value(x: &Value, decreasing: bool) -> Value {
     out
 }
 
-fn order_value(x: &Value, decreasing: bool) -> Value {
+fn order_value(x: &Value, decreasing: bool, na_last: Option<bool>) -> Value {
     mk_int(
-        order_positions(x, decreasing)
+        order_positions(x, decreasing, na_last)
             .into_iter()
             .map(|i| Some(i as i64 + 1))
             .collect(),
     )
 }
 
-/// The ordering permutation, with NA values dropped (R's `sort` default).
-fn order_positions(x: &Value, decreasing: bool) -> Vec<usize> {
-    let text = matches!(data(x), RData::Str(_));
-    let mut idx: Vec<usize> = (0..len(x)).collect();
-    if text {
-        let keys = as_str(x);
-        idx.retain(|i| keys[*i].is_some());
-        idx.sort_by(|p, q| keys[*p].cmp(&keys[*q]));
-    } else {
-        let keys = as_dbl(x);
-        idx.retain(|i| keys[*i].is_some_and(|v| !v.is_nan()));
-        idx.sort_by(|p, q| keys[*p].partial_cmp(&keys[*q]).unwrap());
+/// Read a `na.last` argument. An explicit `NA` means "drop the missing values",
+/// which is distinct from the argument being absent — hence the two layers of
+/// `Option`, collapsed here against the caller's default.
+fn na_last_arg(a: &Args, default: Option<bool>) -> Option<bool> {
+    match a.named("na.last") {
+        Some(v) => lgl1(&v),
+        None => default,
     }
-    if decreasing {
-        idx.reverse();
+}
+
+/// One sort key: a character vector compares lexically, anything else numerically.
+enum SortKey {
+    Text(Vec<Option<String>>),
+    Num(Vec<Option<f64>>),
+}
+
+impl SortKey {
+    fn of(x: &Value) -> SortKey {
+        if matches!(data(x), RData::Str(_)) {
+            SortKey::Text(as_str(x))
+        } else {
+            SortKey::Num(as_dbl(x))
+        }
     }
-    idx
+    /// Whether position `i` is missing. `NaN` counts alongside `NA`: R sorts
+    /// both to the same place.
+    fn missing(&self, i: usize) -> bool {
+        match self {
+            SortKey::Text(v) => v[i].is_none(),
+            SortKey::Num(v) => v[i].map(f64::is_nan).unwrap_or(true),
+        }
+    }
+    fn cmp(&self, p: usize, q: usize) -> std::cmp::Ordering {
+        match self {
+            SortKey::Text(v) => v[p].cmp(&v[q]),
+            SortKey::Num(v) => v[p]
+                .partial_cmp(&v[q])
+                .unwrap_or(std::cmp::Ordering::Equal),
+        }
+    }
+}
+
+/// The ordering permutation over one or more keys, later keys breaking earlier
+/// ties (`order(a, b)`).
+///
+/// `na_last` places the missing values: `Some(true)` at the end (what `order`
+/// defaults to), `Some(false)` at the front, `None` dropped (what `sort`
+/// defaults to). A position is missing if *any* key is missing there.
+///
+/// `decreasing` reverses the comparison rather than the result, so equal
+/// elements keep their original ascending index order in both directions —
+/// `order(c(1, 1, 2), decreasing = TRUE)` is `3 1 2`, not `3 2 1`.
+fn order_by_keys(keys: &[Value], decreasing: bool, na_last: Option<bool>) -> Vec<usize> {
+    let n = keys.first().map(len).unwrap_or(0);
+    let ks: Vec<SortKey> = keys.iter().map(SortKey::of).collect();
+    let missing = |i: usize| ks.iter().any(|k| k.missing(i));
+    let mut good: Vec<usize> = (0..n).filter(|i| !missing(*i)).collect();
+    good.sort_by(|p, q| {
+        let ord = ks
+            .iter()
+            .map(|k| k.cmp(*p, *q))
+            .find(|o| o.is_ne())
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if decreasing {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+    let bad = || (0..n).filter(|i| missing(*i));
+    match na_last {
+        None => good,
+        Some(true) => {
+            good.extend(bad());
+            good
+        }
+        Some(false) => bad().chain(good).collect(),
+    }
+}
+
+fn order_positions(x: &Value, decreasing: bool, na_last: Option<bool>) -> Vec<usize> {
+    order_by_keys(std::slice::from_ref(x), decreasing, na_last)
 }
 
 /// `identical(x, y)` — same type, same attributes, same elements.
@@ -5049,78 +5416,159 @@ fn transpose(x: &Value) -> Value {
     out
 }
 
+/// `cat`'s own named arguments, which are not part of the `...` it prints.
+const CAT_CONTROL_ARGS: &[&str] = &["sep", "fill", "file", "append", "labels"];
+
+/// The R type name `cat` reports for a value it cannot print, or `None` when it
+/// can. R handles atomic vectors and symbols only; everything else is an error.
+fn uncatable(v: &Value) -> Option<&'static str> {
+    match data(v) {
+        RData::List(_) | RData::Args(_) => Some("list"),
+        RData::Builtin(_) => Some("builtin"),
+        RData::Closure { .. } | RData::Combinator { .. } => Some("closure"),
+        _ => None,
+    }
+}
+
+/// The control arguments `rbind`/`cbind` accept alongside the data: R's own
+/// `deparse.level`, plus the two vectors the compiler threads in so the seam
+/// labels R derives from the *argument expressions* are reachable from a
+/// builtin that only ever sees values (see `Compiler::expr`).
+const BIND_CONTROL_ARGS: &[&str] = &["deparse.level", ".deparse.sym", ".deparse.txt"];
+
+/// Recycle `v` to exactly `n` elements, keeping its type. A zero-length input
+/// yields all-`NA` (callers drop such arguments before this, so it is a guard).
+fn recycle_to(v: &Value, n: usize) -> Value {
+    let l = len(v);
+    let pos: Vec<Option<usize>> = (0..n)
+        .map(|i| if l == 0 { None } else { Some(i % l) })
+        .collect();
+    take_positions(v, &pos)
+}
+
 /// `cbind`/`rbind` of vectors and matrices into a single matrix. Each argument
 /// contributes its columns (or rows); shorter inputs recycle to the common
-/// length, as R does for equal-typed atomic inputs.
+/// length, and the result takes the widest type present, as `c()` does.
+///
+/// Labels along the binding seam follow R exactly: a matrix argument brings its
+/// own dimnames for that margin, a tagged vector brings its tag, and an
+/// untagged vector brings the deparsed argument expression — a bare symbol at
+/// the default `deparse.level = 1`, any expression at `2`, nothing at `0`. If
+/// no argument supplies a label the result gets no dimnames at all, which is
+/// what makes `rbind(1:3, 4:6)` print `[1,]`/`[2,]` while `rbind(x, x)` prints
+/// `x`/`x`. Unlabelled rows in an otherwise labelled result print as blank.
 fn bind_matrix(a: &Args, by_col: bool) -> Value {
-    // Each argument becomes a list of columns (cbind) or rows (rbind).
-    let mut strips: Vec<Vec<f64>> = Vec::new();
-    let mut cross = 0usize; // the length along the binding seam
-    for (_, v) in a.all.iter() {
-        let (nr, nc) = mat_dim(v);
-        let data: Vec<f64> = as_dbl(v)
-            .into_iter()
-            .map(|e| e.unwrap_or(f64::NAN))
-            .collect();
-        if with_host(|h| h.attr(v, "dim")).is_some() {
-            // Split a matrix into its columns/rows.
+    let level = a
+        .named("deparse.level")
+        .and_then(|v| num1(&v))
+        .unwrap_or(1.0) as i64;
+    let sym = a.named(".deparse.sym").map(|v| as_str(&v)).unwrap_or_default();
+    let txt = a.named(".deparse.txt").map(|v| as_str(&v)).unwrap_or_default();
+    // R drops `NULL` and zero-length arguments outright — they contribute
+    // neither a row/column nor a label.
+    let inputs: Vec<(usize, Option<String>, Value)> = a
+        .all
+        .iter()
+        .enumerate()
+        .filter(|(_, (t, v))| {
+            !BIND_CONTROL_ARGS.contains(&t.as_deref().unwrap_or("")) && len(v) > 0
+        })
+        .map(|(i, (t, v))| (i, t.clone(), v.clone()))
+        .collect();
+    if inputs.is_empty() {
+        return null();
+    }
+    let is_matrix = |v: &Value| with_host(|h| h.attr(v, "dim")).is_some();
+    // The length along the seam: a matrix contributes its cross-margin extent,
+    // a vector its length.
+    let cross = inputs
+        .iter()
+        .map(|(_, _, v)| {
+            if is_matrix(v) {
+                let (nr, nc) = mat_dim(v);
+                if by_col {
+                    nr
+                } else {
+                    nc
+                }
+            } else {
+                len(v)
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        .max(1);
+
+    let mut strips: Vec<Value> = Vec::new();
+    let mut seam: Vec<Option<String>> = Vec::new();
+    let mut cross_names: Option<Vec<Option<String>>> = None;
+    for (i, tag, v) in &inputs {
+        if is_matrix(v) {
+            let (nr, nc) = mat_dim(v);
             let (outer, inner) = if by_col { (nc, nr) } else { (nr, nc) };
-            cross = cross.max(inner);
+            let dn = dimnames_of(v);
+            let margin = |k: usize| dn.get(k).cloned().flatten();
+            let (seam_dn, cross_dn) = if by_col {
+                (margin(1), margin(0))
+            } else {
+                (margin(0), margin(1))
+            };
             for o in 0..outer {
-                let strip: Vec<f64> = (0..inner)
-                    .map(|i| {
-                        let (r, c) = if by_col { (i, o) } else { (o, i) };
-                        data[c * nr + r]
+                let pos: Vec<Option<usize>> = (0..inner)
+                    .map(|k| {
+                        let (r, c) = if by_col { (k, o) } else { (o, k) };
+                        Some(c * nr + r)
                     })
                     .collect();
-                strips.push(strip);
+                strips.push(recycle_to(&take_positions(v, &pos), cross));
+                // A tag on a matrix argument is ignored: R labels its rows from
+                // the matrix's own dimnames or not at all.
+                seam.push(seam_dn.as_ref().and_then(|d| d.get(o).cloned().flatten()));
+            }
+            if cross_names.is_none() {
+                cross_names = cross_dn.filter(|d| d.len() == cross);
             }
         } else {
-            cross = cross.max(data.len());
-            strips.push(data);
+            strips.push(recycle_to(v, cross));
+            seam.push(match tag {
+                Some(t) => Some(t.clone()),
+                None => match level {
+                    0 => None,
+                    2 => txt.get(*i).cloned().flatten(),
+                    _ => sym.get(*i).cloned().flatten(),
+                },
+            });
+            if cross_names.is_none() {
+                let nm = names_of(v);
+                if nm.iter().any(|e| e.is_some()) && nm.len() == cross {
+                    cross_names = Some(nm);
+                }
+            }
         }
     }
-    // Recycle each strip to the common cross length.
-    for s in &mut strips {
-        if s.is_empty() {
-            s.push(f64::NAN);
-        }
-        let base = s.clone();
-        while s.len() < cross {
-            s.push(base[s.len() % base.len()]);
-        }
-    }
-    let (nr, nc) = if by_col {
-        (cross, strips.len())
+
+    // `concat` promotes to the widest type; it lays the strips out end to end,
+    // which is already column-major for `cbind` and row-major for `rbind`.
+    let flat = concat(&Args::new(
+        strips.into_iter().map(|s| (None, s)).collect::<Vec<_>>(),
+    ));
+    let n = seam.len();
+    let (nr, nc) = if by_col { (cross, n) } else { (n, cross) };
+    let out = if by_col {
+        flat
     } else {
-        (strips.len(), cross)
+        let pos: Vec<Option<usize>> = (0..nr * nc).map(|k| Some((k % nr) * nc + k / nr)).collect();
+        take_positions(&flat, &pos)
     };
-    let mut vals = vec![Some(0.0); nr * nc];
-    for (o, strip) in strips.iter().enumerate() {
-        for (i, &val) in strip.iter().enumerate() {
-            let (r, c) = if by_col { (i, o) } else { (o, i) };
-            vals[c * nr + r] = Some(val);
-        }
-    }
-    let out = mk_dbl(vals);
     let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
     with_host(|h| h.set_attr(&out, "dim", dim));
-    // The seam dimension (the one that grows with each argument) takes the
-    // explicit argument labels; the cross dimension inherits the names carried
-    // on an input vector. (R's deparse-derived seam labels for bare symbols —
-    // `rbind(x, x)` giving rownames "x","x" — are not reproduced: builtins do
-    // not receive the argument expressions.)
-    let seam_names: Vec<Option<String>> = a.all.iter().map(|(n, _)| n.clone()).collect();
-    let any_seam = seam_names.iter().any(|n| n.is_some());
-    let cross_names: Option<Vec<Option<String>>> = a.all.iter().find_map(|(_, v)| {
-        let nm = names_of(v);
-        if nm.iter().any(|e| e.is_some()) && nm.len() == cross {
-            Some(nm)
-        } else {
-            None
-        }
+    // One label anywhere along the seam gives every position a label; the ones
+    // with none print blank.
+    let seam = seam.iter().any(|s| s.is_some()).then(|| {
+        seam.into_iter()
+            .map(|s| Some(s.unwrap_or_default()))
+            .collect::<Vec<_>>()
     });
-    let seam = any_seam.then_some(seam_names);
     if by_col {
         set_dimnames(&out, cross_names, seam);
     } else {
@@ -5535,6 +5983,27 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 }
             }
             let conv = spec.pop().unwrap_or('s');
+            // `%*d` / `%.*f` read the field width (or the precision) from the
+            // next argument, ahead of the value it formats. R allows at most one
+            // `*` per specification, so one substitution is enough.
+            if let Some(pos) = spec.find('*') {
+                let Some((_, wv)) = rest.get(argi).cloned() else {
+                    return Err("too few arguments for sprintf format".into());
+                };
+                argi += 1;
+                let k = i % len(&wv).max(1);
+                let w = as_int(&wv).get(k).and_then(|e| *e).unwrap_or(0);
+                // A negative width means left-justify (C's `-` flag); a negative
+                // precision means no precision at all.
+                let repl = if spec[..pos].contains('.') {
+                    w.max(0).to_string()
+                } else if w < 0 {
+                    format!("-{}", w.unsigned_abs())
+                } else {
+                    w.to_string()
+                };
+                spec.replace_range(pos..pos + 1, &repl);
+            }
             let (flags, width, precision) = parse_spec(&spec);
             let arg = rest.get(argi).map(|(_, v)| v.clone());
             argi += 1;
@@ -5692,7 +6161,7 @@ fn expand_char_ranges(s: &str) -> Vec<char> {
 
 /// R's `encodeString`: render the C escapes for the control/quote characters so
 /// the result round-trips as a source literal.
-fn encode_string(s: &str) -> String {
+pub(crate) fn encode_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -5856,6 +6325,70 @@ fn strip_g_zeros(s: &str) -> String {
     t.trim_end_matches('.').to_string()
 }
 
+/// The primitives R dispatches S3 methods for. A call to one of these on an
+/// object carrying an explicit `class` attribute looks for `<name>.<class>`
+/// before falling back to the built-in implementation — which is how a user's
+/// `print.myclass` / `format.myclass` / `as.character.myclass` takes over.
+///
+/// Only names rlang implements as primitives are listed; a generic with no
+/// primitive behind it is reached through `UseMethod` instead.
+const INTERNAL_GENERICS: &[&str] = &[
+    "print",
+    "format",
+    "summary",
+    "toString",
+    "as.character",
+    "as.numeric",
+    "as.double",
+    "as.integer",
+    "as.logical",
+    "as.vector",
+    "as.list",
+    "length",
+    "levels",
+    "dim",
+    "dimnames",
+    "names",
+    "c",
+    "rev",
+    "sort",
+    "unique",
+    "mean",
+    "median",
+    "seq",
+    "rep",
+    "t",
+    "head",
+    "tail",
+    "all.equal",
+    "cbind",
+    "rbind",
+    "split",
+];
+
+/// The result of an S3 method for `name`, or `None` when there is no method to
+/// dispatch to (the primitive then runs as usual).
+fn s3_primitive_method(
+    name: &str,
+    args: &[(Option<String>, Value)],
+) -> Option<Result<Value, String>> {
+    if !INTERNAL_GENERICS.contains(&name) {
+        return None;
+    }
+    let obj = args.iter().find(|(t, _)| t.is_none()).map(|(_, v)| v)?;
+    // Dispatch is driven by an explicit `class` attribute. The implicit class of
+    // a plain vector ("numeric", "character", …) does not select a method here,
+    // matching R, where those reach `print.default`.
+    with_host(|h| h.attr(obj, "class"))?;
+    for cls in class_of(obj) {
+        let method = format!("{name}.{cls}");
+        if let Some(f) = with_host(|h| h.lookup_function(&method)) {
+            return Some(call_value(&f, args.to_vec(), Some(method)));
+        }
+    }
+    None
+}
+
 /// `UseMethod("generic")` — S3 dispatch on the class vector of the first
 /// argument of the *calling* function, falling back to `generic.default`.
 fn use_method(a: &Args) -> Result<Value, String> {
@@ -5908,18 +6441,16 @@ pub fn format_value(v: &Value) -> Vec<String> {
 /// attribute that is not part of the value's own structure — the structural
 /// ones are already shown as names, a matrix layout, or a `Levels:` line.
 fn format_extra_attrs(v: &Value) -> Vec<String> {
-    const STRUCTURAL: [&str; 7] = [
-        "names",
-        "dim",
-        "dimnames",
-        "class",
-        "levels",
-        "row.names",
-        "tsp",
-    ];
+    const STRUCTURAL: [&str; 6] = ["names", "dim", "dimnames", "levels", "row.names", "tsp"];
+    // `class` is structural only for the classes that have their own layout
+    // above; a class rlang has no method for is shown, the way R's
+    // `print.default` shows one it has no method for.
+    let laid_out = class_of(v)
+        .iter()
+        .any(|c| matches!(c.as_str(), "factor" | "ordered" | "table" | "rle"));
     let mut out = Vec::new();
     for (k, val) in with_host(|h| h.attrs_of(v)) {
-        if STRUCTURAL.contains(&k.as_str()) {
+        if STRUCTURAL.contains(&k.as_str()) || (k == "class" && laid_out) {
             continue;
         }
         out.push(format!("attr(,\"{k}\")"));
@@ -5953,9 +6484,7 @@ fn format_value_body(v: &Value) -> Vec<String> {
     }
     match data(v) {
         RData::Null => vec!["NULL".into()],
-        RData::Closure { .. } | RData::Builtin(_) | RData::Combinator { .. } => {
-            vec![format_function(v)]
-        }
+        RData::Closure { .. } | RData::Builtin(_) | RData::Combinator { .. } => format_function(v),
         // A foreign R object prints the way R would print it.
         #[cfg(not(target_arch = "wasm32"))]
         RData::RForeign(ptr) => crate::rembed::print_foreign(ptr),
@@ -6026,15 +6555,29 @@ fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
     out
 }
 
-fn format_function(v: &Value) -> String {
+/// The deparsed source lines of `v` if it is a function, else `None` — the
+/// shared path behind `print(f)`, `deparse(f)` and `format(f)`.
+fn function_src(v: &Value) -> Option<Vec<String>> {
     match data(v) {
-        RData::Builtin(name) => format!("function (...) .Primitive(\"{name}\")"),
-        RData::Closure { id, .. } => {
-            let params =
-                with_host(|h| h.closures.get(id).map(|c| c.params.join(", "))).unwrap_or_default();
-            format!("function ({params}) ...")
-        }
-        _ => "function".into(),
+        // A primitive deparses to just its `.Primitive` call — R shows the
+        // formals only when *printing* it, not when deparsing it.
+        RData::Builtin(name) => Some(vec![format!(".Primitive(\"{name}\")")]),
+        RData::Closure { .. } | RData::Combinator { .. } => Some(format_function(v)),
+        _ => None,
+    }
+}
+
+/// The lines `print` shows for a function. A closure shows its deparsed source
+/// — `Rscript` runs with `keep.source = FALSE`, so R re-renders the parse tree
+/// rather than echoing the original text, and `ClosureDef::src` holds exactly
+/// that rendering (see [`crate::deparse`]).
+fn format_function(v: &Value) -> Vec<String> {
+    match data(v) {
+        RData::Builtin(name) => vec![format!("function (...) .Primitive(\"{name}\")")],
+        RData::Closure { id, .. } => with_host(|h| h.closures.get(id).map(|c| c.src.clone()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| vec!["function (...) ...".into()]),
+        _ => vec!["function".into()],
     }
 }
 

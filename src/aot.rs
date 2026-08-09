@@ -32,9 +32,9 @@ pub const AOT_CLOSURES_TAG: &str = "\u{0}rlang-aot-closures:";
 /// whole-script CRAN fallback the interpreter has.
 pub const AOT_SOURCE_TAG: &str = "\u{0}rlang-aot-source:";
 
-/// The serde-flat closure form embedded in the AOT object (formals + body),
-/// matching `cache::CClosure`.
-type CClosure = (Vec<String>, Chunk);
+/// The serde-flat closure form embedded in the AOT object (formals + body +
+/// deparsed source), matching `cache::CClosure`.
+type CClosure = (Vec<String>, Chunk, Vec<String>);
 
 /// Precompile `file` and store its bytecode in the cache. Returns a one-line
 /// report of what was built. The report is explicit user-requested output.
@@ -55,7 +55,7 @@ pub(crate) fn encode_closures(prog: &Program) -> Result<String, String> {
     let closures: Vec<CClosure> = prog
         .closures
         .iter()
-        .map(|c| (c.params.clone(), c.chunk.clone()))
+        .map(|c| (c.params.clone(), c.chunk.clone(), c.src.clone()))
         .collect();
     let blob =
         bincode::serialize(&closures).map_err(|e| format!("aot: serialize closures: {e}"))?;

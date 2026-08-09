@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 43
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 55
 surfaces. The fuzzer currently reports **zero** divergences across those
 surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty); what
 remains below is structural — whole subsystems, not per-primitive gaps.
@@ -41,11 +41,18 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   delegated there. This needs R installed; the values are correct but not
   inspectable from rlang's own primitives.
 - **No complex numbers, no `Date`/`POSIXct` native type.** Factors are
-  supported (`factor`, `levels`, `nlevels`, `table`, and their printing), but
-  only the default `sort`-ordered levels — no ordered factors.
+  supported (`factor`, `levels`, `nlevels`, `table`, explicit `levels =`, and
+  their printing), and the type predicates exclude them the way R's do
+  (`is.numeric(f)` and `is.integer(f)` are FALSE). Two gaps remain: **a factor
+  does not survive being subset or reordered** — `f[1:2]`, `head(f)`, `rep(f)`,
+  `sort(f)`, `rev(f)`, `unique(f)` and `c(f)` all yield the bare integer codes,
+  because those primitives build a fresh vector and drop the `levels`/`class`
+  attributes, and `f == "a"` compares against the codes rather than the labels,
+  so it selects nothing. And there are no ordered factors.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
-  printing, `aperm`, `apply` over any margin) work; named-margin `apply` and
-  array-specific helpers (`slice.index`, `arrayInd`) do not.
+  printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
+  a margin onto its result) work; the array-specific helpers (`slice.index`,
+  `arrayInd`) do not.
 - **`dimnames` work at any rank**: `matrix(dimnames=)` and `array(dimnames=)`,
   `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
   the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix and
@@ -53,8 +60,13 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   write) resolved per margin, labels carried onto a subset (as `dimnames` when a
   rank ≥ 2 survives, as `names` when it drops to a vector), and reductions that
   keep a dimension's labels as names (`colSums`/`rowSums`/`colMeans`/`rowMeans`).
-  One gap remains: `rbind(x, x)` does not synthesise deparse-derived seam labels
-  (`"x"`, `"x"`) because builtins receive argument values, not expressions.
+  `dimnames(x) <-`, `rownames(x) <-` and `colnames(x) <-` assign them, and
+  `apply` carries the margin's labels onto its result. `rbind`/`cbind` synthesise
+  R's deparse-derived seam labels (`rbind(x, x)` gives rownames `"x"`, `"x"`) at
+  every `deparse.level`: a builtin receives values rather than expressions, so
+  the compiler passes the deparsed argument text alongside them. It cannot do
+  that through `...` — `rbind(...)` inside a function gets no deparsed labels,
+  because the forwarded arguments only exist at run time.
 - **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
   `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
@@ -75,15 +87,24 @@ remains below is structural — whole subsystems, not per-primitive gaps.
   default afterwards. The 7-significant-digit default and the `scipen = 0`
   fixed-vs-scientific rule are checked against R by the parity corpus; the global
   `options()` toggles are not configurable.
-- **`format()` handles `nsmall`, `digits`, `big.mark`, `width`, common decimals,
-  and common-width justification** (and `formatC`/`prettyNum`/`deparse` exist),
-  but not the `justify` argument or per-call scientific control.
-- **A closure does not print its body.** `print(f)` shows
-  `function (<params>) ...` rather than R's deparsed source, and `deparse(f)` /
-  `format(f)` do not return the source lines. `ClosureDef` keeps only the
-  parameter names and the compiled chunk, so neither the body AST nor the
-  default-argument expressions survive to be deparsed; matching R would need
-  both retained plus R's own line-breaking rules.
+- **`format()` handles `nsmall`, `digits`, `big.mark`, `width`, `scientific`,
+  common decimals, and common-width justification** (and
+  `formatC`/`prettyNum`/`deparse` exist), but not the `justify` argument. The
+  fixed-versus-scientific choice is the same width rule `print` uses, so
+  `format(1e6)` is `"1e+06"` and `big.mark` does not apply to it.
+- **A closure prints and deparses its own source.** `print(f)`, `deparse(f)` and
+  `format(f)` render it through a port of R's `deparse.c` (`src/deparse.rs`):
+  `Rscript` runs with `keep.source = FALSE`, so R re-renders the parse tree
+  rather than echoing the original text, and rlang reproduces those layout rules
+  — the header on its own line, four-space block indentation, an `if` inside
+  `{ }` split across lines, and the 60-column wrap. Two gaps remain. A closure
+  whose environment is not the global one omits R's trailing
+  `<environment: 0x…>` line, which carries a process address that could not match
+  anyway. And a *primitive* prints as `function (...) .Primitive("name")` instead
+  of with R's real formals (`function (..., na.rm = FALSE)  .Primitive("sum")`),
+  because rlang has no per-builtin formals table — the reference corpus's
+  signatures describe what rlang reads, not what R declares. `deparse(sum)` is
+  exact.
 - **No `str()`, `summary()`, or `dput()`.**
 
 ## Syntax
@@ -106,7 +127,10 @@ remains below is structural — whole subsystems, not per-primitive gaps.
 ## S3 / S4 / R5
 
 - **`NextMethod()` is missing** — dispatch finds the first matching method and
-  stops.
+  stops. `UseMethod` works, and the primitives R treats as generic (`print`,
+  `format`, `as.character`, `length`, `c`, `sort`, …) hand off to a user's
+  `<generic>.<class>` before running their own implementation, so a
+  `print.myclass` takes over both `print(x)` and top-level autoprint.
 - **No S4 (`setClass`, `setGeneric`, `isVirtualClass`), no Reference Classes,
   no R6.** `@` parses and reads an attribute, which is not S4 slot semantics.
 - **No group generics** (`Ops`, `Math`, `Summary`), so a class cannot overload

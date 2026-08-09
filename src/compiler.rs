@@ -12,6 +12,7 @@
 //! targets like `x$a\[\[2\]\] <- v` unwind outward-in through the same two rules.
 
 use crate::ast::*;
+use crate::deparse::deparse_expr;
 use crate::host::{ops, ClosureDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 
@@ -124,6 +125,7 @@ fn slot_locals(exprs: &[Expr]) -> std::collections::HashSet<String> {
 fn root_ident(e: &Expr) -> Option<&str> {
     match e {
         Expr::Ident(n) | Expr::Str(n) => Some(n),
+        Expr::Paren(x) => root_ident(x),
         Expr::Index { obj, .. } => root_ident(obj),
         Expr::Call { args, .. } => args
             .first()
@@ -198,6 +200,7 @@ fn scan_slots(
             go(body, safe);
         }
         Expr::Repeat(b) => go(b, safe),
+        Expr::Paren(x) => scan_slots(x, safe, targets, blocked),
         Expr::Block(xs) => {
             for x in xs {
                 scan_slots(x, safe, targets, blocked);
@@ -429,6 +432,13 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::MKCLOSURE, 1), 0);
             }
             Expr::Block(body) => self.seq(b, body)?,
+            // `(x)` yields `x` but *visibly*: R's `(` is a function, and a call
+            // sets the visibility flag, so `(x <- 5)` echoes at top level while
+            // the bare assignment does not.
+            Expr::Paren(inner) => {
+                self.expr(b, inner)?;
+                b.emit(Op::CallBuiltin(ops::SET_VISIBLE, 1), 0);
+            }
             Expr::Call { fun, args } => {
                 // `switch` is a lazy special form (only the selected branch may
                 // run), so it compiles to a jump table rather than an eager call.
@@ -490,6 +500,51 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                // `rbind`/`cbind` label the binding seam with the deparsed
+                // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
+                // receives values, not expressions, so the deparsed text rides
+                // along: `.deparse.sym` carries a bare symbol's name (R's
+                // default `deparse.level = 1`) and `.deparse.txt` the full
+                // deparse (`deparse.level = 2`), one element per argument.
+                // Skipped when `...` is present — its runtime expansion would
+                // slide the arguments out of alignment with these vectors.
+                let is_bind = matches!(fun.as_ref(), Expr::Ident(n) if n == "rbind" || n == "cbind");
+                let has_dots = args
+                    .iter()
+                    .any(|a| matches!(a.value, Some(Expr::Dots)) || a.value.is_none());
+                if is_bind && !has_dots && !args.is_empty() {
+                    let label = |f: &dyn Fn(&Expr) -> Option<String>| Arg {
+                        name: None,
+                        value: Some(Expr::Call {
+                            fun: Box::new(Expr::Ident("c".into())),
+                            args: args
+                                .iter()
+                                .map(|a| Arg {
+                                    name: None,
+                                    value: Some(match a.value.as_ref().and_then(f) {
+                                        Some(s) => Expr::Str(s),
+                                        None => Expr::Na(NaKind::Character),
+                                    }),
+                                })
+                                .collect(),
+                        }),
+                    };
+                    let mut rewritten = args.clone();
+                    rewritten.push(Arg {
+                        name: Some(".deparse.sym".into()),
+                        ..label(&|e| match e {
+                            Expr::Ident(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                    });
+                    rewritten.push(Arg {
+                        name: Some(".deparse.txt".into()),
+                        ..label(&|e| Some(deparse_expr(e)))
+                    });
+                    self.args(b, &rewritten)?;
+                    b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                    return Ok(());
+                }
                 self.args(b, args)?;
                 b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
             }
@@ -497,8 +552,8 @@ impl Compiler {
                 // A formula is unevaluated language: deparse it back to R source
                 // and build the formula object in the embedded R.
                 let src = match lhs {
-                    Some(l) => format!("{} ~ {}", deparse_ast(l), deparse_ast(rhs)),
-                    None => format!("~ {}", deparse_ast(rhs)),
+                    Some(l) => format!("{} ~ {}", deparse_expr(l), deparse_expr(rhs)),
+                    None => format!("~ {}", deparse_expr(rhs)),
                 };
                 let call = Expr::Call {
                     fun: Box::new(Expr::Ident(".rlang_formula".into())),
@@ -1015,6 +1070,9 @@ impl Compiler {
         self.closures.push(ClosureDef {
             params: params.iter().map(|p| p.name.clone()).collect(),
             chunk: fb.build(),
+            // Deparse from the AST here: it is the last point at which the body
+            // and the default-argument expressions still exist.
+            src: crate::deparse::deparse_closure(params, body),
         });
         Ok(self.closures.len() - 1)
     }
@@ -1150,85 +1208,6 @@ impl Compiler {
     }
 }
 
-/// Deparse an expression back to R source — enough of the grammar to reconstruct
-/// what appears inside a model formula (`y ~ x + log(z)`, `v ~ g`, `~ .`).
-pub(crate) fn deparse_ast(e: &Expr) -> String {
-    match e {
-        Expr::Num(n) => {
-            if *n == n.trunc() && n.abs() < 1e15 {
-                format!("{}", *n as i64)
-            } else {
-                format!("{n}")
-            }
-        }
-        Expr::Int(i) => format!("{i}L"),
-        Expr::Str(s) => format!("{s:?}"),
-        Expr::Bool(true) => "TRUE".into(),
-        Expr::Bool(false) => "FALSE".into(),
-        Expr::Null => "NULL".into(),
-        Expr::Na(_) => "NA".into(),
-        Expr::Inf => "Inf".into(),
-        Expr::NaN => "NaN".into(),
-        Expr::Ident(s) => s.clone(),
-        Expr::Dots => "...".into(),
-        Expr::Formula { lhs, rhs } => match lhs {
-            Some(l) => format!("{} ~ {}", deparse_ast(l), deparse_ast(rhs)),
-            None => format!("~ {}", deparse_ast(rhs)),
-        },
-        Expr::Binary { op, lhs, rhs } => {
-            format!(
-                "{} {} {}",
-                deparse_ast(lhs),
-                binop_name(op),
-                deparse_ast(rhs)
-            )
-        }
-        Expr::Special { name, lhs, rhs } => {
-            format!("{} %{}% {}", deparse_ast(lhs), name, deparse_ast(rhs))
-        }
-        Expr::Unary { op, operand } => {
-            let s = match op {
-                crate::ast::UnOp::Neg => "-",
-                crate::ast::UnOp::Plus => "+",
-                crate::ast::UnOp::Not => "!",
-            };
-            format!("{s}{}", deparse_ast(operand))
-        }
-        Expr::Call { fun, args } => {
-            let parts: Vec<String> = args
-                .iter()
-                .map(|a| {
-                    let v = a.value.as_ref().map(deparse_ast).unwrap_or_default();
-                    match &a.name {
-                        Some(n) => format!("{n} = {v}"),
-                        None => v,
-                    }
-                })
-                .collect();
-            format!("{}({})", deparse_ast(fun), parts.join(", "))
-        }
-        Expr::Index { kind, obj, args } => {
-            let inner: Vec<String> = args
-                .iter()
-                .map(|a| a.value.as_ref().map(deparse_ast).unwrap_or_default())
-                .collect();
-            match kind {
-                crate::ast::IndexKind::Single => {
-                    format!("{}[{}]", deparse_ast(obj), inner.join(", "))
-                }
-                crate::ast::IndexKind::Double => {
-                    format!("{}[[{}]]", deparse_ast(obj), inner.join(", "))
-                }
-                crate::ast::IndexKind::Dollar => format!("{}${}", deparse_ast(obj), inner.join("")),
-                crate::ast::IndexKind::At => format!("{}@{}", deparse_ast(obj), inner.join("")),
-            }
-        }
-        // Anything else (blocks, closures, assignments) is not expected inside a
-        // formula; fall back to a placeholder rather than mis-rendering.
-        _ => ".".into(),
-    }
-}
-
 /// The native fusevm op for a binary operator whose scalar semantics match R
 /// exactly. `+ - *` do. `/` does NOT: fusevm's `Op::Div` yields `Undef` on a
 /// zero divisor (awk/shell semantics), whereas R's `/` is IEEE (`1/0` is `Inf`,
@@ -1321,6 +1300,7 @@ fn collect_num_assigns<'a>(
             collect_num_assigns(body, cand, assigns);
         }
         Expr::Repeat(b) => collect_num_assigns(b, cand, assigns),
+        Expr::Paren(x) => collect_num_assigns(x, cand, assigns),
         Expr::Block(xs) => {
             for x in xs {
                 collect_num_assigns(x, cand, assigns);

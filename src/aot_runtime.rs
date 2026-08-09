@@ -34,12 +34,12 @@ fn embedded_closures(chunk: &Chunk) -> Vec<ClosureDef> {
         let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(b64) else {
             continue;
         };
-        let Ok(closures) = bincode::deserialize::<Vec<(Vec<String>, Chunk)>>(&blob) else {
+        let Ok(closures) = bincode::deserialize::<Vec<(Vec<String>, Chunk, Vec<String>)>>(&blob) else {
             continue;
         };
         return closures
             .into_iter()
-            .map(|(params, chunk)| ClosureDef { params, chunk })
+            .map(|(params, chunk, src)| ClosureDef { params, chunk, src })
             .collect();
     }
     Vec::new()

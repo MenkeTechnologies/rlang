@@ -19,7 +19,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 /// Bump on any incompatible change to `CProg` / the lowering.
-const SCHEMA: u64 = 1;
+const SCHEMA: u64 = 2;
 
 /// The outer, rkyv-archived shard: a flat list of (key, bincode-blob) entries.
 #[derive(Archive, RkyvSer, RkyvDe, Default)]
@@ -35,8 +35,10 @@ struct Entry {
     blob: Vec<u8>,
 }
 
-/// (formals, body chunk) — a serde-flat closure definition.
-type CClosure = (Vec<String>, Chunk);
+/// (formals, body chunk, deparsed source lines) — a serde-flat closure
+/// definition. The source rides along because it is derived from the AST,
+/// which a cache hit never rebuilds.
+type CClosure = (Vec<String>, Chunk, Vec<String>);
 
 /// The inner, serde/bincode form of a compiled program.
 #[derive(Serialize, Deserialize)]
@@ -86,7 +88,7 @@ pub fn load(src: &str) -> Option<Program> {
         closures: cp
             .closures
             .into_iter()
-            .map(|(params, chunk)| ClosureDef { params, chunk })
+            .map(|(params, chunk, src)| ClosureDef { params, chunk, src })
             .collect(),
     })
 }
@@ -99,7 +101,7 @@ pub fn store(src: &str, prog: &Program) -> Result<(), String> {
         closures: prog
             .closures
             .iter()
-            .map(|c| (c.params.clone(), c.chunk.clone()))
+            .map(|c| (c.params.clone(), c.chunk.clone(), c.src.clone()))
             .collect(),
     };
     let blob = bincode::serialize(&cp).map_err(|e| format!("cache encode: {e}"))?;
