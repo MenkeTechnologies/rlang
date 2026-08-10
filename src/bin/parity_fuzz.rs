@@ -1221,6 +1221,82 @@ fn vec_cw(r: &mut Rng) -> String {
     format!("c({})", items.join(", "))
 }
 
+/// Magnitudes that can actually reach scientific notation. The shared `DBLS`
+/// pool spans only 0.1 .. 100.25, and at any `digits` in 1..22 every one of
+/// those renders fixed — `any(grepl("e", format(DBLS)))` is `FALSE` in R — so
+/// no generator drawing from `DBLS` can ever exercise the fixed-versus-
+/// scientific choice, let alone `scipen`'s bias on it. These straddle the
+/// switch in both directions and at both signs.
+const WIDE_DBLS: &[&str] = &[
+    "1e5",
+    "1e-5",
+    "123456789",
+    "0.000012345",
+    "1/3",
+    "pi",
+    "1e15",
+    "1e-15",
+    "-1e5",
+    "-0.000012345",
+    "99999",
+    "1234.5678",
+    "1e100",
+    "6.022e23",
+    "0.1",
+    "1e6",
+];
+
+/// A `digits` value spanning R's whole legal 1..22 range, weighted to the ends
+/// where the notation switch actually moves.
+fn dig(r: &mut Rng) -> i64 {
+    *r.pick(&[1, 2, 3, 5, 7, 10, 15, 16, 17, 21, 22])
+}
+
+/// A `scipen` value. R clamps below at -9 (with a warning) and has no upper
+/// bound, so the pool straddles the clamp and both sides of zero.
+fn spen(r: &mut Rng) -> i64 {
+    *r.pick(&[-9, -5, -2, -1, 0, 1, 2, 5, 10, 30])
+}
+
+/// `options(digits=, scipen=)` and the rendering sites they govern. `digits`
+/// sets significant digits; `scipen` biases the fixed-versus-scientific choice,
+/// which R makes by `width(fixed) <= width(scientific) + scipen`. The two reach
+/// every numeric rendering — `print`, top-level auto-print, `cat`, `format`,
+/// vector/matrix/list printing — while `as.character`/`paste`/`toString` take
+/// `scipen` but NOT `digits` (they are fixed at 15 significant digits), so both
+/// families are generated here to keep that asymmetry under test.
+fn gen_optsfmt(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = r.pick(WIDE_DBLS);
+    let w = r.pick(WIDE_DBLS);
+    let (d, s) = (dig(r), spen(r));
+    one(match r.below(18) {
+        0 => format!("options(digits = {d})\nprint({v})"),
+        1 => format!("options(scipen = {s})\nprint({v})"),
+        2 => format!("options(digits = {d}, scipen = {s})\nprint({v})"),
+        // Top-level auto-print takes the same path as an explicit `print`.
+        3 => format!("options(digits = {d}, scipen = {s})\n{v}"),
+        4 => format!("options(digits = {d}, scipen = {s})\ncat({v}, \"\\n\")"),
+        5 => format!("options(digits = {d}, scipen = {s})\ncat(format({v}), \"\\n\")"),
+        // A whole vector shares one notation and one decimal count.
+        6 => format!("options(digits = {d}, scipen = {s})\nprint(c({v}, {w}))"),
+        7 => format!("options(digits = {d}, scipen = {s})\nprint(c(a = {v}, b = {w}))"),
+        8 => format!("options(digits = {d}, scipen = {s})\nprint(matrix(c({v}, {w}, 1, 2), 2))"),
+        9 => format!("options(digits = {d}, scipen = {s})\nprint(list({v}))"),
+        // `digits` must NOT reach these; `scipen` must.
+        10 => format!("options(digits = {d}, scipen = {s})\ncat(as.character({v}), \"\\n\")"),
+        11 => format!("options(digits = {d}, scipen = {s})\ncat(paste({v}), \"\\n\")"),
+        12 => format!("options(digits = {d}, scipen = {s})\ncat(toString({v}), \"\\n\")"),
+        // Query, round-trip restore, and the invisible old-value list.
+        13 => "print(getOption(\"digits\"))\nprint(getOption(\"scipen\"))".to_string(),
+        14 => format!("old <- options(digits = {d})\nprint({v})\noptions(old)\nprint({v})"),
+        15 => format!("options(digits = {d})\nprint(names(options(\"digits\")))"),
+        16 => format!("print(getOption(\"nosuchoption\", {}))", ii(r)),
+        // `print(x, digits=)` is a one-off that must not leak into the setting.
+        _ => format!("options(digits = {d})\nprint({v}, digits = {})\nprint({v})", r.range(1, 8)),
+    })
+}
+
 /// Every surface that orders character data: the sort family, the ordering
 /// permutation, the extremes, the comparison operators, and the default
 /// `factor` levels (which are `sort(unique(x))`).
@@ -1858,6 +1934,7 @@ enum Mode {
     Restarts,
     Strwidth,
     Collate,
+    Optsfmt,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -1923,6 +2000,7 @@ const ALL_MODES: &[Mode] = &[
     Mode::Restarts,
     Mode::Strwidth,
     Mode::Collate,
+    Mode::Optsfmt,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -1989,6 +2067,7 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Restarts => gen_restarts(seed),
         Mode::Strwidth => gen_strwidth(seed),
         Mode::Collate => gen_collate(seed),
+        Mode::Optsfmt => gen_optsfmt(seed),
     }
 }
 
@@ -2414,6 +2493,7 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Restarts => "restarts",
         Mode::Strwidth => "strwidth",
         Mode::Collate => "collate",
+        Mode::Optsfmt => "optsfmt",
     }
 }
 
