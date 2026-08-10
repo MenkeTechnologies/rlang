@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 257 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 259 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 277 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.1 &middot; 279 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,13 +130,13 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 257 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 259 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
-        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">18</span></li>
+        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">20</span></li>
         <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
         <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
@@ -363,7 +363,7 @@
     </section>
     <section class="tutorial-section" id="ch-output-and-the-inlineminusrust-ffi">
       <h2>Output and the inline-Rust FFI</h2>
-      <p class="chapter-meta">18 entries</p>
+      <p class="chapter-meta">20 entries</p>
       <article class="doc-entry" id="doc-rust">
         <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>.rust</code></h3>
         <pre><code class="lang-r r">.rust(code)
@@ -452,7 +452,19 @@
         <h3><a class="doc-anchor" href="#doc-format">#</a> <code>format</code></h3>
         <pre><code class="lang-r r">format(x, nsmall = 0, digits, big.mark = "", width = 0, scientific)
 </code></pre>
-        <p>Format to character. A numeric vector takes whichever of fixed and scientific notation is narrower — the same rule print uses, so format(1e6) is "1e+06" — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.</p>
+        <p>Format to character. A numeric vector takes fixed notation when its width is no greater than the scientific width plus getOption("scipen") — the same rule print uses, so format(1e6) is "1e+06" at the default scipen of 0 — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, defaulting to getOption("digits"); `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.</p>
+      </article>
+      <article class="doc-entry" id="doc-options">
+        <h3><a class="doc-anchor" href="#doc-options">#</a> <code>options</code></h3>
+        <pre><code class="lang-r r">options(...)
+</code></pre>
+        <p>Set, query or restore global options. A tagged argument sets one and the call returns the previous values as a named list, invisibly, so `old &lt;- options(digits = 3)` then `options(old)` restores. An untagged string queries without setting and returns visibly; an untagged list restores every named element. `digits` (significant digits for printing, 1..22, default 7) and `scipen` (the penalty added to a scientific rendering's width before it is compared with the fixed one, so positive favours fixed; clamped below at -9, default 0) are the two the printing code reads; any other name is stored and read back but has no effect. A digits outside 1..22 is an error, as in R. Unlike R, options() with no arguments does not enumerate a full default set.</p>
+      </article>
+      <article class="doc-entry" id="doc-getoption">
+        <h3><a class="doc-anchor" href="#doc-getoption">#</a> <code>getOption</code></h3>
+        <pre><code class="lang-r r">getOption(x, default = NULL)
+</code></pre>
+        <p>The value of option x, or default when it has never been set.</p>
       </article>
       <article class="doc-entry" id="doc-formatc">
         <h3><a class="doc-anchor" href="#doc-formatc">#</a> <code>formatC</code></h3>

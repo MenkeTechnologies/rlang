@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 61
+`cargo run --bin parity-fuzz` on thousands of generated snippets across 63
 surfaces. The fuzzer currently reports **zero** divergences across those
 surfaces (its baseline in `tests/data/parity_fuzz_baseline.txt` is empty), and a
 run that compared nothing — no cases generated, or an oracle that never answered
@@ -124,16 +124,36 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Printing and formatting
 
-- **`options(digits=, scipen=)` is not implemented**, but `print(x, digits = n)`
-  is: it overrides the significant-digit count for that one call and restores the
-  default afterwards. The 7-significant-digit default and the `scipen = 0`
-  fixed-vs-scientific rule are checked against R by the parity corpus; the global
-  `options()` toggles are not configurable.
+- **Numeric literals with a decimal exponent past about ±100 parse to a
+  different double than R's**, one ULP away. R's own `R_strtod` scales the
+  mantissa by `10^expn` in double arithmetic instead of rounding correctly, so R
+  reads the literal `1e100` as `0x1.249ad2594c37ep+332` where C's `strtod`, Rust
+  and rlang all read `0x1.249ad2594c37dp+332` — and in R itself
+  `1e100 == 10^100` is `FALSE` while the computed `10^100` matches everyone
+  else. Below that exponent range R agrees with correct rounding exactly. This
+  is a lexer gap, not a formatting one: rendering the *same* double agrees with
+  R at every `digits` from 1 to 22. It shows up only as a difference in the last
+  displayed digits of such a literal at high `digits`, and the fuzzer's
+  `optsfmt` surface writes `10^100` rather than `1e100` so that it measures
+  formatting rather than this.
+- **`options()` does not enumerate a default set.** `options(digits=, scipen=)`
+  and `getOption` are implemented, including the invisible named list of prior
+  values that makes `old <- options(...)`; `options(old)` restore, the
+  untagged-string query form, R's 1..22 range check on `digits` and its -9 clamp
+  on `scipen`. Any other option name is stored and read back but has no effect,
+  and a bare `options()` returns only what has been set rather than R's ~73
+  defaults, so `getOption("width")` is `NULL` where R says 80.
 - **`format()` handles `nsmall`, `digits`, `big.mark`, `width`, `scientific`,
   common decimals, and common-width justification** (and
   `formatC`/`prettyNum`/`deparse` exist), but not the `justify` argument. The
-  fixed-versus-scientific choice is the same width rule `print` uses, so
-  `format(1e6)` is `"1e+06"` and `big.mark` does not apply to it.
+  fixed-versus-scientific choice is the same width rule `print` uses — fixed
+  when its width is no wider than the scientific one plus `getOption("scipen")`
+  — so `format(1e6)` is `"1e+06"` at the default `scipen` of 0, and `big.mark`
+  does not apply to it.
+- **`as.character`, `paste` and `toString` render doubles at a fixed 15
+  significant digits**, following `scipen` but deliberately *not* `digits`, so
+  `paste(pi)` stays `"3.14159265358979"` under `options(digits = 3)` while
+  `cat(pi)` and `format(pi)` follow the setting. This matches R.
 - **A closure prints and deparses its own source.** `print(f)`, `deparse(f)` and
   `format(f)` render it through a port of R's `deparse.c` (`src/deparse.rs`):
   `Rscript` runs with `keep.source = FALSE`, so R re-renders the parse tree

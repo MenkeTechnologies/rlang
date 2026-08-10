@@ -326,7 +326,17 @@ const OUTPUT: &[Entry] = &[
     (
         "format",
         "format(x, nsmall = 0, digits, big.mark = \"\", width = 0, scientific)",
-        "Format to character. A numeric vector takes whichever of fixed and scientific notation is narrower — the same rule print uses, so format(1e6) is \"1e+06\" — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.",
+        "Format to character. A numeric vector takes fixed notation when its width is no greater than the scientific width plus getOption(\"scipen\") — the same rule print uses, so format(1e6) is \"1e+06\" at the default scipen of 0 — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, defaulting to getOption(\"digits\"); `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.",
+    ),
+    (
+        "options",
+        "options(...)",
+        "Set, query or restore global options. A tagged argument sets one and the call returns the previous values as a named list, invisibly, so `old <- options(digits = 3)` then `options(old)` restores. An untagged string queries without setting and returns visibly; an untagged list restores every named element. `digits` (significant digits for printing, 1..22, default 7) and `scipen` (the penalty added to a scientific rendering's width before it is compared with the fixed one, so positive favours fixed; clamped below at -9, default 0) are the two the printing code reads; any other name is stored and read back but has no effect. A digits outside 1..22 is an error, as in R. Unlike R, options() with no arguments does not enumerate a full default set.",
+    ),
+    (
+        "getOption",
+        "getOption(x, default = NULL)",
+        "The value of option x, or default when it has never been set.",
     ),
     (
         "formatC",

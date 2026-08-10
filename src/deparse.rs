@@ -416,10 +416,10 @@ fn num_literal(x: f64) -> String {
     }
     let fixed = render_fixed(x, fixed_decimals(x));
     let sci = render_sci(x, sci_decimals(x));
-    if sci.chars().count() < fixed.chars().count() {
-        sci
-    } else {
+    if crate::host::prefers_fixed(fixed.chars().count(), sci.chars().count()) {
         fixed
+    } else {
+        sci
     }
 }
 

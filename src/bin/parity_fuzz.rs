@@ -1240,7 +1240,16 @@ const WIDE_DBLS: &[&str] = &[
     "-0.000012345",
     "99999",
     "1234.5678",
-    "1e100",
+    // Written as a power, not as the literal `1e100`, to keep this surface
+    // measuring formatting only. R's own `R_strtod` is not correctly rounded
+    // for |exponent| >= ~100: it parses the literal `1e100` to
+    // 0x1.249ad2594c37ep+332 where C and Rust both give 0x1.249ad2594c37dp+332,
+    // one ULP away, and `1e100 == 10^100` is FALSE in R. Generating the literal
+    // would fail every case on that 1-ULP input difference and say nothing
+    // about `digits` or `scipen`. `10^100` is the same magnitude, agrees
+    // bit-for-bit, and still exercises a three-digit exponent width. The parser
+    // gap itself is recorded in BUGS.md.
+    "10^100",
     "6.022e23",
     "0.1",
     "1e6",

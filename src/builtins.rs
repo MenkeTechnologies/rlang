@@ -708,6 +708,54 @@ fn r_warning(msg: &str) {
     eprintln!("Warning message:\n{msg} ");
 }
 
+/// Narrow an R value to something the options store can hold. Options are
+/// scalars in every case rlang acts on, so a longer vector keeps only its first
+/// element — the same truncation R's own option setters apply.
+fn r_to_option_value(v: &Value) -> Result<crate::host::OptionValue, String> {
+    use crate::host::OptionValue as O;
+    match data(v) {
+        RData::Int(xs) => xs
+            .first()
+            .copied()
+            .flatten()
+            .map(O::Int)
+            .ok_or_else(|| "invalid value in 'options'".to_string()),
+        RData::Dbl(xs) => xs
+            .first()
+            .copied()
+            .flatten()
+            .map(O::Dbl)
+            .ok_or_else(|| "invalid value in 'options'".to_string()),
+        RData::Lgl(xs) => xs
+            .first()
+            .copied()
+            .flatten()
+            .map(O::Lgl)
+            .ok_or_else(|| "invalid value in 'options'".to_string()),
+        RData::Str(xs) => xs
+            .first()
+            .cloned()
+            .flatten()
+            .map(O::Str)
+            .ok_or_else(|| "invalid value in 'options'".to_string()),
+        _ => Err("invalid value in 'options'".into()),
+    }
+}
+
+/// The inverse: an option's stored value as the R value `options`/`getOption`
+/// hand back. An option that was never set reads as `NULL`, which is what puts
+/// a `NULL` element in the list `options("nosuchthing")` returns.
+fn option_value_to_r(v: Option<crate::host::OptionValue>) -> Value {
+    use crate::host::OptionValue as O;
+    match v {
+        Some(O::Int(n)) => scalar_int(n),
+        Some(O::Dbl(x)) => scalar_dbl(x),
+        Some(O::Lgl(b)) => scalar_lgl(b),
+        Some(O::Str(s)) => scalar_str(s),
+        None => null(),
+    }
+}
+
 /// R's `Ops.factor` / `Ops.ordered` group generics, or `None` when no operand is
 /// a factor.
 ///
@@ -2175,6 +2223,8 @@ pub const PRIMITIVES: &[&str] = &[
     "rownames",
     "colnames",
     "dimnames",
+    "options",
+    "getOption",
     // Inline-Rust FFI bridge (src/ffi.rs): register a `rust {}` block, then call
     // its exports through R's own native-call verb.
     ".rust",
@@ -2281,7 +2331,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .collect(),
                 ));
             }
-            Ok(mk_str(as_str(&x)))
+            Ok(mk_str(crate::host::with_print_digits(
+                crate::host::AS_CHARACTER_DIGITS,
+                || as_str(&x),
+            )))
         }
         "as.logical" => Ok(mk_lgl(as_lgl(&a.req(0, "x")?))),
         "as.vector" => {
@@ -2608,13 +2661,102 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(v)
         }
         "identity" => a.req(0, "x"),
-        "paste" | "paste0" => Ok(paste(&a, name == "paste0")),
+        // `paste`, `toString` and `as.character` all coerce doubles at a fixed
+        // 15 significant digits, NOT at `getOption("digits")` — which is why
+        // `paste(pi)` stays "3.14159265358979" even under `options(digits = 3)`,
+        // while `cat(pi)` and `format(pi)` follow the setting. `scipen` still
+        // applies to them, so only the digit count is pinned here. Verified
+        // against R 4.6.1 over 7120 comparisons (`digits` in {1,3,7,15,22} x
+        // `scipen` in {-9,-5,-1,0,1,5,10,30} x 178 values): `as.character(x)` is
+        // exactly `format(x)` at `digits = 15`, and `paste`/`toString` agree
+        // with `as.character` on every one.
+        "paste" | "paste0" => Ok(crate::host::with_print_digits(
+            crate::host::AS_CHARACTER_DIGITS,
+            || paste(&a, name == "paste0"),
+        )),
         "toString" => {
-            let parts: Vec<String> = as_str_labels(&a.req(0, "x")?)
-                .into_iter()
-                .map(|s| s.unwrap_or_else(|| "NA".into()))
-                .collect();
+            let x = a.req(0, "x")?;
+            let parts: Vec<String> = crate::host::with_print_digits(
+                crate::host::AS_CHARACTER_DIGITS,
+                || as_str_labels(&x),
+            )
+            .into_iter()
+            .map(|s| s.unwrap_or_else(|| "NA".into()))
+            .collect();
             Ok(scalar_str(parts.join(", ")))
+        }
+        // `options(name = value, ...)` sets, `options("name")` queries, and
+        // `options(old)` restores from a previously returned list. Either way
+        // the result is a named list of the values as they were *before* the
+        // call, in argument order, which is what makes the
+        // `old <- options(...)`; `options(old)` round trip work. R returns it
+        // invisibly when anything was set and visibly for a pure query.
+        "options" => {
+            let mut names: Vec<Option<String>> = Vec::new();
+            let mut olds: Vec<Value> = Vec::new();
+            let mut any_set = false;
+            let mut record = |name: &str, old: Option<crate::host::OptionValue>| {
+                names.push(Some(name.to_string()));
+                olds.push(option_value_to_r(old));
+            };
+            for (tag, v) in a.all.iter() {
+                match tag {
+                    Some(name) => {
+                        any_set = true;
+                        let (prev, warning) =
+                            crate::host::option_set(name, r_to_option_value(v)?)?;
+                        record(name, prev);
+                        if let Some(w) = warning {
+                            r_warning(&w);
+                        }
+                    }
+                    // An untagged list is a restore: every named element is set.
+                    None if matches!(data(v), RData::List(_)) => {
+                        let elems = match data(v) {
+                            RData::List(xs) => xs,
+                            _ => unreachable!(),
+                        };
+                        let tags = with_host(|h| h.attr(v, "names"))
+                            .map(|n| as_str(&n))
+                            .unwrap_or_default();
+                        for (i, e) in elems.iter().enumerate() {
+                            let Some(Some(name)) = tags.get(i) else {
+                                return Err("invalid argument to 'options'".into());
+                            };
+                            any_set = true;
+                            let (prev, warning) =
+                                crate::host::option_set(name, r_to_option_value(e)?)?;
+                            record(name, prev);
+                            if let Some(w) = warning {
+                                r_warning(&w);
+                            }
+                        }
+                    }
+                    // An untagged string is a query: report the current value
+                    // without changing it.
+                    None => {
+                        for s in as_str(v).into_iter().flatten() {
+                            record(&s, crate::host::option_get(&s));
+                        }
+                    }
+                }
+            }
+            let out = mk_list(olds);
+            set_names(&out, names);
+            if any_set {
+                with_host(|h| h.visible = false);
+            }
+            Ok(out)
+        }
+        // `getOption(x, default)` is the scalar read; an unset option gives the
+        // default, which is itself `NULL` when not supplied.
+        "getOption" => {
+            let name = str1(&a.req(0, "x")?)
+                .ok_or_else(|| "'x' must be a character string".to_string())?;
+            match crate::host::option_get(&name) {
+                Some(v) => Ok(option_value_to_r(Some(v))),
+                None => Ok(a.get(1, "default").unwrap_or_else(null)),
+            }
         }
         "deparse" => {
             let x = a.req(0, "expr")?;
@@ -2677,7 +2819,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .unwrap_or(0)
                 };
                 let use_sci = scientific.unwrap_or_else(|| {
-                    width(&|v| render_sci(v, sci_d)) < width(&|v| render_fixed(v, fixed_d))
+                    !crate::host::prefers_fixed(
+                        width(&|v| render_fixed(v, fixed_d)),
+                        width(&|v| render_sci(v, sci_d)),
+                    )
                 });
                 // `nsmall` raises the decimal count only in fixed notation, and
                 // only after the notation is chosen — R's `do_format` applies it
@@ -7844,33 +7989,71 @@ fn escape_string(s: &str) -> String {
 fn format_elements(v: &Value) -> Vec<String> {
     let n = len(v);
     if let RData::Dbl(xs) = data(v) {
-        let finite: Vec<f64> = xs
-            .iter()
-            .flatten()
-            .copied()
-            .filter(|x| x.is_finite())
-            .collect();
-        let fixed_d = finite.iter().map(|x| fixed_decimals(*x)).max().unwrap_or(0);
-        let sci_d = finite.iter().map(|x| sci_decimals(*x)).max().unwrap_or(0);
-        let width = |f: &dyn Fn(f64) -> String| {
-            finite
-                .iter()
-                .map(|x| f(*x).chars().count())
-                .max()
-                .unwrap_or(0)
-        };
-        let use_sci = width(&|x| render_sci(x, sci_d)) < width(&|x| render_fixed(x, fixed_d));
-        return xs
-            .iter()
-            .map(|e| match e {
-                Some(x) if x.is_finite() && use_sci => render_sci(*x, sci_d),
-                Some(x) if x.is_finite() => render_fixed(*x, fixed_d),
-                Some(x) => render_fixed(*x, 0),
-                None => "NA".into(),
-            })
-            .collect();
+        return format_dbl_run(&xs);
     }
     (0..n).map(|i| print_element(v, i)).collect()
+}
+
+/// Render one run of doubles that share a layout: a common decimal count and a
+/// single fixed-versus-scientific choice for all of them. R decides both once
+/// per `formatReal` call, so the caller's choice of run *is* the choice of what
+/// lines up — a whole vector for `print(x)`, but one **column** at a time for a
+/// matrix, which is why `matrix(c(1.5, 2.25, 1, 2), 2)` prints its second column
+/// as `1` / `2` and not `1.00` / `2.00`.
+fn format_dbl_run(xs: &[Option<f64>]) -> Vec<String> {
+    let finite: Vec<f64> = xs
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|x| x.is_finite())
+        .collect();
+    let fixed_d = finite.iter().map(|x| fixed_decimals(*x)).max().unwrap_or(0);
+    let sci_d = finite.iter().map(|x| sci_decimals(*x)).max().unwrap_or(0);
+    let width = |f: &dyn Fn(f64) -> String| {
+        finite
+            .iter()
+            .map(|x| f(*x).chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let use_sci = !crate::host::prefers_fixed(
+        width(&|x| render_fixed(x, fixed_d)),
+        width(&|x| render_sci(x, sci_d)),
+    );
+    let cells: Vec<String> = xs
+        .iter()
+        .map(|e| match e {
+            Some(x) if x.is_finite() && use_sci => render_sci(*x, sci_d),
+            Some(x) if x.is_finite() => render_fixed(*x, fixed_d),
+            Some(x) => render_fixed(*x, 0),
+            None => "NA".into(),
+        })
+        .collect();
+    if !use_sci {
+        // In fixed notation the run's column is just as wide as its widest
+        // rendering, so there is nothing to reserve.
+        return cells;
+    }
+    // In scientific notation R sizes the column *structurally* rather than from
+    // the widest rendering: a sign column when any element is negative, the
+    // leading digit, the shared mantissa decimals, `e` and its sign, and the
+    // widest exponent. The two differ whenever a negative element carries a
+    // narrower exponent than a positive one — `c(10^100, -1e5)` renders as
+    // `1e+100` and `-1e+05`, both six wide, yet R lays the column out seven
+    // wide, so the positive one gains a leading space. Reserving the width here
+    // means every caller that pads to the widest cell (vector, named vector and
+    // matrix layouts alike) gets R's width for free.
+    let exp_digits = cells
+        .iter()
+        .filter_map(|c| c.split_once(['e']).map(|(_, e)| e.trim_start_matches(['+', '-']).len()))
+        .max()
+        .unwrap_or(2);
+    let neg = usize::from(cells.iter().any(|c| c.starts_with('-')));
+    let w = neg + 1 + if sci_d > 0 { sci_d + 1 } else { 0 } + 2 + exp_digits;
+    cells
+        .into_iter()
+        .map(|c| crate::strwidth::pad_display(&c, w, false))
+        .collect()
 }
 
 /// Print an `rle` object the way R's `print.rle` does: a header, then the
@@ -8066,7 +8249,21 @@ fn format_vector(v: &Value) -> Vec<String> {
 }
 
 fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
-    let cells = format_elements(v);
+    // R's `printRealMatrix` calls `formatReal` once per column, so each column
+    // gets its own decimal count and its own fixed-versus-scientific choice —
+    // a column of whole numbers stays whole next to a column of decimals.
+    // Only doubles carry a shared layout; every other type formats element by
+    // element, where the run boundary makes no difference.
+    let cells = match data(v) {
+        RData::Dbl(xs) if nr > 0 => (0..nc)
+            .flat_map(|c| {
+                let lo = (c * nr).min(xs.len());
+                let hi = (lo + nr).min(xs.len());
+                format_dbl_run(&xs[lo..hi])
+            })
+            .collect(),
+        _ => format_elements(v),
+    };
     let dn = dimnames_of(v);
     let dn_at = |dim: usize, k: usize| -> Option<String> {
         dn.get(dim)
