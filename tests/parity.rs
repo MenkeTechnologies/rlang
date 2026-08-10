@@ -85,6 +85,12 @@ fn corpus_matches_reference_r() {
 /// `docs/report.html` still claimed 48. Every count the docs quote is derived
 /// here from the tree that defines it, so a wave that adds a snippet, a fuzz
 /// surface, or a primitive fails until the prose is updated with it.
+///
+/// The separator between the number and the noun is `\s+`, not a literal space,
+/// because prose wraps: `BUGS.md` carried "across 61\nsurfaces" across a line
+/// break and a single-space pattern skipped it, so that count sat two behind the
+/// tree while this test reported clean. A count is a count wherever the
+/// paragraph happens to fold.
 #[test]
 fn documented_counts_match_the_tree() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -108,10 +114,10 @@ fn documented_counts_match_the_tree() {
 
     // (regex over the doc text, what the number must be, what it counts)
     let claims: [(&str, usize, &str); 5] = [
-        (r"(\d+)-snippet", corpus, "parity corpus snippets"),
-        (r"(\d+) snippets \+", corpus, "parity corpus snippets"),
-        (r"(\d+) surfaces", modes, "parity-fuzz surfaces"),
-        (r"(\d+) primitives", primitives, "primitives"),
+        (r"(\d+)-\s*snippet", corpus, "parity corpus snippets"),
+        (r"(\d+)\s+snippets \+", corpus, "parity corpus snippets"),
+        (r"(\d+)\s+surfaces", modes, "parity-fuzz surfaces"),
+        (r"(\d+)\s+primitives", primitives, "primitives"),
         (r"primitive library \((\d+)\)", primitives, "primitives"),
     ];
     let docs = [
