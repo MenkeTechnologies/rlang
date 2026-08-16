@@ -193,8 +193,11 @@ impl RApi {
     /// carrying its `names` across so a named list reaches R named.
     unsafe fn to_sexp(&self, v: &Value) -> Sexp {
         let s = self.to_sexp_bare(v);
+        if s == self.nil {
+            return s;
+        }
         let nm = names_of(v);
-        if !nm.is_empty() && s != self.nil {
+        if !nm.is_empty() {
             let ns = (self.protect)(s);
             let names_sexp = (self.protect)((self.alloc_vector)(STRSXP, nm.len() as isize));
             for (i, e) in nm.iter().enumerate() {
@@ -206,6 +209,20 @@ impl RApi {
             }
             let key = CString::new("names").unwrap();
             (self.set_attrib)(ns, (self.install)(key.as_ptr()), names_sexp);
+            (self.unprotect)(2);
+        }
+        // Shape has to cross the bridge too, or every base function rlang
+        // delegates sees a matrix as a bare vector: `upper.tri(m)` returned nine
+        // `FALSE`s for a 3x3 because R was handed a dimensionless length-9
+        // vector. `dim` and `dimnames` marshal like any other attribute.
+        for key in ["dim", "dimnames"] {
+            let Some(a) = with_host(|h| h.attr(v, key)) else {
+                continue;
+            };
+            let ps = (self.protect)(s);
+            let av = (self.protect)(self.to_sexp(&a));
+            let k = CString::new(key).unwrap();
+            (self.set_attrib)(ps, (self.install)(k.as_ptr()), av);
             (self.unprotect)(2);
         }
         s
@@ -389,6 +406,21 @@ impl RApi {
         let nm = names(self);
         if !nm.is_empty() {
             set_names(&out, nm);
+        }
+        // Shape comes back as well as goes out: a bridged function that returns a
+        // matrix (`upper.tri`, `row`, `as.matrix`) must arrive as a matrix, or
+        // the caller sees a flat vector and `m[upper.tri(m)]` selects the wrong
+        // cells. `dim` is marshalled before `dimnames` because setting `dim`
+        // clears `dimnames` in R's attribute model.
+        for key in ["dim", "dimnames"] {
+            let k = CString::new(key).unwrap();
+            let a = (self.get_attrib)(s, (self.install)(k.as_ptr()));
+            if (self.typeof_)(a) == NILSXP {
+                continue;
+            }
+            if let Ok(av) = self.sexp_to_value(a) {
+                with_host(|h| h.set_attr(&out, key, av));
+            }
         }
         Ok(out)
     }

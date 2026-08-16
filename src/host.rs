@@ -594,9 +594,13 @@ impl RHost {
             Some(RData::Dbl(x)) => x.iter().map(|e| e.map(|n| n != 0.0)).collect(),
             Some(RData::Str(x)) => x
                 .iter()
+                // R accepts exactly four spellings per truth value — the initial,
+                // the all-caps word, the all-lower word, and the capitalised word
+                // (`StringTrue` in R's coerceVector). Anything else, including
+                // "Tr" or "yes", is NA.
                 .map(|e| match e.as_deref() {
-                    Some("TRUE") | Some("true") | Some("T") => Some(true),
-                    Some("FALSE") | Some("false") | Some("F") => Some(false),
+                    Some("T") | Some("TRUE") | Some("true") | Some("True") => Some(true),
+                    Some("F") | Some("FALSE") | Some("false") | Some("False") => Some(false),
                     _ => None,
                 })
                 .collect(),
