@@ -39,6 +39,16 @@ pub fn install(vm: &mut VM) {
         };
         binop(name, a, b)
     }));
+    // R's `integer` is a C `int`, and `INT_MIN` is reserved as `NA_integer_`, so
+    // the representable range is ±`INT_MAX`. rlang's native integers are fusevm
+    // `Value::Int` (i64), so without this bound `2147483647L + 1L` computed
+    // 2147483648 in the VM's own dispatch loop and never reached rlang, while R
+    // answers `NA` with a warning. Narrowing the fixnum range makes a native
+    // `+ - *` whose result leaves 32 bits delegate to the numeric hook above,
+    // where `arith` applies R's overflow rule. The bounds check is two ALU ops
+    // folded into fusevm's overflow accumulator (and is carried into JIT-compiled
+    // code), so the in-range hot path keeps its native speed.
+    vm.set_fixnum_range(-(i32::MAX as i64), i32::MAX as i64);
     vm.register_builtin(ops::GETVAR, b_getvar);
     vm.register_builtin(ops::GETFUN, b_getfun);
     vm.register_builtin(ops::SETVAR, b_setvar);
@@ -887,6 +897,19 @@ fn carry_attrs(out: &Value, lhs: &Value, rhs: &Value) {
     }
 }
 
+/// R's warning when `+ - *` on two integers leaves the 32-bit range.
+const INT_OVERFLOW: &str = "NAs produced by integer overflow";
+
+/// Can `x` be stored as an R `integer`? R's integers are C `int`, and `INT_MIN`
+/// is reserved as `NA_integer_`, so the representable range is
+/// `[-2147483647, 2147483647]` — `-2147483647L - 1L` is `NA`, not `-2147483648`.
+/// rlang holds integers in `i64`, so without this check integer arithmetic would
+/// silently widen past what R can represent and return a number where R returns
+/// `NA` (`2147483647L + 1L` printed `2147483648`).
+fn int_in_range(x: f64) -> bool {
+    x.is_finite() && x.abs() <= i32::MAX as f64
+}
+
 fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // Scalar fast path: two length-1 unattributed numerics compute directly,
     // skipping the vector engine's data_of clones, as_dbl allocations, output
@@ -910,11 +933,17 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         // non-finite); `/` and `^` are always double.
         let int_result = matches!(op, "+" | "-" | "*" | "%%" | "%/%") && xi && yi;
         return Ok(if int_result {
-            // Integer stays unboxed unless the result is non-finite, which R
-            // reports as NA_integer_ — and an unboxed `Value::Int` can't be NA.
-            match r.is_finite() {
+            // Integer stays unboxed unless the result is non-finite or leaves
+            // the 32-bit range, both of which R reports as NA_integer_ — and an
+            // unboxed `Value::Int` can't be NA.
+            match int_in_range(r) {
                 true => Value::Int(r as i64),
-                false => mk_int(vec![None]),
+                false => {
+                    if r.is_finite() {
+                        r_warning(INT_OVERFLOW);
+                    }
+                    mk_int(vec![None])
+                }
             }
         } else {
             // Every double (incl. NaN/Inf, which are values, not NA) is unboxed.
@@ -952,11 +981,21 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         });
     }
     let v = if int_result {
-        mk_int(
-            out.into_iter()
-                .map(|e| e.and_then(|x| x.is_finite().then_some(x as i64)))
-                .collect(),
-        )
+        let mut overflowed = false;
+        let ints = out
+            .into_iter()
+            .map(|e| {
+                e.and_then(|x| {
+                    let ok = int_in_range(x);
+                    overflowed |= !ok && x.is_finite();
+                    ok.then_some(x as i64)
+                })
+            })
+            .collect();
+        if overflowed {
+            r_warning(INT_OVERFLOW);
+        }
+        mk_int(ints)
     } else {
         mk_dbl(out)
     };
@@ -1364,7 +1403,14 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
             .iter()
             .map(|p| p.and_then(|i| names.get(i).cloned().flatten()))
             .collect();
-        set_names(&out, sel);
+        // Subsetting a *named* vector always yields names, even when every
+        // selected element is out of bounds or an unmatched label: R fills those
+        // slots with `NA_character_`, which prints as `<NA>`. `set_names` nulls
+        // an all-NA vector (the right call for `names(x) <- NULL`-style writes),
+        // so the attribute is set directly here — `x[3]` on `c(a=1,b=2)` is
+        // `<NA>\n  NA`, not an unnamed `[1] NA`.
+        let nv = mk_str(sel);
+        with_host(|h| h.set_attr(&out, "names", nv));
     }
     // `[.factor` puts the level table and class back on the subset codes, and
     // `drop = TRUE` then re-levels to only the labels that survived.
@@ -2299,7 +2345,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let out = mk_list(a.values());
             let nm = a.tags();
             if nm.iter().any(|n| n.is_some()) {
-                set_names(&out, nm);
+                // R pads the untagged slots of a partially named list with the
+                // *empty string*, not `NA` — `names(list(a = 1, 2))` is
+                // `c("a", "")`. The distinction is visible when printing, where
+                // an empty name numbers its element `[[2]]` but an `NA` name
+                // heads it `$<NA>`.
+                set_names(&out, nm.into_iter().map(|n| Some(n.unwrap_or_default())).collect());
             }
             Ok(out)
         }
@@ -2381,7 +2432,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "names" => {
             let x = a.req(0, "x")?;
             let nm = names_of(&x);
-            Ok(if nm.is_empty() { null() } else { mk_str(nm) })
+            // A zero-length vector can still *carry* a names attribute, and R
+            // reports it as `character(0)` rather than `NULL`; `names_of`
+            // flattens that case into the same empty vec as "no names at all",
+            // so the attribute itself decides between the two.
+            if nm.is_empty() {
+                let has = with_host(|h| h.attr(&x, "names")).is_some_and(|n| !is_null(&n));
+                return Ok(if has { mk_str(vec![]) } else { null() });
+            }
+            Ok(mk_str(nm))
         }
         "setNames" => {
             let x = copy_of(&a.req(0, "object")?);
@@ -2773,6 +2832,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if let Some(src) = function_src(&x) {
                 return Ok(mk_str(src.into_iter().map(Some).collect()));
             }
+            // `format(NULL)` is the *word* `"NULL"`, not the empty character
+            // vector that formatting NULL's (zero) elements would produce. This
+            // is `format.default`'s own special case, and it is what makes
+            // `paste("x is", format(NULL))` read as text rather than vanish.
+            if is_null(&x) {
+                return Ok(mk_str(vec![Some("NULL".into())]));
+            }
             let nsmall = a.named("nsmall").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
             let digits = a.named("digits").and_then(|v| num1(&v)).map(|d| d as i32);
             let big = a
@@ -3010,7 +3076,32 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "append" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "values")?;
-            let joined = Args::new(vec![(None, x), (None, y)]);
+            // `after` (default `length(x)`) is the position `values` is spliced
+            // in *after*, so it is an insert, not an unconditional append:
+            // `c(x[1:after], values, x[(after+1):length(x)])`. It was being
+            // dropped, which pinned every insert to the tail.
+            let n = len(&x);
+            let after = a
+                .get(2, "after")
+                .and_then(|v| num1(&v))
+                .map(|v| (v.max(0.0) as usize).min(n))
+                .unwrap_or(n);
+            let joined = if after == 0 {
+                Args::new(vec![(None, y), (None, x)])
+            } else if after >= n {
+                Args::new(vec![(None, x), (None, y)])
+            } else {
+                let head = take_positions(&x, &(0..after).map(Some).collect::<Vec<_>>());
+                let tail = take_positions(&x, &(after..n).map(Some).collect::<Vec<_>>());
+                // `take_positions` rebuilds the payload only; a named `x` has to
+                // keep the labels that travelled with each slice.
+                let nm = names_of(&x);
+                if !nm.is_empty() {
+                    set_names(&head, nm[..after].to_vec());
+                    set_names(&tail, nm[after..].to_vec());
+                }
+                Args::new(vec![(None, head), (None, y), (None, tail)])
+            };
             Ok(concat(&joined))
         }
 
@@ -4495,6 +4586,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "X")?;
             let f = a.req(1, "FUN")?;
             let items = elements(&x);
+            // With nothing to map over there is no result to infer a type from,
+            // so `FUN.VALUE` — which exists precisely to pin the result type —
+            // supplies it. `simplify` on an empty list returned `list()`, but R
+            // answers `integer(0)` for a `FUN.VALUE` of `integer(1)`. A
+            // character `X` also still contributes its (empty) names, which is
+            // what makes R print `named integer(0)`.
+            if items.is_empty() {
+                let proto = a.req(2, "FUN.VALUE")?;
+                let out = take_positions(&proto, &[]);
+                if matches!(data(&x), RData::Str(_)) {
+                    // `mk_str` borrows the host itself, so it has to be built
+                    // before the `set_attr` borrow, not inside it.
+                    let nv = mk_str(vec![]);
+                    with_host(|h| h.set_attr(&out, "names", nv));
+                }
+                return Ok(out);
+            }
             let mut out = Vec::with_capacity(items.len());
             for it in items {
                 out.push(call_value(&f, vec![(None, it)], None)?);
@@ -4789,9 +4897,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let d = with_host(|h| h.attr(&x, "dim"))
                 .map(|d| as_int(&d))
                 .unwrap_or_default();
+            // A dim-less vector transposes as an n×1 *column*, so `t(1:3)` is the
+            // 1×3 row matrix — treating it as 1×n instead produced a 3×1 column,
+            // the transpose of R's answer. Its `names` become the result's
+            // column labels (`t(c(a=1,b=2))` heads the columns `a b`).
             let (nr, nc) = match d.as_slice() {
                 [Some(r), Some(c)] => (*r as usize, *c as usize),
-                _ => (1, len(&x)),
+                _ => (len(&x), 1),
             };
             let mut pos = Vec::with_capacity(nr * nc);
             for r in 0..nr {
@@ -4802,6 +4914,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let out = take_positions(&x, &pos);
             let dim = mk_int(vec![Some(nc as i64), Some(nr as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
+            // Transposing swaps the margins, so the row and column labels swap
+            // with them; a plain named vector contributes its names as the
+            // single row's column labels.
+            let (rn, cn) = match d.as_slice() {
+                [Some(_), Some(_)] => {
+                    let mut dn = dimnames_of(&x);
+                    dn.resize(2, None);
+                    (dn[1].clone(), dn[0].clone())
+                }
+                _ => {
+                    let nm = names_of(&x);
+                    (None, (!nm.is_empty()).then_some(nm))
+                }
+            };
+            if rn.is_some() || cn.is_some() {
+                set_dimnames(&out, rn, cn);
+            }
             Ok(out)
         }
         "array" => {
@@ -5647,10 +5776,18 @@ fn simplify(list: &Value) -> Value {
         RData::List(v) => v,
         _ => return list.clone(),
     };
-    if items.is_empty() || items.iter().any(|v| matches!(data(v), RData::List(_))) {
+    if items.is_empty() {
         return list.clone();
     }
     let k = len(&items[0]);
+    // R's `simplify2array` collapses uniformly length-1 results with
+    // `unlist(recursive = FALSE)`, which flattens exactly one level — so a
+    // result that is itself a length-1 *list* still simplifies, to a flat list.
+    // Bailing on any list element left `sapply(1:2, \(x) list(x))` doubly
+    // nested. Longer list results have no matrix form, so those still stay put.
+    if k != 1 && items.iter().any(|v| matches!(data(v), RData::List(_))) {
+        return list.clone();
+    }
     // Uniform scalar results collapse to a vector; uniform length-k (k > 1)
     // results become a k×n matrix, each result a column — R's sapply/vapply
     // rule. Ragged results stay a list.
@@ -6525,22 +6662,42 @@ fn cut(a: &Args) -> Result<Value, String> {
         let vals: Vec<f64> = x.iter().flatten().copied().collect();
         let mn = vals.iter().cloned().fold(f64::INFINITY, f64::min);
         let mx = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // R spaces the breaks evenly across the *un-widened* data range and only
+        // then nudges the first and last outward, so the interior cut points sit
+        // on round data values (`cut(1:10, 3)` breaks at 4 and 7). Spreading
+        // them evenly across the widened range instead shifted every interior
+        // break inward — 4 landed in `(4,7]` rather than R's `(0.991,4]`.
         let dx = mx - mn;
-        let (lo, hi) = if dx == 0.0 {
-            (mn - mn.abs() * 0.001 - 0.001, mx + mx.abs() * 0.001 + 0.001)
+        if dx == 0.0 {
+            // A constant `x` has no range to divide, so R substitutes a width
+            // (`abs(x)`, or 1 at zero) and spreads the whole sequence across the
+            // padded interval instead of pinning the interior to a single point.
+            let pad = if mn != 0.0 { mn.abs() } else { 1.0 } / 1000.0;
+            let (lo, hi) = (mn - pad, mx + pad);
+            (0..=nb)
+                .map(|i| lo + (hi - lo) * i as f64 / nb as f64)
+                .collect()
         } else {
-            (mn - dx / 1000.0, mx + dx / 1000.0)
-        };
-        (0..=nb)
-            .map(|i| lo + (hi - lo) * i as f64 / nb as f64)
-            .collect()
+            let mut b: Vec<f64> = (0..=nb)
+                .map(|i| mn + dx * i as f64 / nb as f64)
+                .collect();
+            b[0] = mn - dx / 1000.0;
+            b[nb] = mx + dx / 1000.0;
+            b
+        }
     } else {
         as_dbl(&breaks_arg).into_iter().flatten().collect()
     };
+    let dig_lab = a
+        .named("dig.lab")
+        .and_then(|v| num1(&v))
+        .map(|v| v as i32)
+        .unwrap_or(3);
+    let break_text = break_labels(&breaks, dig_lab);
     let labels: Vec<String> = match a.named("labels") {
         Some(l) if matches!(data(&l), RData::Str(_)) => as_str(&l).into_iter().flatten().collect(),
         _ => (0..breaks.len().saturating_sub(1))
-            .map(|i| format!("({},{}]", fmt_break(breaks[i]), fmt_break(breaks[i + 1])))
+            .map(|i| format!("({},{}]", break_text[i], break_text[i + 1]))
             .collect(),
     };
     // Right-closed intervals `(a, b]`.
@@ -6554,12 +6711,88 @@ fn cut(a: &Args) -> Result<Value, String> {
             })
         })
         .collect();
+    // `labels = FALSE` asks for the bare bin numbers rather than a factor — the
+    // argument was only consulted when it held a character vector, so `FALSE`
+    // fell through to the generated interval labels.
+    if a.named("labels").and_then(|l| lgl1(&l)) == Some(false) {
+        return Ok(mk_int(codes));
+    }
     Ok(mk_factor(codes, labels, false))
 }
 
-/// Format an interval endpoint for a `cut` label — R's `dig.lab = 3`.
-fn fmt_break(v: f64) -> String {
-    crate::host::format_dbl(signif(v, 3))
+/// Render `cut`'s break points as the endpoint text its interval labels quote.
+///
+/// R formats them with `formatC(breaks, digits = dig, width = 1)` — plain `%g` —
+/// starting at `dig.lab` and *raising* the precision until no two adjacent
+/// endpoints render alike, capped at 12:
+///
+/// ```text
+/// for(dig in dig.lab:max(12L, dig.lab)) {
+///     ch.br <- formatC(0+breaks, digits = dig, width = 1L)
+///     if(ok <- all(ch.br[-1L] != ch.br[-nb])) break
+/// }
+/// ```
+///
+/// Without the escalation a constant `x` collapses every endpoint to the same
+/// text: `cut(c(5,5,5), 2)` breaks at 4.995/5/5.005, which all print as `5` at
+/// three digits, and the labels came out as the degenerate `(5,5]` twice instead
+/// of R's `(4.995,5]` and `(5,5.005]`.
+fn break_labels(breaks: &[f64], dig_lab: i32) -> Vec<String> {
+    let render = |dig: i32| -> Vec<String> {
+        breaks
+            .iter()
+            .map(|&v| format!("{:.*}", dig.max(1) as usize, FmtG(v)))
+            .collect()
+    };
+    for dig in dig_lab..=12.max(dig_lab) {
+        let text = render(dig);
+        if text.windows(2).all(|w| w[0] != w[1]) {
+            return text;
+        }
+    }
+    render(12.max(dig_lab))
+}
+
+/// `%g`-style rendering of a break point: the precision is *significant digits*,
+/// and trailing zeros are dropped. Rust has no `%g`, so the shortest of the
+/// fixed and exponential renderings is chosen the way C's `%g` chooses.
+struct FmtG(f64);
+
+impl std::fmt::Display for FmtG {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let digits = f.precision().unwrap_or(6).max(1);
+        let v = self.0;
+        if v == 0.0 || !v.is_finite() {
+            return write!(f, "{}", crate::host::format_dbl(v));
+        }
+        // C's `%g` uses the exponential form when the decimal exponent is below
+        // -4 or at least the requested significant-digit count.
+        let exp = v.abs().log10().floor() as i32;
+        if exp < -4 || exp >= digits as i32 {
+            let s = format!("{:.*e}", digits - 1, v);
+            return write!(f, "{}", trim_g(&s));
+        }
+        let decimals = (digits as i32 - 1 - exp).max(0) as usize;
+        write!(f, "{}", trim_g(&format!("{v:.decimals$}")))
+    }
+}
+
+/// Drop the trailing zeros (and a bare trailing `.`) `%g` suppresses, in the
+/// mantissa only so an exponent survives.
+fn trim_g(s: &str) -> String {
+    let (mant, exp) = match s.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (s, None),
+    };
+    let mant = if mant.contains('.') {
+        mant.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        mant
+    };
+    match exp {
+        Some(e) => format!("{mant}e{e}"),
+        None => mant.to_string(),
+    }
 }
 
 /// `signif(x, digits)` — round to `digits` significant figures, half-to-even
@@ -8210,7 +8443,14 @@ fn format_vector(v: &Value) -> Vec<String> {
             RData::List(_) => "list",
             _ => "numeric",
         };
-        return vec![format!("{kind}(0)")];
+        // An empty vector that still carries a `names` attribute prints as
+        // `named integer(0)` — `names_of` flattens both "no attribute" and
+        // "empty attribute" to an empty vec, so the attribute is read directly.
+        let named = with_host(|h| h.attr(v, "names")).is_some_and(|n| !is_null(&n));
+        return vec![match named {
+            true => format!("named {kind}(0)"),
+            false => format!("{kind}(0)"),
+        }];
     }
     let cells = format_elements(v);
     let names = names_of(v);
@@ -8249,6 +8489,11 @@ fn format_vector(v: &Value) -> Vec<String> {
 }
 
 fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
+    // With no rows *and* no columns there is nothing to head, so R names the
+    // shape instead of printing an empty header line.
+    if nr == 0 && nc == 0 {
+        return vec!["<0 x 0 matrix>".into()];
+    }
     // R's `printRealMatrix` calls `formatReal` once per column, so each column
     // gets its own decimal count and its own fixed-versus-scientific choice —
     // a column of whole numbers stays whole next to a column of decimals.
@@ -8279,7 +8524,14 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     // Every width here is terminal columns: a dimname or a cell holding a
     // double-width character claims two per character.
     let dw = |s: &str| crate::strwidth::display_width(s);
-    let label_w = row_labels.iter().map(|s| dw(s)).max().unwrap_or(0);
+    // A matrix with no rows still prints its column header over a row-label
+    // gutter, and R fixes that gutter at the width of `[1,]` regardless of what
+    // the dimnames would have been — `matrix(1:4, 2)[0, ]` is `     [,1] [,2]`.
+    // Deriving the width from the (empty) label list collapsed it to zero.
+    let label_w = match nr {
+        0 => "[1,]".len(),
+        _ => row_labels.iter().map(|s| dw(s)).max().unwrap_or(0),
+    };
     let widths: Vec<usize> = (0..nc)
         .map(|c| {
             (0..nr)
@@ -8298,7 +8550,11 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
         .map(|c| just(&col_labels[c], widths[c]))
         .collect::<Vec<_>>()
         .join(" ");
-    out.push(format!("{:w$} {header}", "", w = label_w));
+    // With no columns there is nothing after the label gutter, and R does not
+    // leave the separating space dangling — the header is a bare run of spaces
+    // and each row is its label alone.
+    let sep = if nc == 0 { "" } else { " " };
+    out.push(format!("{:w$}{sep}{header}", "", w = label_w));
     for (r, label) in row_labels.iter().enumerate() {
         let row = (0..nc)
             .map(|c| {
@@ -8310,7 +8566,7 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
             .collect::<Vec<_>>()
             .join(" ");
         out.push(format!(
-            "{} {row}",
+            "{}{sep}{row}",
             crate::strwidth::pad_display(label, label_w, true)
         ));
     }
@@ -8387,9 +8643,16 @@ fn format_list_at(v: &Value, prefix: &str) -> Vec<String> {
     let names = names_of(v);
     let mut out = Vec::new();
     for (i, it) in items.iter().enumerate() {
-        let tag = match names.get(i).cloned().flatten() {
-            Some(n) if is_syntactic_name(&n) => format!("${n}"),
-            Some(n) => format!("$`{n}`"),
+        // A missing *name* and a missing *names attribute* head differently: an
+        // unnamed list numbers its elements `[[i]]`, and so does an element whose
+        // name is the empty string (`list(a = 1, 2)`), but an `NA_character_`
+        // name — what an unmatched label subscript leaves behind, `l["zz"]` —
+        // heads as `$<NA>`.
+        let tag = match names.get(i) {
+            Some(Some(n)) if n.is_empty() => format!("[[{}]]", i + 1),
+            Some(Some(n)) if is_syntactic_name(n) => format!("${n}"),
+            Some(Some(n)) => format!("$`{n}`"),
+            Some(None) => "$<NA>".to_string(),
             None => format!("[[{}]]", i + 1),
         };
         let path = format!("{prefix}{tag}");

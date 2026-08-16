@@ -363,3 +363,143 @@ fn suppress_wrappers_muffle_without_stopping_the_body() {
         "[1] NA"
     );
 }
+
+#[test]
+fn integer_arithmetic_overflows_to_na_at_32_bits() {
+    // R's `integer` is a C `int` and `INT_MIN` is reserved for `NA_integer_`, so
+    // the representable range is ±`INT_MAX`. rlang holds integers in `i64` and
+    // lowers scalar `+ - *` to native fusevm ops, so without an explicit bound
+    // these widened silently and answered `2147483648` where R answers `NA`.
+    assert_eq!(r("2147483647L + 1L"), "[1] NA");
+    assert_eq!(r("2147483647L * 2L"), "[1] NA");
+    assert_eq!(r("-2147483647L - 2L"), "[1] NA");
+    // `-2147483648` is `NA_integer_`'s own bit pattern, so it is out of range too.
+    assert_eq!(r("-2147483647L - 1L"), "[1] NA");
+    // The overflow is NA-per-element, not NA-for-the-whole-vector.
+    assert_eq!(r("c(2147483647L, 1L) + c(1L, 1L)"), "[1] NA  2");
+    // Overflow does not promote: the result is still an integer vector.
+    assert_eq!(r("typeof(2147483647L + 1L)"), "[1] \"integer\"");
+    // The bound applies to integers only — doubles carry on past 2^31.
+    assert_eq!(r("2147483647 + 1"), "[1] 2147483648");
+    assert_eq!(r("2147483647L + 0L"), "[1] 2147483647");
+    assert_eq!(r("-2147483647L - 0L"), "[1] -2147483647");
+}
+
+#[test]
+fn transpose_treats_a_dimensionless_vector_as_a_column() {
+    // `t(1:3)` is the 1x3 *row* matrix: a vector with no `dim` transposes as an
+    // n x 1 column. Reading it as 1 x n instead returned the transpose of R's
+    // answer, and `t(t(x))` then failed to round-trip.
+    assert_eq!(r("dim(t(1:3))"), "[1] 1 3");
+    assert_eq!(r("dim(t(t(1:3)))"), "[1] 3 1");
+    // A named vector's names label the single row's columns.
+    assert_eq!(r("dimnames(t(c(a = 1, b = 2)))[[2]]"), "[1] \"a\" \"b\"");
+    assert_eq!(r("is.null(dimnames(t(c(a = 1, b = 2)))[[1]])"), "[1] TRUE");
+    // Transposing a matrix swaps its dimnames along with its margins.
+    assert_eq!(
+        r("dimnames(t(matrix(1:4, 2, dimnames = list(c(\"r1\", \"r2\"), c(\"c1\", \"c2\")))))[[1]]"),
+        "[1] \"c1\" \"c2\""
+    );
+}
+
+#[test]
+fn append_splices_at_after_rather_than_at_the_tail() {
+    // `after` is the position `values` is spliced in *after*; it was ignored, so
+    // every insert landed at the tail regardless of the argument.
+    assert_eq!(r("append(1:5, 0, after = 0)"), "[1] 0 1 2 3 4 5");
+    assert_eq!(r("append(1:3, 99, after = 1)"), "[1]  1 99  2  3");
+    // The default is `length(x)`, and an `after` past the end also appends.
+    assert_eq!(r("append(1:3, 4:5)"), "[1] 1 2 3 4 5");
+    assert_eq!(r("append(1:3, 99, after = 10)"), "[1]  1  2  3 99")
+    ;
+    // Both slices keep the names that travelled with them.
+    assert_eq!(
+        r("names(append(c(a = 1, b = 2, c = 3), c(z = 9), after = 1))"),
+        "[1] \"a\" \"z\" \"b\" \"c\""
+    );
+}
+
+#[test]
+fn cut_spaces_interior_breaks_over_the_unwidened_range() {
+    // R lays the breaks evenly across the data range and only then nudges the
+    // first and last outward, so `cut(1:10, 3)` cuts at 4 and 7 and 4 falls in
+    // the *first* bin. Spreading them across the widened range instead shifted
+    // every interior break and mis-binned the boundary values.
+    assert_eq!(
+        r("levels(cut(1:10, 3))"),
+        "[1] \"(0.991,4]\" \"(4,7]\"     \"(7,10]\""
+    );
+    // Ten elements widen the index prefix, so R leads the row with a space.
+    assert_eq!(r("as.integer(cut(1:10, 3))"), " [1] 1 1 1 1 2 2 2 3 3 3");
+    // `labels = FALSE` asks for the bin numbers, not a factor.
+    assert_eq!(r("cut(c(1, 5, 9), 3, labels = FALSE)"), "[1] 1 2 3");
+    // A constant `x` has no range to divide: R substitutes `abs(x)/1000` as the
+    // half-width, and then has to raise `dig.lab` past 3 because 4.995, 5 and
+    // 5.005 all render as "5" at three significant digits.
+    assert_eq!(
+        r("levels(cut(c(5, 5, 5), 2))"),
+        "[1] \"(4.995,5]\" \"(5,5.005]\""
+    );
+}
+
+#[test]
+fn vapply_takes_its_result_type_from_fun_value_when_x_is_empty() {
+    // With nothing to map over there is no result to infer a type from, which is
+    // exactly what `FUN.VALUE` is for; the simplifier used to answer `list()`.
+    assert_eq!(r("vapply(integer(0), function(x) \"a\", character(1))"), "character(0)");
+    assert_eq!(r("typeof(vapply(list(), function(x) x, numeric(1)))"), "[1] \"double\"");
+    // A character `X` still contributes its (empty) names, which is what makes R
+    // print the `named` prefix.
+    assert_eq!(r("vapply(character(0), nchar, integer(1))"), "named integer(0)");
+    assert_eq!(r("names(vapply(character(0), nchar, integer(1)))"), "character(0)");
+}
+
+#[test]
+fn sapply_simplifies_length_one_list_results_one_level() {
+    // R simplifies uniformly length-1 results with `unlist(recursive = FALSE)`,
+    // which flattens exactly one level — so a length-1 *list* result simplifies
+    // to a flat list rather than staying doubly nested.
+    assert_eq!(r("length(sapply(1:2, function(x) list(x)))"), "[1] 2");
+    assert_eq!(r("sapply(1:2, function(x) list(x))[[2]]"), "[1] 2");
+    // Longer list results have no matrix form, so those still stay a list.
+    assert_eq!(r("length(sapply(1:2, function(x) list(x, x)))"), "[1] 2");
+    assert_eq!(r("length(sapply(1:2, function(x) list(x, x))[[1]])"), "[1] 2");
+}
+
+#[test]
+fn subsetting_a_named_vector_always_yields_names() {
+    // An out-of-bounds index or an unmatched label selects `NA`, and R labels
+    // that slot `NA_character_` — printed `<NA>`. The names attribute used to be
+    // dropped whenever *every* selected name was missing.
+    assert_eq!(r("c(a = 1, b = 2)[3]"), "<NA> \n  NA");
+    assert_eq!(r("is.na(names(c(a = 1, b = 2)[3]))"), "[1] TRUE");
+    assert_eq!(r("c(a = 1, b = 2, c = 3)[c(\"a\", \"zz\")]"), "   a <NA> \n   1   NA");
+    // The same applies to lists, where an NA name heads its element `$<NA>`.
+    assert_eq!(r("list(a = 1, b = 2)[\"zz\"]"), "$<NA>\nNULL");
+    // An *unnamed* vector still has no names, so it prints without a header.
+    assert_eq!(r("(1:2)[5]"), "[1] NA");
+    // R pads the untagged slots of a partially named list with the empty string,
+    // not NA — and an empty name numbers its element rather than heading it.
+    assert_eq!(r("names(list(a = 1, 2))"), "[1] \"a\" \"\"");
+    assert_eq!(r("list(a = 1, 2)[[2]]"), "[1] 2");
+}
+
+#[test]
+fn zero_extent_matrices_and_null_keep_their_own_print_forms() {
+    // A matrix with no rows still prints its column header over a row-label
+    // gutter fixed at the width of `[1,]`, whatever the dimnames would have been.
+    assert_eq!(r("matrix(1:4, 2)[0, ]"), "     [,1] [,2]");
+    assert_eq!(
+        r("matrix(1:4, 2, dimnames = list(c(\"rrrr1\", \"r2\"), c(\"a\", \"b\")))[0, ]"),
+        "     a b"
+    );
+    // With no columns there is nothing after the gutter, and the separating
+    // space is not left dangling on the header or on any row.
+    assert_eq!(r("matrix(1:4, 2)[, 0]"), "    \n[1,]\n[2,]");
+    // No rows *and* no columns: R names the shape rather than printing a header.
+    assert_eq!(r("matrix(character(0), 0, 0)"), "<0 x 0 matrix>");
+    // `format(NULL)` is the word, not the empty character vector that formatting
+    // NULL's zero elements would give — `format(character(0))` is that.
+    assert_eq!(r("format(NULL)"), "[1] \"NULL\"");
+    assert_eq!(r("format(character(0))"), "character(0)");
+}
