@@ -7457,7 +7457,7 @@ fn format_c(a: &Args) -> Result<Value, String> {
         let out = as_dbl(&x)
             .iter()
             .map(|v| {
-                let Some(v) = *v else { return None };
+                let v = (*v)?;
                 if !v.is_finite() {
                     return Some(special_str(v));
                 }
@@ -7535,9 +7535,9 @@ fn format_c(a: &Args) -> Result<Value, String> {
             };
             cur[i] = Some(crate::strwidth::pad_display(&text, w, left));
         }
-        return shaped_like(mk_str(big_marked(&a, mk_str(cur))), &x);
+        return shaped_like(mk_str(big_marked(a, mk_str(cur))), &x);
     }
-    let marked = big_marked(&a, formatted.clone());
+    let marked = big_marked(a, formatted.clone());
     shaped_like(mk_str(marked), &x)
 }
 
