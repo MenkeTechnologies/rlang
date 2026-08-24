@@ -3107,7 +3107,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // The common width is measured in terminal columns, so a CJK cell
             // lines up with an ASCII one: `format(c("日本語", "ab"))` pads "ab"
             // to six columns, not to three characters.
-            let out = if out.len() > 1 || width > 0 {
+            // `justify` steers that padding for a character vector: "left"
+            // (the default), "right", "centre", or "none" — which skips the
+            // common width entirely, `width` included.
+            let justify = a
+                .named("justify")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "left".into());
+            let is_str = matches!(data(&x), RData::Str(_));
+            let out = if is_str && justify == "none" {
+                out
+            } else if out.len() > 1 || width > 0 {
                 let w = out
                     .iter()
                     .flatten()
@@ -3115,19 +3125,24 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .max()
                     .unwrap_or(0)
                     .max(width);
-                let left = matches!(data(&x), RData::Str(_));
-                out.into_iter()
-                    .map(|s| s.map(|s| crate::strwidth::pad_display(&s, w, left)))
-                    .collect()
+                if is_str && justify == "centre" {
+                    out.into_iter()
+                        .map(|s| s.map(|s| centre_display(&s, w)))
+                        .collect()
+                } else {
+                    // Numbers right-justify; a character vector follows
+                    // `justify`, which defaults to left.
+                    let left = is_str && justify != "right";
+                    out.into_iter()
+                        .map(|s| s.map(|s| crate::strwidth::pad_display(&s, w, left)))
+                        .collect()
+                }
             } else {
                 out
             };
             shaped_like(mk_str(out), &x)
         }
-        "formatC" => {
-            let out = format_c(&a)?;
-            shaped_like(out, &a.req(0, "x")?)
-        }
+        "formatC" => format_c(&a),
         "prettyNum" => {
             let x = a.req(0, "x")?;
             let big = a
@@ -6167,9 +6182,16 @@ fn seq(a: &Args) -> Result<Value, String> {
     } else if step == 0.0 {
         out.push(Some(from));
     } else {
-        let count = ((to - from) / step).floor() as i64;
+        // R's `seq.default`: the term count is `as.integer((to - from)/by +
+        // 1e-10)` — truncation with a nudge, not a floor. Without the nudge a
+        // step that divides the span exactly in decimal but not in binary
+        // (`seq(0.1, 3, by = 0.1)`, whose quotient is 28.999999999999996)
+        // loses its last term. The terms are then clamped to `to`, which is
+        // R's closing `pmin`/`pmax`.
+        let count = ((to - from) / step + 1e-10) as i64;
         for k in 0..=count.max(0) {
-            out.push(Some(from + step * k as f64));
+            let v = from + step * k as f64;
+            out.push(Some(if step > 0.0 { v.min(to) } else { v.max(to) }));
         }
     }
     let whole = out
@@ -7254,10 +7276,20 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 'f' | 'e' | 'E' | 'g' | 'G' => match as_dbl(&arg).get(k).and_then(|e| *e) {
                     Some(v) => {
                         let p = precision.unwrap_or(6);
-                        let mag = match conv {
-                            'f' => format!("{:.p$}", v.abs()),
-                            'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
-                            _ => fmt_g(v.abs(), p, conv == 'G'),
+                        // R spells the non-finite doubles itself rather than
+                        // deferring to C's lowercase `inf`/`nan`, and still runs
+                        // them through the numeric field, so `%010.2f` of `Inf`
+                        // is `0000000Inf`.
+                        let mag = if v.is_nan() {
+                            "NaN".to_string()
+                        } else if v.is_infinite() {
+                            "Inf".to_string()
+                        } else {
+                            match conv {
+                                'f' => format!("{:.p$}", v.abs()),
+                                'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
+                                _ => fmt_g(v.abs(), p, conv == 'G'),
+                            }
                         };
                         num_field(v < 0.0, mag, width, &flags)
                     }
@@ -7301,21 +7333,35 @@ fn sprintf(a: &Args) -> Result<Value, String> {
     Ok(mk_str(out))
 }
 
-/// `formatC(x, width, digits, format, flag)` — build the equivalent printf spec
-/// and route it through `sprintf`, so the numeric-field rules (sign, zero-pad,
-/// exponent) are shared. Integers default to `"d"`, reals to `"g"`.
+/// `formatC(x, digits, width, format, flag)` — R's C-style number formatter.
+///
+/// The argument order is R's: `digits` comes before `width`, so
+/// `formatC(pi, 3)` sets *digits*, not the field. The defaults are the ones
+/// R's own `formatC` computes before reaching C — width and digits both
+/// unset gives `width = 1`, an unset `digits` is 2 for an integer format and 4
+/// for a real one, a negative `digits` is C's 6, and an unset width becomes
+/// `digits + 1`. Everything finite then routes through `sprintf` so the
+/// numeric-field rules (sign, zero-pad, exponent) are shared; the non-finite
+/// entries are right-justified as a group the way `format.char` does.
 fn format_c(a: &Args) -> Result<Value, String> {
     let x = a.req(0, "x")?;
-    let width = a.named("width").and_then(|v| num1(&v));
-    let digits = a.named("digits").and_then(|v| num1(&v));
+    let digits = a.get(1, "digits").and_then(|v| num1(&v)).map(|d| d as i64);
+    let mut width = a.get(2, "width").and_then(|v| num1(&v)).map(|w| w as i64);
     let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
-    // A character `x` defaults to `format = "s"`, and — unlike `sprintf`, which
-    // is C and counts bytes — R pads it to a *display* width. Handle it here
-    // rather than routing through the printf spec.
-    if matches!(data(&x), RData::Str(_)) && a.named("format").is_none() {
-        let w = width.unwrap_or(0.0);
-        let left = flag.contains('-') || w < 0.0;
-        let w = w.abs() as usize;
+    let left = flag.contains('-');
+    let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
+    let format = a
+        .get(3, "format")
+        .and_then(|v| str1(&v))
+        .unwrap_or_else(|| if is_int { "d".into() } else { "g".into() });
+
+    // A character `x`, or an explicit `format = "s"`, is padded to a *display*
+    // width and right-justified unless the `-` flag says otherwise — R's
+    // `format.char`, not a printf spec. `sprintf` would count bytes.
+    if matches!(data(&x), RData::Str(_)) || format == "s" {
+        let w = width.unwrap_or(0);
+        let left = left || w < 0;
+        let w = w.unsigned_abs() as usize;
         return Ok(mk_str(
             as_str(&x)
                 .iter()
@@ -7326,25 +7372,158 @@ fn format_c(a: &Args) -> Result<Value, String> {
                 .collect(),
         ));
     }
-    let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
-    let format = a.named("format").and_then(|v| str1(&v)).unwrap_or_else(|| {
-        if is_int {
-            "d".into()
-        } else {
-            "g".into()
+
+    if width.is_none() && digits.is_none() {
+        width = Some(1);
+    }
+    let digits = match digits {
+        None => {
+            if format == "d" {
+                2
+            } else {
+                4
+            }
         }
-    });
+        Some(d) if d < 0 => 6,
+        Some(d) => d,
+    };
+    let width = match width {
+        None => digits + 1,
+        Some(0) => digits,
+        Some(w) => w,
+    };
+
+    // R's `fg` is `f` with `digits` *significant* digits: the decimal count is
+    // derived per element, and trailing zeros are dropped unless the `#` flag
+    // asks to keep them.
+    if format == "fg" {
+        let out = as_dbl(&x)
+            .iter()
+            .map(|v| {
+                let Some(v) = *v else { return None };
+                if !v.is_finite() {
+                    return Some(special_str(v));
+                }
+                let e = if v == 0.0 {
+                    0
+                } else {
+                    v.abs().log10().floor() as i64
+                };
+                let dec = (digits - 1 - e).max(0) as usize;
+                let mut t = format!("{:.dec$}", v);
+                if !flag.contains('#') && t.contains('.') {
+                    t = t.trim_end_matches('0').trim_end_matches('.').to_string();
+                }
+                Some(t)
+            })
+            .collect::<Vec<_>>();
+        let w = width.unsigned_abs() as usize;
+        let left = left || width < 0;
+        return shaped_like(
+            mk_str(
+                out.into_iter()
+                    .map(|s| s.map(|s| crate::strwidth::pad_display(&s, w, left)))
+                    .collect(),
+            ),
+            &x,
+        );
+    }
+
+    // `format = "d"` formats the integer part, so a double `x` truncates first.
+    let xv = if format == "d" && !is_int {
+        mk_int(as_dbl(&x).iter().map(|v| v.map(|v| v as i64)).collect())
+    } else {
+        x.clone()
+    };
+
     let mut spec = String::from("%");
     spec.push_str(&flag);
-    if let Some(w) = width {
-        spec.push_str(&(w as i64).to_string());
-    }
-    if let Some(d) = digits {
+    spec.push_str(&width.to_string());
+    if format != "d" {
         spec.push('.');
-        spec.push_str(&(d as i64).to_string());
+        spec.push_str(&digits.to_string());
     }
     spec.push_str(&format);
-    sprintf(&Args::new(vec![(None, scalar_str(spec)), (None, x)]))
+    let formatted = sprintf(&Args::new(vec![
+        (None, scalar_str(spec)),
+        (None, xv.clone()),
+    ]))?;
+
+    // Non-finite entries never go through the printf field: R formats them as a
+    // group, padded to their own common width (and at least `width`).
+    let raw = as_dbl(&x);
+    if raw.iter().any(|v| !matches!(v, Some(v) if v.is_finite())) {
+        let specials: Vec<String> = raw
+            .iter()
+            .filter(|v| !matches!(v, Some(v) if v.is_finite()))
+            .map(|v| match v {
+                Some(v) => special_str(*v),
+                None => "NA".to_string(),
+            })
+            .collect();
+        let w = specials
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(width.unsigned_abs() as usize);
+        let mut cur = as_str(&formatted);
+        for (i, v) in raw.iter().enumerate() {
+            if matches!(v, Some(v) if v.is_finite()) {
+                continue;
+            }
+            let text = match v {
+                Some(v) => special_str(*v),
+                None => "NA".to_string(),
+            };
+            cur[i] = Some(crate::strwidth::pad_display(&text, w, left));
+        }
+        return shaped_like(mk_str(big_marked(&a, mk_str(cur))), &x);
+    }
+    let marked = big_marked(&a, formatted.clone());
+    shaped_like(mk_str(marked), &x)
+}
+
+/// Apply `formatC`'s `big.mark` to an already-padded field, preserving the
+/// field width the way R's `preserve.width = "individual"` does: every
+/// separator inserted eats one leading blank, if there is one to eat.
+fn big_marked(a: &Args, v: Value) -> Vec<Option<String>> {
+    let mark = a
+        .named("big.mark")
+        .and_then(|v| str1(&v))
+        .unwrap_or_default();
+    let cur = as_str(&v);
+    if mark.is_empty() {
+        return cur;
+    }
+    cur.into_iter()
+        .map(|s| {
+            s.map(|s| {
+                let lead = s.len() - s.trim_start().len();
+                let marked = insert_big_mark(s.trim_start(), &mark);
+                let grew = marked.len() - (s.len() - lead);
+                format!("{}{marked}", " ".repeat(lead.saturating_sub(grew)))
+            })
+        })
+        .collect()
+}
+
+/// R's spelling of a non-finite double: `Inf`, `-Inf`, `NaN`.
+fn special_str(v: f64) -> String {
+    if v.is_nan() {
+        "NaN".into()
+    } else if v > 0.0 {
+        "Inf".into()
+    } else {
+        "-Inf".into()
+    }
+}
+
+/// Centre `s` in a `w`-column field, R's `justify = "centre"`: an odd amount of
+/// padding puts the extra column on the right.
+fn centre_display(s: &str, w: usize) -> String {
+    let pad = w.saturating_sub(crate::strwidth::display_width(s));
+    format!("{}{s}{}", " ".repeat(pad / 2), " ".repeat(pad - pad / 2))
 }
 
 /// Insert `mark` between every third digit of the integer part of a formatted
