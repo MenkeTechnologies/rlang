@@ -86,6 +86,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::NULL_INVISIBLE, b_null_invisible);
     vm.register_builtin(ops::SET_VISIBLE, b_set_visible);
     vm.register_builtin(ops::SWITCH_INDEX, b_switch_index);
+    vm.register_builtin(ops::WARN_FLUSH, b_warn_flush);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -719,7 +720,32 @@ fn value_in(x: &Value, table: &Value) -> Value {
 /// Emit a warning the way R's top-level handler does: the banner, the message,
 /// and — for a warning carrying no call — a trailing space before the newline.
 fn r_warning(msg: &str) {
-    eprintln!("Warning message:\n{msg} ");
+    crate::host::queue_warning(msg);
+}
+
+/// End of a top-level statement: print whatever it queued. R holds warnings
+/// under the default `options(warn = 0)` until the statement finishes, so
+/// `print(1:3 + 1:2)` shows its value first and the recycling warning after.
+fn b_warn_flush(_: &mut VM, _: u8) -> Value {
+    crate::host::flush_warnings(false);
+    null()
+}
+
+/// R's "NAs introduced by coercion": warn when converting a *character* vector
+/// turned a non-NA element into NA. Only text can fail to parse, so a numeric or
+/// logical source never warns however many NAs it already held.
+fn warn_coerced_na(x: &Value, produced_na: impl Iterator<Item = bool>) -> Result<(), String> {
+    if !matches!(data(x), RData::Str(_)) {
+        return Ok(());
+    }
+    let src = as_str(x);
+    if produced_na
+        .enumerate()
+        .any(|(i, na)| na && src.get(i).is_some_and(|e| e.is_some()))
+    {
+        signal_warning("NAs introduced by coercion")?;
+    }
+    Ok(())
 }
 
 /// Narrow an R value to something the options store can hold. Options are
@@ -883,12 +909,20 @@ pub fn binop(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
 }
 
 /// The recycled length of a binary operation, and whether it is empty.
-fn recycle_len(a: usize, b: usize) -> usize {
+///
+/// R warns when the shorter operand does not tile the longer one exactly — the
+/// result is still produced, from a partial final cycle.
+fn recycle_len(a: usize, b: usize) -> Result<usize, String> {
     if a == 0 || b == 0 {
-        0
-    } else {
-        a.max(b)
+        return Ok(0);
     }
+    let (lo, hi) = (a.min(b), a.max(b));
+    if hi % lo != 0 {
+        // A real condition, so `tryCatch(warning = )` and `suppressWarnings`
+        // reach it the way they reach `warning()`.
+        signal_warning("longer object length is not a multiple of shorter object length")?;
+    }
+    Ok(hi)
 }
 
 /// Copy `names`/`dim`/`dimnames` from the operand that shaped the result.
@@ -1006,7 +1040,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     if matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_)) {
         return Err("non-numeric argument to binary operator".into());
     }
-    let n = recycle_len(len(lhs), len(rhs));
+    let n = recycle_len(len(lhs), len(rhs))?;
     // Integer arithmetic stays integer for `+ - * %% %/%`; `/` and `^` always
     // produce doubles, exactly as R does.
     let int_result = matches!(op, "+" | "-" | "*" | "%%" | "%/%")
@@ -1076,7 +1110,7 @@ fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             },
         );
     }
-    let n = recycle_len(len(lhs), len(rhs));
+    let n = recycle_len(len(lhs), len(rhs))?;
     let as_text = matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_));
     let mut out: Vec<Option<bool>> = Vec::with_capacity(n);
     if as_text {
@@ -1120,7 +1154,7 @@ fn cmp_result(op: &str, ord: std::cmp::Ordering) -> bool {
 /// `&` and `|`, with R's three-valued logic: `NA & FALSE` is FALSE and
 /// `NA | TRUE` is TRUE, because the answer is decided regardless of the NA.
 fn logic(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
-    let n = recycle_len(len(lhs), len(rhs));
+    let n = recycle_len(len(lhs), len(rhs))?;
     let (a, b) = (as_lgl(lhs), as_lgl(rhs));
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -2529,8 +2563,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "integer" => Ok(mk_int(vec![Some(0); a.n(0, 0.0) as usize])),
         "character" => Ok(mk_str(vec![Some(String::new()); a.n(0, 0.0) as usize])),
         "logical" => Ok(mk_lgl(vec![Some(false); a.n(0, 0.0) as usize])),
-        "as.numeric" | "as.double" => Ok(mk_dbl(as_dbl(&a.req(0, "x")?))),
-        "as.integer" => Ok(mk_int(int_range_na(as_int(&a.req(0, "x")?)))),
+        "as.numeric" | "as.double" => {
+            let x = a.req(0, "x")?;
+            let out = as_dbl(&x);
+            warn_coerced_na(&x, out.iter().map(|e| e.is_none()))?;
+            Ok(mk_dbl(out))
+        }
+        "as.integer" => {
+            let x = a.req(0, "x")?;
+            let out = int_range_na(as_int(&x));
+            warn_coerced_na(&x, out.iter().map(|e| e.is_none()))?;
+            Ok(mk_int(out))
+        }
         "as.character" => {
             let x = a.req(0, "x")?;
             // `as.character(factor)` yields the level labels, not the codes.
@@ -3828,11 +3872,24 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let vals: Vec<f64> = xs.into_iter().flatten().filter(|x| !x.is_nan()).collect();
             if vals.is_empty() {
                 // R: `max` of nothing is `-Inf`, `min` is `Inf`, `range` is
-                // `c(Inf, -Inf)` (each with a warning we omit).
+                // `c(Inf, -Inf)`; each extreme warns as it is taken, so `range`
+                // warns twice, once per end.
+                let warn_min = || signal_warning("no non-missing arguments to min; returning Inf");
+                let warn_max = || signal_warning("no non-missing arguments to max; returning -Inf");
                 return Ok(match name {
-                    "min" => scalar_dbl(f64::INFINITY),
-                    "max" => scalar_dbl(f64::NEG_INFINITY),
-                    _ => mk_dbl(vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY)]),
+                    "min" => {
+                        warn_min()?;
+                        scalar_dbl(f64::INFINITY)
+                    }
+                    "max" => {
+                        warn_max()?;
+                        scalar_dbl(f64::NEG_INFINITY)
+                    }
+                    _ => {
+                        warn_min()?;
+                        warn_max()?;
+                        mk_dbl(vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY)])
+                    }
                 });
             }
             let lo = vals.iter().cloned().fold(f64::INFINITY, f64::min);

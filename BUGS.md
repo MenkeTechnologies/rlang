@@ -45,7 +45,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `<simpleError in f(): msg>`, `try`'s string is R's call-less
   `"Error : msg\n"` rather than `"Error in f() : msg\n"`, and a warning that
   reaches the top level reports as `Warning message:\n<msg> ` without R's
-  `In <call> :` prefix.
+  `In <call> :` prefix. *Where* the batch prints is R's: an uncaught warning is
+  queued under the default `options(warn = 0)` and the whole batch is written
+  once the top-level statement finishes — after that statement's own stdout,
+  under R's singular/numbered/"there were N" banners — so only the per-warning
+  call text differs.
 - **A restart object does not `format()` the way R's does.** `print` gives R's
   `<restart: name >` and `$name` / `restartDescription` / `computeRestarts`
   ordering all match, but the `handler`, `test` and `interactive` slots hold

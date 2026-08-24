@@ -117,16 +117,17 @@ fn eval_with_cran_fallback(
     src: &str,
     run: impl FnOnce() -> Result<rlang::Value, String>,
 ) -> ExitCode {
-    let (result, captured) = capture_stdout(run);
+    let (result, captured, diagnostics) = capture_stdout(run);
     match result {
         Ok(_) => {
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
+            replay(&captured, &diagnostics);
             ExitCode::SUCCESS
         }
         // A restart transfer nobody established — `invokeRestart("abort")` —
         // ends the program with no diagnostic, the way R's abort restart does.
         Err(e) if e == rlang::host::RESTART_UNWIND => {
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
+            replay(&captured, &diagnostics);
+            rlang::host::flush_warnings(false);
             ExitCode::FAILURE
         }
         Err(e) => {
@@ -137,16 +138,30 @@ fn eval_with_cran_fallback(
                     Err(re) => fail(&re),
                 };
             }
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), &captured);
-            fail(&e)
+            replay(&captured, &diagnostics);
+            let code = fail(&e);
+            // R reports the error first and the statement's queued warnings
+            // after it, under an `In addition:` lead.
+            rlang::host::flush_warnings(true);
+            code
         }
     }
 }
 
+/// Everything R wrote to stderr while stdout was buffered, each tagged with how
+/// many bytes of stdout preceded it. That offset is what lets [`replay`] put the
+/// two streams back in the order the program wrote them.
+type Diagnostics = std::rc::Rc<std::cell::RefCell<Vec<(usize, String)>>>;
+
 /// Run `f` with fd 1 redirected into a temp file, returning what it wrote. A
 /// temp file (not a pipe) avoids blocking when the program out-writes the pipe
 /// buffer before anyone drains it.
-fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>) {
+///
+/// R's diagnostics are collected alongside it rather than written through,
+/// because a diagnostic that escaped now would land ahead of all the buffered
+/// stdout — R itself flushes stdout before every stderr write, so its warnings
+/// sit exactly where the program raised them.
+fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>, Vec<(usize, String)>) {
     use std::io::{Read, Seek, Write};
     use std::os::unix::io::AsRawFd;
     let path = std::env::temp_dir().join(format!("rlang-cap-{}.out", std::process::id()));
@@ -157,8 +172,19 @@ fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>) {
         .truncate(true)
         .open(&path)
     else {
-        return (f(), Vec::new());
+        return (f(), Vec::new(), Vec::new());
     };
+    let diagnostics: Diagnostics = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = diagnostics.clone();
+    rlang::host::set_stderr_hook(Box::new(move |s: &str| {
+        // Flush first, then ask fd 1 where it is: that byte count is the
+        // program's stdout up to this diagnostic.
+        let _ = std::io::stdout().flush();
+        // SAFETY: a position query on the process's own stdout fd.
+        let at = unsafe { libc::lseek(1, 0, libc::SEEK_CUR) };
+        sink.borrow_mut()
+            .push((at.max(0) as usize, s.to_string()));
+    }));
     // SAFETY: dup/dup2 on the process's own stdout fd; restored below.
     let (r, mut file) = unsafe {
         let saved = libc::dup(1);
@@ -173,7 +199,27 @@ fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>) {
     let _ = file.seek(std::io::SeekFrom::Start(0));
     let _ = file.read_to_end(&mut buf);
     let _ = std::fs::remove_file(&path);
-    (r, buf)
+    let events = diagnostics.borrow().clone();
+    (r, buf, events)
+}
+
+/// Write the buffered stdout and the diagnostics back out in the order they
+/// were produced, so a reader with both streams joined sees what R shows.
+fn replay(out: &[u8], diagnostics: &[(usize, String)]) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    let mut at = 0usize;
+    for (offset, text) in diagnostics {
+        let upto = (*offset).min(out.len());
+        if upto > at {
+            let _ = stdout.write_all(&out[at..upto]);
+            at = upto;
+        }
+        let _ = stdout.flush();
+        eprint!("{text}");
+    }
+    let _ = stdout.write_all(&out[at..]);
+    let _ = stdout.flush();
 }
 
 /// The introspection dumps: token stream, AST, and bytecode disassembly. All

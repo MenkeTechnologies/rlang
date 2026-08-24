@@ -110,6 +110,11 @@ pub mod ops {
     /// value is its argument, and evaluating a call sets the visibility flag —
     /// so `(x <- 5)` echoes while `x <- 5` does not.
     pub const SET_VISIBLE: u16 = 55;
+    /// `[]` → NULL. Emitted after every top-level statement: R's default
+    /// `options(warn = 0)` holds warnings until the statement that raised them
+    /// finishes, then prints the whole batch, so this is where a top-level
+    /// expression ends as far as the warning machinery is concerned.
+    pub const WARN_FLUSH: u16 = 56;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -327,6 +332,13 @@ pub struct RHost {
     /// Whether the top-level echo prints at all. On for `Rscript` and the REPL,
     /// off for embedding and for tests that want the value, not the transcript.
     pub echo: bool,
+    /// Warnings raised by the top-level statement now running, held until it
+    /// finishes — R's default `options(warn = 0)`. Capped at [`MAX_WARNINGS`]
+    /// entries the way R caps `nwarnings`.
+    pub warnings: Vec<String>,
+    /// How many warnings that statement raised, which keeps counting past the
+    /// cap so the "50 or more" banner can say so.
+    pub warn_count: usize,
     /// Interned singletons so `NULL` and the common constants do not allocate a
     /// fresh heap cell on every evaluation.
     null: Option<Value>,
@@ -365,6 +377,30 @@ pub fn start_capture() {
 /// Stop capturing and return everything written since [`start_capture`].
 pub fn take_capture() -> String {
     CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+thread_local! {
+    /// Where R's diagnostics go. `None` writes them straight to the process
+    /// stderr; `Rscript` installs a hook instead, because it buffers stdout for
+    /// the CRAN fallback and has to replay the two streams in the order they
+    /// were written rather than one after the other. See `main.rs`.
+    #[allow(clippy::type_complexity)]
+    static STDERR_HOOK: RefCell<Option<Box<dyn Fn(&str)>>> = const { RefCell::new(None) };
+}
+
+/// Route R's diagnostics (the warning batches) through `f` instead of stderr.
+pub fn set_stderr_hook(f: Box<dyn Fn(&str)>) {
+    STDERR_HOOK.with(|h| *h.borrow_mut() = Some(f));
+}
+
+/// Write one diagnostic — through the installed hook, or to stderr.
+pub fn emit_stderr(s: &str) {
+    let handled = STDERR_HOOK.with(|h| {
+        h.borrow().as_ref().map(|f| f(s)).is_some()
+    });
+    if !handled {
+        eprint!("{s}");
+    }
 }
 
 /// Run `f` with mutable access to the thread-local host.
@@ -410,6 +446,8 @@ impl RHost {
             signal: None,
             visible: true,
             echo: true,
+            warnings: Vec::new(),
+            warn_count: 0,
             null: None,
         }
     }
@@ -1055,6 +1093,12 @@ pub fn option_get(name: &str) -> Option<OptionValue> {
     match name {
         "digits" => Some(OptionValue::Int(print_digits() as i64)),
         "scipen" => Some(OptionValue::Int(print_scipen() as i64)),
+        // `warn` reads as 0 until something sets it, the way R's does.
+        "warn" => Some(
+            OTHER_OPTIONS
+                .with(|o| o.borrow().get(name).cloned())
+                .unwrap_or(OptionValue::Int(0)),
+        ),
         _ => OTHER_OPTIONS.with(|o| o.borrow().get(name).cloned()),
     }
 }
@@ -1251,7 +1295,76 @@ pub fn run_chunk(chunk: Chunk) -> Result<Value, String> {
 pub fn run_main(chunk: Chunk) -> Result<Value, String> {
     let r = run_chunk(chunk);
     with_host(|h| h.signal = None);
+    // A program that ended normally has already flushed after its last
+    // statement; one that unwound has not, and R prints that leftover batch
+    // *after* the error line — so leave it to the caller (see `main.rs`).
+    if r.is_ok() {
+        flush_warnings(false);
+    }
     r
+}
+
+/// R's `nwarnings`: the most warnings one top-level statement keeps.
+pub const MAX_WARNINGS: usize = 50;
+
+/// Queue `msg` for the end of the current top-level statement.
+///
+/// `options(warn = 0)` (the default) defers; a positive `warn` prints at once;
+/// a negative one drops the warning entirely.
+pub fn queue_warning(msg: &str) {
+    match warn_level() {
+        w if w < 0 => {}
+        0 => with_host(|h| {
+            h.warn_count += 1;
+            if h.warnings.len() < MAX_WARNINGS {
+                h.warnings.push(msg.to_string());
+            }
+        }),
+        _ => emit_stderr(&format!("Warning: {msg}\n")),
+    }
+}
+
+/// Print and clear the warnings the finished statement queued, in R's three
+/// shapes: one warning under a singular banner, up to ten numbered under a
+/// plural one, and more than that as a count. `after_error` adds the
+/// `In addition: ` R prefixes the batch with when the statement also failed.
+pub fn flush_warnings(after_error: bool) {
+    let (msgs, count) = with_host(|h| {
+        (
+            std::mem::take(&mut h.warnings),
+            std::mem::replace(&mut h.warn_count, 0),
+        )
+    });
+    if count == 0 {
+        return;
+    }
+    let lead = if after_error { "In addition: " } else { "" };
+    let text = if count == 1 {
+        format!("{lead}Warning message:\n{} \n", msgs[0])
+    } else if count <= 10 {
+        let body: String = msgs
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}: {m} \n", i + 1))
+            .collect();
+        format!("{lead}Warning messages:\n{body}")
+    } else if count < MAX_WARNINGS {
+        format!("{lead}There were {count} warnings (use warnings() to see them)\n")
+    } else {
+        format!(
+            "{lead}There were {MAX_WARNINGS} or more warnings (use warnings() to see the first {MAX_WARNINGS})\n"
+        )
+    };
+    emit_stderr(&text);
+}
+
+/// The current `options(warn = )`, which defaults to 0 as it does in R.
+fn warn_level() -> i64 {
+    match option_get("warn") {
+        Some(OptionValue::Int(n)) => n,
+        Some(OptionValue::Dbl(x)) if x.is_finite() => x.trunc() as i64,
+        _ => 0,
+    }
 }
 
 /// Call any callable value with an already-evaluated argument list.

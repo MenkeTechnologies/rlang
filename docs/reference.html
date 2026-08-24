@@ -392,19 +392,19 @@
         <h3><a class="doc-anchor" href="#doc-message">#</a> <code>message</code></h3>
         <pre><code class="lang-r r">message(...)
 </code></pre>
-        <p>Write the concatenated arguments to stderr and return NULL invisibly. No condition is signalled — nothing can catch a message.</p>
+        <p>Signal a `simpleMessage` condition and, if nothing catches or muffles it, write the concatenated arguments to stderr and return NULL invisibly.</p>
       </article>
       <article class="doc-entry" id="doc-warning">
         <h3><a class="doc-anchor" href="#doc-warning">#</a> <code>warning</code></h3>
         <pre><code class="lang-r r">warning(...)
 </code></pre>
-        <p>Write "Warning message:" and the concatenated text to stderr and continue. Warnings are never collected or deferred.</p>
+        <p>Signal a `simpleWarning` condition and continue. Uncaught, it is queued under the default `options(warn = 0)` and the whole batch prints when the top-level statement finishes; `warn = 1` prints it at once and a negative `warn` drops it.</p>
       </article>
       <article class="doc-entry" id="doc-stop">
         <h3><a class="doc-anchor" href="#doc-stop">#</a> <code>stop</code></h3>
         <pre><code class="lang-r r">stop(...)
 </code></pre>
-        <p>Abort with the concatenated arguments as the error message. Without a condition system there is nothing to catch it: the script exits with `Rscript: &lt;message&gt;` on stderr and status 1.</p>
+        <p>Signal a `simpleError` condition with the concatenated arguments as its message. Uncaught by any `tryCatch`/`try`, it ends the script with `Rscript: &lt;message&gt;` on stderr and status 1.</p>
       </article>
       <article class="doc-entry" id="doc-stopifnot">
         <h3><a class="doc-anchor" href="#doc-stopifnot">#</a> <code>stopifnot</code></h3>

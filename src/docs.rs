@@ -276,17 +276,17 @@ const OUTPUT: &[Entry] = &[
     (
         "message",
         "message(...)",
-        "Write the concatenated arguments to stderr and return NULL invisibly. No condition is signalled — nothing can catch a message.",
+        "Signal a `simpleMessage` condition and, if nothing catches or muffles it, write the concatenated arguments to stderr and return NULL invisibly.",
     ),
     (
         "warning",
         "warning(...)",
-        "Write \"Warning message:\" and the concatenated text to stderr and continue. Warnings are never collected or deferred.",
+        "Signal a `simpleWarning` condition and continue. Uncaught, it is queued under the default `options(warn = 0)` and the whole batch prints when the top-level statement finishes; `warn = 1` prints it at once and a negative `warn` drops it.",
     ),
     (
         "stop",
         "stop(...)",
-        "Abort with the concatenated arguments as the error message. Without a condition system there is nothing to catch it: the script exits with `Rscript: <message>` on stderr and status 1.",
+        "Signal a `simpleError` condition with the concatenated arguments as its message. Uncaught by any `tryCatch`/`try`, it ends the script with `Rscript: <message>` on stderr and status 1.",
     ),
     (
         "stopifnot",

@@ -264,9 +264,14 @@ fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
             c.tail = true;
             c.expr(&mut b, e)?;
             b.emit(Op::CallBuiltin(ops::AUTOPRINT, 1), 0);
-            if i + 1 < exprs.len() {
-                b.emit(Op::Pop, 0);
-            }
+        }
+        // The statement is over, so R's deferred warnings print here — after
+        // its own output, before the next statement's. The builtin pushes the
+        // NULL every builtin pushes; the value being echoed is under it.
+        b.emit(Op::CallBuiltin(ops::WARN_FLUSH, 0), 0);
+        b.emit(Op::Pop, 0);
+        if !slot_assign && i + 1 < exprs.len() {
+            b.emit(Op::Pop, 0);
         }
     }
     Ok(Program {
