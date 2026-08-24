@@ -249,8 +249,21 @@ run that compared nothing — no cases generated, or an oracle that never answer
 - **No garbage collection.** The `RHost` heap only grows within a run; a
   long-running loop that allocates many vectors will hold all of them until the
   process exits.
-- **Closure bodies are cloned per call.** `Chunk` is cloned on entry to every
-  call, which costs on deeply recursive workloads.
+- **Subscript assignment copies the whole vector.** `x[i] <- v` builds a new
+  vector every time, because rlang has no equivalent of R's `NAMED`/reference
+  count and so cannot tell whether the target is shared with another binding.
+  A loop that fills a vector is therefore quadratic — 0.07s / 0.21s / 0.75s /
+  2.63s for n = 5000 / 10000 / 20000 / 40000 on a debug build, against R's flat
+  ~0.1s, since R mutates in place when the count allows. Reads are not affected
+  (`x[i]` takes its selection through a borrow). Fixing this needs a real
+  reference count maintained at every point a handle is stored into an
+  environment, a list or an attribute; a partial version would silently corrupt
+  an aliased vector, so it is not worth half-doing.
+- **A closure body is copied on the first call to it.** Later calls reuse a VM
+  parked under the closure id, which still holds the chunk, so the copy is once
+  per closure rather than once per call — but a *re-entrant* call (recursion,
+  or a closure calling itself through `Map`) finds the parked VM checked out and
+  builds a fresh one, chunk copy included. Deep recursion still pays per level.
 - **AOP intercepts are a registry, not a weave.** `intercepts::matches()` is live
   and tested; the dispatcher does not consult it yet.
 - **The DAP adapter does not step.** The handshake, launch, and
