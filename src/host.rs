@@ -395,9 +395,7 @@ pub fn set_stderr_hook(f: Box<dyn Fn(&str)>) {
 
 /// Write one diagnostic — through the installed hook, or to stderr.
 pub fn emit_stderr(s: &str) {
-    let handled = STDERR_HOOK.with(|h| {
-        h.borrow().as_ref().map(|f| f(s)).is_some()
-    });
+    let handled = STDERR_HOOK.with(|h| h.borrow().as_ref().map(|f| f(s)).is_some());
     if !handled {
         eprint!("{s}");
     }

@@ -23,7 +23,7 @@ fn merged(program: &str) -> String {
     let rscript = env!("CARGO_BIN_EXE_Rscript");
     let out = Command::new("sh")
         .arg("-c")
-        .arg(format!("{rscript:?} -e \"$0\" 2>&1", ))
+        .arg(format!("{rscript:?} -e \"$0\" 2>&1",))
         .arg(program)
         // The whole-script fallback into an embedded GNU R would answer for
         // rlang and hide whatever rlang itself did.
@@ -38,7 +38,10 @@ fn a_warning_prints_after_the_statement_that_raised_it() {
     // The value comes first even though the warning was raised while computing
     // it: rlang printed the warning immediately before, which put it above the
     // `[1] NaN` that R shows above the warning.
-    assert_eq!(merged("print(sqrt(-1))"), "[1] NaN\nWarning message:\nNaNs produced \n");
+    assert_eq!(
+        merged("print(sqrt(-1))"),
+        "[1] NaN\nWarning message:\nNaNs produced \n"
+    );
 
     // …and each statement flushes its own batch, so the two interleave rather
     // than all the warnings landing ahead of all the output.

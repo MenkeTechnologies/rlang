@@ -182,8 +182,7 @@ fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>, Vec<(usize, String)>
         let _ = std::io::stdout().flush();
         // SAFETY: a position query on the process's own stdout fd.
         let at = unsafe { libc::lseek(1, 0, libc::SEEK_CUR) };
-        sink.borrow_mut()
-            .push((at.max(0) as usize, s.to_string()));
+        sink.borrow_mut().push((at.max(0) as usize, s.to_string()));
     }));
     // SAFETY: dup/dup2 on the process's own stdout fd; restored below.
     let (r, mut file) = unsafe {
