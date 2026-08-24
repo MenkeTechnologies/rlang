@@ -1302,7 +1302,10 @@ fn gen_optsfmt(seed: u64) -> Vec<String> {
         15 => format!("options(digits = {d})\nprint(names(options(\"digits\")))"),
         16 => format!("print(getOption(\"nosuchoption\", {}))", ii(r)),
         // `print(x, digits=)` is a one-off that must not leak into the setting.
-        _ => format!("options(digits = {d})\nprint({v}, digits = {})\nprint({v})", r.range(1, 8)),
+        _ => format!(
+            "options(digits = {d})\nprint({v}, digits = {})\nprint({v})",
+            r.range(1, 8)
+        ),
     })
 }
 

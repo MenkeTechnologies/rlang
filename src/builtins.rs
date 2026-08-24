@@ -1509,9 +1509,8 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
 /// negative coordinate, an out-of-range coordinate, and an unmatched dimname are
 /// all errors rather than NA.
 fn matrix_subscript(x: &Value, idx: &Value) -> Result<Option<Vec<Option<i64>>>, String> {
-    let to_dims = |v: &Value| -> Vec<usize> {
-        as_int(v).iter().map(|e| e.unwrap_or(0) as usize).collect()
-    };
+    let to_dims =
+        |v: &Value| -> Vec<usize> { as_int(v).iter().map(|e| e.unwrap_or(0) as usize).collect() };
     let (Some(xd), Some(idd)) = (
         with_host(|h| h.attr(x, "dim")),
         with_host(|h| h.attr(idx, "dim")),
@@ -1531,7 +1530,8 @@ fn matrix_subscript(x: &Value, idx: &Value) -> Result<Option<Vec<Option<i64>>>, 
     // `Some(None)` is an NA coordinate, `None` a dropped (`0`) one. The index
     // matrix is column-major, so its element `(r, c)` sits at `c * rows + r`.
     let mut coords: Vec<Vec<Option<Option<usize>>>> = Vec::with_capacity(cols);
-    for c in 0..cols {
+    // `cols == d.len()` (checked above), so the take() walks every dimension.
+    for (c, dim) in d.iter().enumerate().take(cols) {
         let mut col = Vec::with_capacity(rows);
         for r in 0..rows {
             col.push(match data(idx) {
@@ -1553,7 +1553,7 @@ fn matrix_subscript(x: &Value, idx: &Value) -> Result<Option<Vec<Option<i64>>>, 
                     Some(n) if n < 0 => {
                         return Err("negative values are not allowed in a matrix subscript".into())
                     }
-                    Some(n) if n as usize > d[c] => return Err(oob()),
+                    Some(n) if n as usize > *dim => return Err(oob()),
                     Some(n) => Some(Some(n as usize - 1)),
                 },
             });
@@ -2508,7 +2508,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // `c("a", "")`. The distinction is visible when printing, where
                 // an empty name numbers its element `[[2]]` but an `NA` name
                 // heads it `$<NA>`.
-                set_names(&out, nm.into_iter().map(|n| Some(n.unwrap_or_default())).collect());
+                set_names(
+                    &out,
+                    nm.into_iter()
+                        .map(|n| Some(n.unwrap_or_default()))
+                        .collect(),
+                );
             }
             Ok(out)
         }
@@ -2904,13 +2909,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         )),
         "toString" => {
             let x = a.req(0, "x")?;
-            let parts: Vec<String> = crate::host::with_print_digits(
-                crate::host::AS_CHARACTER_DIGITS,
-                || as_str_labels(&x),
-            )
-            .into_iter()
-            .map(|s| s.unwrap_or_else(|| "NA".into()))
-            .collect();
+            let parts: Vec<String> =
+                crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || {
+                    as_str_labels(&x)
+                })
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect();
             Ok(scalar_str(parts.join(", ")))
         }
         // `options(name = value, ...)` sets, `options("name")` queries, and
@@ -2931,8 +2936,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 match tag {
                     Some(name) => {
                         any_set = true;
-                        let (prev, warning) =
-                            crate::host::option_set(name, r_to_option_value(v)?)?;
+                        let (prev, warning) = crate::host::option_set(name, r_to_option_value(v)?)?;
                         record(name, prev);
                         if let Some(w) = warning {
                             r_warning(&w);
@@ -4062,27 +4066,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // extremum.
             let mut na = false;
             let out: Vec<Option<f64>> = xs
-                    .iter()
-                    .map(|e| {
-                        if na {
-                            return None;
+                .iter()
+                .map(|e| {
+                    if na {
+                        return None;
+                    }
+                    match e {
+                        None => {
+                            na = true;
+                            None
                         }
-                        match e {
-                            None => {
-                                na = true;
-                                None
-                            }
-                            Some(v) => {
-                                acc = Some(match acc {
-                                    None => *v,
-                                    Some(a) if name == "cummax" => a.max(*v),
-                                    Some(a) => a.min(*v),
-                                });
-                                acc
-                            }
+                        Some(v) => {
+                            acc = Some(match acc {
+                                None => *v,
+                                Some(a) if name == "cummax" => a.max(*v),
+                                Some(a) => a.min(*v),
+                            });
+                            acc
                         }
-                    })
-                    .collect();
+                    }
+                })
+                .collect();
             shaped_like(mk_dbl(out), &xv)
         }
         "tabulate" => {
@@ -6942,9 +6946,7 @@ fn cut(a: &Args) -> Result<Value, String> {
                 .map(|i| lo + (hi - lo) * i as f64 / nb as f64)
                 .collect()
         } else {
-            let mut b: Vec<f64> = (0..=nb)
-                .map(|i| mn + dx * i as f64 / nb as f64)
-                .collect();
+            let mut b: Vec<f64> = (0..=nb).map(|i| mn + dx * i as f64 / nb as f64).collect();
             b[0] = mn - dx / 1000.0;
             b[nb] = mx + dx / 1000.0;
             b
@@ -8549,7 +8551,10 @@ fn format_dbl_run(xs: &[Option<f64>]) -> Vec<String> {
     // matrix layouts alike) gets R's width for free.
     let exp_digits = cells
         .iter()
-        .filter_map(|c| c.split_once(['e']).map(|(_, e)| e.trim_start_matches(['+', '-']).len()))
+        .filter_map(|c| {
+            c.split_once(['e'])
+                .map(|(_, e)| e.trim_start_matches(['+', '-']).len())
+        })
         .max()
         .unwrap_or(2);
     let neg = usize::from(cells.iter().any(|c| c.starts_with('-')));

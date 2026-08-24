@@ -410,8 +410,7 @@ fn append_splices_at_after_rather_than_at_the_tail() {
     assert_eq!(r("append(1:3, 99, after = 1)"), "[1]  1 99  2  3");
     // The default is `length(x)`, and an `after` past the end also appends.
     assert_eq!(r("append(1:3, 4:5)"), "[1] 1 2 3 4 5");
-    assert_eq!(r("append(1:3, 99, after = 10)"), "[1]  1  2  3 99")
-    ;
+    assert_eq!(r("append(1:3, 99, after = 10)"), "[1]  1  2  3 99");
     // Both slices keep the names that travelled with them.
     assert_eq!(
         r("names(append(c(a = 1, b = 2, c = 3), c(z = 9), after = 1))"),
@@ -446,12 +445,24 @@ fn cut_spaces_interior_breaks_over_the_unwidened_range() {
 fn vapply_takes_its_result_type_from_fun_value_when_x_is_empty() {
     // With nothing to map over there is no result to infer a type from, which is
     // exactly what `FUN.VALUE` is for; the simplifier used to answer `list()`.
-    assert_eq!(r("vapply(integer(0), function(x) \"a\", character(1))"), "character(0)");
-    assert_eq!(r("typeof(vapply(list(), function(x) x, numeric(1)))"), "[1] \"double\"");
+    assert_eq!(
+        r("vapply(integer(0), function(x) \"a\", character(1))"),
+        "character(0)"
+    );
+    assert_eq!(
+        r("typeof(vapply(list(), function(x) x, numeric(1)))"),
+        "[1] \"double\""
+    );
     // A character `X` still contributes its (empty) names, which is what makes R
     // print the `named` prefix.
-    assert_eq!(r("vapply(character(0), nchar, integer(1))"), "named integer(0)");
-    assert_eq!(r("names(vapply(character(0), nchar, integer(1)))"), "character(0)");
+    assert_eq!(
+        r("vapply(character(0), nchar, integer(1))"),
+        "named integer(0)"
+    );
+    assert_eq!(
+        r("names(vapply(character(0), nchar, integer(1)))"),
+        "character(0)"
+    );
 }
 
 #[test]
@@ -463,7 +474,10 @@ fn sapply_simplifies_length_one_list_results_one_level() {
     assert_eq!(r("sapply(1:2, function(x) list(x))[[2]]"), "[1] 2");
     // Longer list results have no matrix form, so those still stay a list.
     assert_eq!(r("length(sapply(1:2, function(x) list(x, x)))"), "[1] 2");
-    assert_eq!(r("length(sapply(1:2, function(x) list(x, x))[[1]])"), "[1] 2");
+    assert_eq!(
+        r("length(sapply(1:2, function(x) list(x, x))[[1]])"),
+        "[1] 2"
+    );
 }
 
 #[test]
@@ -473,7 +487,10 @@ fn subsetting_a_named_vector_always_yields_names() {
     // dropped whenever *every* selected name was missing.
     assert_eq!(r("c(a = 1, b = 2)[3]"), "<NA> \n  NA");
     assert_eq!(r("is.na(names(c(a = 1, b = 2)[3]))"), "[1] TRUE");
-    assert_eq!(r("c(a = 1, b = 2, c = 3)[c(\"a\", \"zz\")]"), "   a <NA> \n   1   NA");
+    assert_eq!(
+        r("c(a = 1, b = 2, c = 3)[c(\"a\", \"zz\")]"),
+        "   a <NA> \n   1   NA"
+    );
     // The same applies to lists, where an NA name heads its element `$<NA>`.
     assert_eq!(r("list(a = 1, b = 2)[\"zz\"]"), "$<NA>\nNULL");
     // An *unnamed* vector still has no names, so it prints without a header.
