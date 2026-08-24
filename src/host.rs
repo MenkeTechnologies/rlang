@@ -15,6 +15,15 @@
 //! what makes `<<-` reach the enclosing frame.
 
 use fusevm::{Chunk, VMResult, Value, VM};
+/// Every map keyed by an R *name* — an environment's bindings, an object's
+/// attributes — hashes with `FxHasher` rather than the standard library's
+/// SipHash. R resolves a variable by name on every read, so this is the
+/// interpreter's hottest hash; the keys are program identifiers, never
+/// untrusted input, so SipHash's collision resistance was pure overhead.
+/// Insertion order — which `ls()` and `attributes()` expose — is IndexMap's,
+/// independent of the hasher.
+pub type NameMap = IndexMap<String, Value, rustc_hash::FxBuildHasher>;
+
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -119,7 +128,7 @@ pub mod ops {
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
 pub struct EnvData {
-    pub vars: IndexMap<String, Value>,
+    pub vars: NameMap,
     pub parent: Option<Env>,
 }
 /// A reference-counted environment, shared between a frame and every closure
@@ -128,7 +137,7 @@ pub type Env = Rc<RefCell<EnvData>>;
 
 fn new_env(parent: Option<Env>) -> Env {
     Rc::new(RefCell::new(EnvData {
-        vars: IndexMap::new(),
+        vars: NameMap::default(),
         parent,
     }))
 }
@@ -162,7 +171,7 @@ pub enum Signal {
 #[derive(Clone)]
 pub struct RObj {
     pub data: RData,
-    pub attrs: IndexMap<String, Value>,
+    pub attrs: NameMap,
 }
 
 /// The R data types rlang represents. Atomic vectors hold `Option<T>`, where
@@ -211,6 +220,61 @@ pub enum RData {
     Args(Vec<(Option<String>, Value)>),
 }
 
+/// Which [`RData`] variant a value holds, without its payload.
+///
+/// [`RHost::data_of`] *clones* the data — R's copy-on-assign semantics mean a
+/// caller that keeps it must own it — so asking `matches!(data(x), RData::Str(_))`
+/// copied the whole vector to read its tag. `RHost::kind_of` answers the same
+/// question in O(1), which is what the vector paths (arithmetic, comparison,
+/// subscript assignment) ask on every operation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RKind {
+    Null,
+    Lgl,
+    Int,
+    Dbl,
+    Str,
+    List,
+    Closure,
+    Builtin,
+    RForeign,
+    Combinator,
+    Environment,
+    Args,
+}
+
+impl RKind {
+    /// The kind of an already-materialised `RData`.
+    pub fn of(d: &RData) -> RKind {
+        match d {
+            RData::Null => RKind::Null,
+            RData::Lgl(_) => RKind::Lgl,
+            RData::Int(_) => RKind::Int,
+            RData::Dbl(_) => RKind::Dbl,
+            RData::Str(_) => RKind::Str,
+            RData::List(_) => RKind::List,
+            RData::Closure { .. } => RKind::Closure,
+            RData::Builtin(_) => RKind::Builtin,
+            RData::RForeign(_) => RKind::RForeign,
+            RData::Combinator { .. } => RKind::Combinator,
+            RData::Environment(_) => RKind::Environment,
+            RData::Args(_) => RKind::Args,
+        }
+    }
+
+    /// This kind's place on the promotion ladder — see [`type_rank`].
+    pub fn rank(self) -> u8 {
+        match self {
+            RKind::Null => 0,
+            RKind::Lgl => 1,
+            RKind::Int => 2,
+            RKind::Dbl => 3,
+            RKind::Str => 4,
+            _ => 5,
+        }
+    }
+}
+
 /// The scalar type ladder used for promotion in `c()` and arithmetic:
 /// logical < integer < double < character.
 pub fn type_rank(d: &RData) -> u8 {
@@ -231,9 +295,12 @@ pub struct Frame {
     pub args: Vec<(Option<String>, Value)>,
     /// The name the function was called by, when known.
     pub fun_name: Option<String>,
-    /// The closure value being executed, so `Recall` can re-invoke it (works
-    /// even for an anonymous function).
-    pub fun: Value,
+    /// The closure being executed, as the `(id, environment)` pair it was built
+    /// from, so `Recall` can re-invoke it — anonymous functions included. Kept
+    /// as the pair rather than an allocated closure value because only `Recall`
+    /// ever reads it, and building the value allocated a heap cell on every
+    /// call. `None` for the top-level frame, which is in no closure.
+    pub fun: Option<(usize, Env)>,
     /// Set by `UseMethod` so `NextMethod` can continue down the class vector.
     pub dispatch: Option<(String, Vec<String>)>,
     /// Thunks registered by `on.exit`, run when this frame is left — whether it
@@ -408,6 +475,7 @@ pub fn with_host<R>(f: impl FnOnce(&mut RHost) -> R) -> R {
 
 /// Reset the host to a clean slate (fresh global environment and heap).
 pub fn reset_host() {
+    CLOSURE_VMS.with(|c| c.borrow_mut().clear());
     with_host(|h| *h = RHost::new());
 }
 
@@ -428,7 +496,7 @@ impl RHost {
                 env: global,
                 args: Vec::new(),
                 fun_name: None,
-                fun: Value::Undef,
+                fun: None,
                 dispatch: None,
                 on_exit: Vec::new(),
             }],
@@ -452,6 +520,10 @@ impl RHost {
 
     /// Install the compiled closure bodies for a program.
     pub fn load_closures(&mut self, closures: Vec<ClosureDef>) {
+        // The parked VMs are keyed by closure id and still hold the *old*
+        // program's chunk for that id, so a new closure table invalidates every
+        // one of them.
+        CLOSURE_VMS.with(|c| c.borrow_mut().clear());
         self.closures = closures;
     }
 
@@ -459,11 +531,11 @@ impl RHost {
 
     /// Allocate `data` with no attributes and return its handle.
     pub fn alloc(&mut self, data: RData) -> Value {
-        self.alloc_with(data, IndexMap::new())
+        self.alloc_with(data, NameMap::default())
     }
 
     /// Allocate `data` carrying `attrs`.
-    pub fn alloc_with(&mut self, data: RData, attrs: IndexMap<String, Value>) -> Value {
+    pub fn alloc_with(&mut self, data: RData, attrs: NameMap) -> Value {
         self.heap.push(RObj { data, attrs });
         Value::Obj((self.heap.len() - 1) as u32)
     }
@@ -495,6 +567,19 @@ impl RHost {
         self.get(v).map(|o| o.data.clone()).unwrap_or(RData::Null)
     }
 
+    /// Which variant this value's data is, without copying the data.
+    pub fn kind_of(&self, v: &Value) -> RKind {
+        match unboxed(v) {
+            Some(Ub::I(_)) => return RKind::Int,
+            Some(Ub::F(_)) => return RKind::Dbl,
+            Some(Ub::B(_)) => return RKind::Lgl,
+            None => {}
+        }
+        self.get(v)
+            .map(|o| RKind::of(&o.data))
+            .unwrap_or(RKind::Null)
+    }
+
     /// A length-1, unattributed, non-NA numeric/logical value as
     /// `(value, is_integer_typed)` — the scalar fast path for arithmetic and
     /// comparison. Returns `None` (forcing the full vector path) for anything
@@ -520,9 +605,9 @@ impl RHost {
     }
 
     /// The attributes of a value.
-    pub fn attrs_of(&self, v: &Value) -> IndexMap<String, Value> {
+    pub fn attrs_of(&self, v: &Value) -> NameMap {
         if unboxed(v).is_some() {
-            return IndexMap::default();
+            return NameMap::default();
         }
         self.get(v).map(|o| o.attrs.clone()).unwrap_or_default()
     }
@@ -1267,8 +1352,76 @@ pub fn format_dbl(x: f64) -> String {
 
 /// Register every rlang builtin on a fresh VM and run `chunk` on it.
 pub fn run_chunk(chunk: Chunk) -> Result<Value, String> {
+    let mut vm = fresh_vm(chunk);
+    let r = drive(&mut vm);
+    // A top-level or one-shot chunk has no owner to be cached against, so the
+    // VM is dropped; its cost was the allocation, which the closure cache is
+    // what avoids.
+    r
+}
+
+thread_local! {
+    /// One parked VM per closure id, each still holding that closure's chunk.
+    ///
+    /// Every R call runs its body on a nested VM, and building one is not cheap:
+    /// `VM::new` allocates the stack, frame and globals vectors and a JIT
+    /// compiler, [`crate::builtins::install`] registers the whole builtin table
+    /// on top, and the body chunk has to be *cloned* in because the VM owns it.
+    /// A closure called in a loop paid all of that per iteration. Parking the VM
+    /// under its closure id means the next call to the same closure reuses the
+    /// allocations, the builtin table and the chunk already in place —
+    /// `VM::reset` keeps the table and the hooks, and the chunk is moved out and
+    /// straight back rather than cloned.
+    ///
+    /// A recursive (or otherwise re-entrant) call finds the slot empty, because
+    /// the outer call took the VM out for the duration, and builds a fresh one —
+    /// which is what keeps each activation's chunk state its own.
+    /// Indexed by closure id — the ids are dense and small, so a vector beats a
+    /// map, and the `Box` means parking and taking a VM moves a pointer rather
+    /// than the whole `VM` struct.
+    static CLOSURE_VMS: RefCell<Vec<Option<Box<VM>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A VM ready to run `chunk`: allocations, builtin table and hooks all in place.
+fn fresh_vm(chunk: Chunk) -> VM {
     let mut vm = VM::new(chunk);
     crate::builtins::install(&mut vm);
+    vm
+}
+
+/// Run closure `id`'s body on its parked VM, parking it again afterwards.
+fn run_closure_chunk(id: usize) -> Result<Value, String> {
+    let parked = CLOSURE_VMS.with(|c| c.borrow_mut().get_mut(id).and_then(Option::take));
+    let mut vm = match parked {
+        Some(mut vm) => {
+            // The chunk is already this closure's: move it out and hand it back
+            // to `reset`, which clears the stack, frames, globals and ip while
+            // keeping the builtin table and the numeric hook.
+            let chunk = std::mem::take(&mut vm.chunk);
+            vm.reset(chunk);
+            vm
+        }
+        // First call, or a re-entrant one whose VM is checked out: this is the
+        // only path that copies the body.
+        None => {
+            let chunk = with_host(|h| h.closures.get(id).map(|d| d.chunk.clone()))
+                .ok_or_else(|| format!("internal: unknown closure #{id}"))?;
+            Box::new(fresh_vm(chunk))
+        }
+    };
+    let r = drive(&mut vm);
+    CLOSURE_VMS.with(|c| {
+        let mut slots = c.borrow_mut();
+        if slots.len() <= id {
+            slots.resize_with(id + 1, || None);
+        }
+        slots[id] = Some(vm);
+    });
+    r
+}
+
+/// Run a prepared VM to completion and read its outcome.
+fn drive(vm: &mut VM) -> Result<Value, String> {
     // The tracing JIT is deliberately NOT enabled. It cannot compile R: fusevm's
     // tracer rejects any trace containing `Op::CallBuiltin` (builtin bodies are
     // arbitrary Rust it can't lower to Cranelift IR), and R lowers nearly every
@@ -1397,19 +1550,17 @@ pub fn call_closure(
     args: Vec<(Option<String>, Value)>,
     fun_name: Option<String>,
 ) -> Result<Value, String> {
-    let def = with_host(|h| h.closures.get(id).cloned())
+    // Only the formals are needed to enter the call; the body chunk stays in the
+    // closure table (cloning the whole `ClosureDef` copied the bytecode on every
+    // call, which for a closure called in a loop was the largest single cost of
+    // calling it).
+    let params = with_host(|h| h.closures.get(id).map(|d| d.params.clone()))
         .ok_or_else(|| format!("internal: unknown closure #{id}"))?;
     if with_host(|h| h.frames.len()) >= MAX_DEPTH {
         return Err("evaluation nested too deeply: infinite recursion?".into());
     }
-    let fun = with_host(|h| {
-        h.alloc(RData::Closure {
-            id,
-            env: env.clone(),
-        })
-    });
-    let frame_env = new_env(Some(env));
-    let bindings = match_args(&def.params, &args)?;
+    let frame_env = new_env(Some(env.clone()));
+    let bindings = match_args(&params, &args)?;
     {
         let mut e = frame_env.borrow_mut();
         for (k, v) in bindings {
@@ -1422,14 +1573,14 @@ pub fn call_closure(
         let dispatch = h.pending_dispatch.take();
         h.frames.push(Frame {
             env: frame_env,
-            args: args.clone(),
+            args,
             fun_name,
-            fun,
+            fun: Some((id, env)),
             dispatch,
             on_exit: Vec::new(),
         })
     });
-    let out = run_chunk(def.chunk.clone());
+    let out = run_closure_chunk(id);
     // `on.exit` runs on the way out however the frame is left — normal return,
     // `return()`, or an error unwinding through it — so it is taken off the
     // frame before the result is propagated.

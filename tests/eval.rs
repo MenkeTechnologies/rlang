@@ -520,3 +520,41 @@ fn zero_extent_matrices_and_null_keep_their_own_print_forms() {
     assert_eq!(r("format(NULL)"), "[1] \"NULL\"");
     assert_eq!(r("format(character(0))"), "character(0)");
 }
+
+#[test]
+fn a_reused_pattern_keeps_the_meaning_of_its_flags() {
+    // The compiled-regex cache is keyed by the text actually handed to the
+    // engine, not by the pattern the caller wrote — so the same pattern under
+    // different flags must not collide. `fixed` escapes it and `ignore.case`
+    // prefixes it, and each has to keep its own compiled form.
+    assert_eq!(r(r#"grepl("a.c", "abc")"#), "[1] TRUE");
+    assert_eq!(r(r#"grepl("a.c", "abc", fixed = TRUE)"#), "[1] FALSE");
+    assert_eq!(r(r#"grepl("a.c", "a.c", fixed = TRUE)"#), "[1] TRUE");
+    assert_eq!(r(r#"grepl("ABC", "abc")"#), "[1] FALSE");
+    assert_eq!(r(r#"grepl("ABC", "abc", ignore.case = TRUE)"#), "[1] TRUE");
+}
+
+#[test]
+fn an_invalid_pattern_is_rejected_every_time_it_is_used() {
+    // Caching the *engine* without caching the failure would let a second call
+    // with a broken pattern quietly succeed (or, worse, reuse a neighbour's).
+    assert_eq!(
+        r(
+            r#"paste(sapply(1:3, function(i) tryCatch(grepl("[", "a"), error = function(e) "err")), collapse = ",")"#
+        ),
+        "[1] \"err,err,err\""
+    );
+}
+
+#[test]
+fn reading_one_element_does_not_disturb_the_vector_it_came_from() {
+    // The subscript read borrows the source rather than copying it; these are
+    // the shapes that a borrow-based selection can get wrong — a missing
+    // element, a name row, and a list slot holding NULL.
+    assert_eq!(r("x <- c(10, 20, 30); c(x[2], length(x))"), "[1] 20  3");
+    assert_eq!(r("x <- c('a', 'b'); x[c(2, 5)]"), "[1] \"b\" NA");
+    assert_eq!(r("l <- list(1, NULL, 3); length(l[2:3])"), "[1] 2");
+    assert_eq!(r("l <- list(1, NULL, 3); is.null(l[[2]])"), "[1] TRUE");
+    assert_eq!(r("x <- c(a = 1, b = 2); names(x[2])"), "[1] \"b\"");
+    assert_eq!(r("x <- 1:5; x[c(TRUE, FALSE)]"), "[1] 1 3 5");
+}

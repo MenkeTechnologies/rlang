@@ -1507,3 +1507,10 @@ b 2 4
 [1] "    a" "   bb"
 [1] "  ab  " "  c   "
 [1] "1" "2"
+#==#
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE

@@ -68,6 +68,16 @@ no VM of its own. Highlights:
   indexing to builtins), so rlang leaves it off: its per-loop trace-cache probe
   was pure overhead (~12% on a scalar loop). The AOT path above is where native
   execution comes from instead.
+- **No per-operation setup** — the costs that do not belong in a hot path have
+  been taken out of it. A closure call reuses a VM parked under its closure id
+  (`VM::reset` keeps the builtin table and the numeric hook), so entering a
+  function no longer constructs a VM, re-registers every builtin and copies the
+  body chunk. `x[i]` reads the source vector through a borrow instead of a copy,
+  which takes one element read from O(length(x)) to O(1) and a read loop from
+  quadratic to linear. Type tests ask the value's *kind* rather than cloning its
+  data to look at the tag. Compiled regexes are memoised by pattern text, so
+  `grepl`/`sub`/`gsub`/`strsplit` in a loop build the engine once instead of per
+  call — its literal prefilter costs far more than matching a short subject.
 - **fusevm-hosted** — no local `vm.rs` / `jit.rs`; the shared engine behind
   `zshrs`, `stryke`, `awkrs`, `elisp`, and `rubylang`. `jit-disk-cache` persists
   native code across runs.

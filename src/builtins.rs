@@ -7,12 +7,13 @@
 //! scopes — never across a call back into R — so `lapply` can run a closure body
 //! on a nested VM while the outer builtin is still on the stack.
 
+use crate::host::NameMap;
 use crate::host::{
     call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
-    CombinatorKind, RData, Signal,
+    CombinatorKind, RData, RKind, Signal,
 };
 use fusevm::{Value, VM};
-use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Register every rlang builtin on `vm`.
@@ -120,6 +121,11 @@ fn is_null(v: &Value) -> bool {
 }
 fn data(v: &Value) -> RData {
     with_host(|h| h.data_of(v))
+}
+/// Which `RData` variant `v` holds. Unlike [`data`], this does not copy the
+/// payload, so a type test costs the same whatever the vector's length.
+fn kind(v: &Value) -> RKind {
+    with_host(|h| h.kind_of(v))
 }
 pub(crate) fn mk_dbl(xs: Vec<Option<f64>>) -> Value {
     with_host(|h| h.dbl(xs))
@@ -597,7 +603,7 @@ fn b_switch_index(vm: &mut VM, argc: u8) -> Value {
     let expr = all.first().cloned().unwrap_or(Value::Undef);
     let names: Vec<String> = all.iter().skip(1).map(name_of).collect();
     let expr_v = expr; // already an R value
-    let idx = if matches!(data(&expr_v), RData::Str(_)) {
+    let idx = if kind(&expr_v) == RKind::Str {
         match str1(&expr_v) {
             Some(s) => names
                 .iter()
@@ -735,7 +741,7 @@ fn b_warn_flush(_: &mut VM, _: u8) -> Value {
 /// turned a non-NA element into NA. Only text can fail to parse, so a numeric or
 /// logical source never warns however many NAs it already held.
 fn warn_coerced_na(x: &Value, produced_na: impl Iterator<Item = bool>) -> Result<(), String> {
-    if !matches!(data(x), RData::Str(_)) {
+    if kind(x) != RKind::Str {
         return Ok(());
     }
     let src = as_str(x);
@@ -891,7 +897,7 @@ fn ops_factor(op: &str, lhs: &Value, rhs: Option<&Value>) -> Option<Result<Value
 pub fn binop(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // An operator on a foreign R object (`date + months(3)`, `sparse %*% x`)
     // delegates to embedded R, which knows the S3/S4 method.
-    if matches!(data(lhs), RData::RForeign(_)) || matches!(data(rhs), RData::RForeign(_)) {
+    if kind(lhs) == RKind::RForeign || kind(rhs) == RKind::RForeign {
         return cran_call(op, &[(None, lhs.clone()), (None, rhs.clone())]);
     }
     // A factor operand dispatches to R's group generic before any of the
@@ -1037,15 +1043,15 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             Value::Float(r)
         });
     }
-    if matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_)) {
+    if kind(lhs) == RKind::Str || kind(rhs) == RKind::Str {
         return Err("non-numeric argument to binary operator".into());
     }
     let n = recycle_len(len(lhs), len(rhs))?;
     // Integer arithmetic stays integer for `+ - * %% %/%`; `/` and `^` always
     // produce doubles, exactly as R does.
     let int_result = matches!(op, "+" | "-" | "*" | "%%" | "%/%")
-        && matches!(data(lhs), RData::Int(_) | RData::Lgl(_))
-        && matches!(data(rhs), RData::Int(_) | RData::Lgl(_));
+        && matches!(kind(lhs), RKind::Int | RKind::Lgl)
+        && matches!(kind(rhs), RKind::Int | RKind::Lgl);
     let (a, b) = (as_dbl(lhs), as_dbl(rhs));
     let mut out: Vec<Option<f64>> = Vec::with_capacity(n);
     for i in 0..n {
@@ -1111,7 +1117,7 @@ fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         );
     }
     let n = recycle_len(len(lhs), len(rhs))?;
-    let as_text = matches!(data(lhs), RData::Str(_)) || matches!(data(rhs), RData::Str(_));
+    let as_text = kind(lhs) == RKind::Str || kind(rhs) == RKind::Str;
     let mut out: Vec<Option<bool>> = Vec::with_capacity(n);
     if as_text {
         let (a, b) = (as_str(lhs), as_str(rhs));
@@ -1342,7 +1348,7 @@ fn foreign_index_set(
 fn b_index(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         return foreign_index(vm, "[", x, args_of(&argv));
     }
     match index_single(&x, &args_of(&argv)) {
@@ -1354,7 +1360,7 @@ fn b_index(vm: &mut VM, _: u8) -> Value {
 fn b_index2(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         return foreign_index(vm, "[[", x, args_of(&argv));
     }
     match index_double(&x, &args_of(&argv)) {
@@ -1366,7 +1372,7 @@ fn b_index2(vm: &mut VM, _: u8) -> Value {
 fn b_dollar(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
     let x = vm.pop();
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         // `df$col` on a foreign object is `df[["col"]]` in R.
         return foreign_index(vm, "[[", x, vec![(None, scalar_str(name))]);
     }
@@ -1613,33 +1619,77 @@ fn matrix_subscript(x: &Value, idx: &Value) -> Result<Option<Vec<Option<i64>>>, 
 
 /// Build a new vector/list from zero-based positions (`None` → NA element).
 fn take_positions(x: &Value, pos: &[Option<usize>]) -> Value {
-    match data(x) {
-        RData::Lgl(v) => mk_lgl(
+    // The selection is read *through* a borrow of the heap object rather than
+    // from a copy of it. `data(x)` clones the whole vector, which made reading
+    // one element — `x[i]` in a loop — cost O(length(x)) and the loop itself
+    // quadratic. The picked elements are collected inside the borrow and
+    // allocated after it, because allocating re-enters the host.
+    enum Picked {
+        Lgl(Vec<Option<bool>>),
+        Int(Vec<Option<i64>>),
+        Dbl(Vec<Option<f64>>),
+        Str(Vec<Option<String>>),
+        List(Vec<Option<Value>>),
+        Null,
+    }
+    let picked = with_host(|h| match h.get(x).map(|o| &o.data) {
+        Some(RData::Lgl(v)) => Picked::Lgl(
             pos.iter()
                 .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
                 .collect(),
         ),
-        RData::Int(v) => mk_int(
+        Some(RData::Int(v)) => Picked::Int(
             pos.iter()
                 .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
                 .collect(),
         ),
-        RData::Dbl(v) => mk_dbl(
+        Some(RData::Dbl(v)) => Picked::Dbl(
             pos.iter()
                 .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
                 .collect(),
         ),
-        RData::Str(v) => mk_str(
+        Some(RData::Str(v)) => Picked::Str(
             pos.iter()
                 .map(|p| p.and_then(|i| v.get(i).cloned().flatten()))
                 .collect(),
         ),
-        RData::List(v) => mk_list(
+        Some(RData::List(v)) => Picked::List(
             pos.iter()
-                .map(|p| p.and_then(|i| v.get(i).cloned()).unwrap_or_else(null))
+                .map(|p| p.and_then(|i| v.get(i).cloned()))
                 .collect(),
         ),
-        _ => null(),
+        // An unboxed scalar has no heap object to borrow; it is one element, so
+        // materialising it costs nothing. `h.data_of` and not `data`, which
+        // would re-enter the host borrow this closure already holds.
+        None => match h.data_of(x) {
+            RData::Lgl(v) => Picked::Lgl(
+                pos.iter()
+                    .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
+                    .collect(),
+            ),
+            RData::Int(v) => Picked::Int(
+                pos.iter()
+                    .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
+                    .collect(),
+            ),
+            RData::Dbl(v) => Picked::Dbl(
+                pos.iter()
+                    .map(|p| p.and_then(|i| v.get(i).copied().flatten()))
+                    .collect(),
+            ),
+            _ => Picked::Null,
+        },
+        _ => Picked::Null,
+    });
+    match picked {
+        Picked::Lgl(v) => mk_lgl(v),
+        Picked::Int(v) => mk_int(v),
+        Picked::Dbl(v) => mk_dbl(v),
+        Picked::Str(v) => mk_str(v),
+        // A position that selected nothing is R's `NULL` element; filling it
+        // needs the host, so it happens after the borrow rather than inside it.
+        Picked::List(v) => mk_list(v.into_iter().map(|e| e.unwrap_or_else(null)).collect()),
+        Picked::Null => null(),
     }
 }
 
@@ -1784,7 +1834,7 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[<-", x, args_of(&argv), value);
     }
     match assign_index(&x, &args_of(&argv), &value, false) {
@@ -1797,7 +1847,7 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
     }
     match assign_index(&x, &args_of(&argv), &value, true) {
@@ -1814,7 +1864,7 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
         e.borrow_mut().vars.insert(name, value);
         return x;
     }
-    if matches!(data(&x), RData::RForeign(_)) {
+    if kind(&x) == RKind::RForeign {
         // `df$n <- v` is `df[["n"]] <- v` in R.
         return foreign_index_set(vm, "[[<-", x, vec![(None, scalar_str(name))], value);
     }
@@ -1862,12 +1912,9 @@ fn assign_index(
             return assign_index(x, &[(None, mk_int(lin))], value, false);
         }
     }
-    let is_list = matches!(data(x), RData::List(_))
+    let is_list = kind(x) == RKind::List
         || (single_slot && !is_null(value) && len(value) > 1)
-        || matches!(
-            data(value),
-            RData::List(_) | RData::Closure { .. } | RData::Builtin(_)
-        );
+        || matches!(kind(value), RKind::List | RKind::Closure | RKind::Builtin);
     let mut names = names_of(x);
     let n = len(x);
 
@@ -1959,9 +2006,7 @@ fn assign_index(
     }
 
     // Atomic assignment: promote to the wider of the two types.
-    let rank = with_host(|h| {
-        crate::host::type_rank(&h.data_of(x)).max(crate::host::type_rank(&h.data_of(value)))
-    });
+    let rank = with_host(|h| h.kind_of(x).rank().max(h.kind_of(value).rank()));
     let grow = positions
         .iter()
         .copied()
@@ -2203,7 +2248,19 @@ fn copy_of(x: &Value) -> Value {
 /// count: in R they are ordinary functions, which is what lets
 /// ``Reduce(`+`, 1:4)`` and ``sapply(xs, `[`, 1)`` work.
 pub fn is_primitive(name: &str) -> bool {
-    PRIMITIVES.contains(&name) || OPERATORS.contains(&name)
+    PRIMITIVE_SET.with(|set| set.contains(name))
+}
+
+thread_local! {
+    /// `PRIMITIVES` + `OPERATORS` as a set, built once.
+    ///
+    /// Every call to a function the user has not bound reaches here — `nchar(x)`
+    /// in a loop asks whether `nchar` is a primitive on each iteration — and
+    /// scanning the two slices compared the name against up to 278 strings each
+    /// time. The tables stay slices because they are also the LSP's completion
+    /// corpus and the docs' source of truth, which want the order.
+    static PRIMITIVE_SET: std::collections::HashSet<&'static str, rustc_hash::FxBuildHasher> =
+        PRIMITIVES.iter().chain(OPERATORS).copied().collect();
 }
 
 /// The operators reachable as functions through their backtick names.
@@ -2515,10 +2572,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     // A foreign R object (data frame, S4, raw, …) "infects" the call: rlang's
     // native builtins can't operate on an opaque handle, so the whole call is
     // delegated to embedded R, which does understand it.
-    if args
-        .iter()
-        .any(|(_, v)| matches!(data(v), RData::RForeign(_)))
-    {
+    if args.iter().any(|(_, v)| kind(v) == RKind::RForeign) {
         return cran_call(name, &args);
     }
     // A primitive R treats as generic hands off to a user's S3 method before
@@ -2987,7 +3041,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         }
                     }
                     // An untagged list is a restore: every named element is set.
-                    None if matches!(data(v), RData::List(_)) => {
+                    None if kind(v) == RKind::List => {
                         let elems = match data(v) {
                             RData::List(xs) => xs,
                             _ => unreachable!(),
@@ -3062,13 +3116,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("big.mark")
                 .and_then(|v| str1(&v))
                 .unwrap_or_default();
-            let numeric = matches!(data(&x), RData::Dbl(_) | RData::Int(_));
+            let numeric = matches!(kind(&x), RKind::Dbl | RKind::Int);
             // `scientific = TRUE/FALSE` forces a notation; otherwise the whole
             // vector takes whichever of the two is narrower — the same rule
             // `print` uses, which is why `format(1e6)` is "1e+06" and not
             // "1000000".
             let scientific = a.named("scientific").and_then(|v| lgl1(&v));
-            let is_dbl = matches!(data(&x), RData::Dbl(_));
+            let is_dbl = kind(&x) == RKind::Dbl;
             let base: Vec<Option<String>> = if numeric && (is_dbl || digits.is_some() || nsmall > 0)
             {
                 // `digits` is the significant-digit count, which is exactly what
@@ -3158,7 +3212,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("justify")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| "left".into());
-            let is_str = matches!(data(&x), RData::Str(_));
+            let is_str = kind(&x) == RKind::Str;
             let out = if is_str && justify == "none" {
                 out
             } else if out.len() > 1 || width > 0 {
@@ -3250,8 +3304,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "target")?;
             let y = a.req(1, "current")?;
             let (xs, ys) = (as_dbl(&x), as_dbl(&y));
-            let numeric = matches!(data(&x), RData::Dbl(_) | RData::Int(_))
-                && matches!(data(&y), RData::Dbl(_) | RData::Int(_));
+            let numeric = matches!(kind(&x), RKind::Dbl | RKind::Int)
+                && matches!(kind(&y), RKind::Dbl | RKind::Int);
             if numeric && xs.len() == ys.len() {
                 let tol = 1.5e-8;
                 let mut sum_abs_diff = 0.0;
@@ -3420,7 +3474,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // ranks with `ties.method = "min"` (so `c("b", "b", "a")` is
             // `2 2 1`, where `rank` would average to `2.5 2.5 1`) and keeps NA.
             let x = a.req(0, "x")?;
-            if !is_factor(&x) && matches!(data(&x), RData::Int(_) | RData::Dbl(_)) {
+            if !is_factor(&x) && matches!(kind(&x), RKind::Int | RKind::Dbl) {
                 return Ok(x);
             }
             let key = SortKey::of(&x);
@@ -3633,7 +3687,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .all
                 .iter()
                 .filter(|(t, _)| t.as_deref() != Some("na.rm"))
-                .all(|(_, v)| matches!(data(v), RData::Int(_) | RData::Lgl(_)));
+                .all(|(_, v)| matches!(kind(v), RKind::Int | RKind::Lgl));
             for (tag, v) in a.all.iter() {
                 if tag.as_deref() == Some("na.rm") {
                     continue;
@@ -3839,7 +3893,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 if tag.as_deref() == Some("na.rm") {
                     continue;
                 }
-                if matches!(data(v), RData::Str(_)) {
+                if kind(v) == RKind::Str {
                     is_text = true;
                     strings.extend(as_str(v));
                 } else {
@@ -3931,7 +3985,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect();
             // `cumsum` of an integer/logical vector stays integer (R's rule);
             // `cumprod` is always double.
-            let acc = if name == "cumsum" && matches!(data(&x), RData::Int(_) | RData::Lgl(_)) {
+            let acc = if name == "cumsum" && matches!(kind(&x), RKind::Int | RKind::Lgl) {
                 mk_int(out.into_iter().map(|e| e.map(|v| v as i64)).collect())
             } else {
                 mk_dbl(out)
@@ -3940,7 +3994,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "diff" => {
             let x = a.req(0, "x")?;
-            let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
+            let is_int = matches!(kind(&x), RKind::Int | RKind::Lgl);
             let lag = a
                 .get(1, "lag")
                 .and_then(|v| num1(&v))
@@ -4302,19 +4356,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.numeric" => {
             let x = a.req(0, "x")?;
             Ok(scalar_lgl(
-                matches!(data(&x), RData::Dbl(_) | RData::Int(_)) && !is_factor(&x),
+                matches!(kind(&x), RKind::Dbl | RKind::Int) && !is_factor(&x),
             ))
         }
-        "is.double" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Dbl(_)))),
+        "is.double" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::Dbl)),
         "is.integer" => {
             let x = a.req(0, "x")?;
-            Ok(scalar_lgl(
-                matches!(data(&x), RData::Int(_)) && !is_factor(&x),
-            ))
+            Ok(scalar_lgl(kind(&x) == RKind::Int && !is_factor(&x)))
         }
-        "is.character" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Str(_)))),
-        "is.logical" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::Lgl(_)))),
-        "is.list" => Ok(scalar_lgl(matches!(data(&a.req(0, "x")?), RData::List(_)))),
+        "is.character" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::Str)),
+        "is.logical" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::Lgl)),
+        "is.list" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::List)),
         "is.function" => Ok(scalar_lgl(with_host(|h| {
             h.is_function(&a.req(0, "x").unwrap_or(Value::Undef))
         }))),
@@ -4329,12 +4381,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_lgl(
                 plain
                     && matches!(
-                        data(&x),
-                        RData::Dbl(_)
-                            | RData::Int(_)
-                            | RData::Str(_)
-                            | RData::Lgl(_)
-                            | RData::List(_)
+                        kind(&x),
+                        RKind::Dbl | RKind::Int | RKind::Str | RKind::Lgl | RKind::List
                     ),
             ))
         }
@@ -4639,7 +4687,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     sep.clone()
                 };
                 Some(
-                    regex::Regex::new(&pat)
+                    cached_regex(&pat)
                         .map_err(|e| format!("invalid regular expression '{sep}': {e}"))?,
                 )
             };
@@ -4711,7 +4759,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "regexpr" | "gregexpr" => {
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
-            let re = regex::Regex::new(&pat)
+            let re = cached_regex(&pat)
                 .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
             let x = as_str(&a.req(1, "text")?);
             // R matches all-ASCII input on the byte path and reports that with
@@ -4856,7 +4904,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let nm = names_of(&x);
             if !nm.is_empty() {
                 set_names(&res, nm.clone());
-            } else if matches!(data(&x), RData::Str(_)) && name == "sapply" {
+            } else if kind(&x) == RKind::Str && name == "sapply" {
                 set_names(&res, as_str(&x));
             }
             Ok(if name == "sapply" {
@@ -4878,7 +4926,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if items.is_empty() {
                 let proto = a.req(2, "FUN.VALUE")?;
                 let out = take_positions(&proto, &[]);
-                if matches!(data(&x), RData::Str(_)) {
+                if kind(&x) == RKind::Str {
                     // `mk_str` borrows the host itself, so it has to be built
                     // before the `set_attr` borrow, not inside it.
                     let nv = mk_str(vec![]);
@@ -4896,7 +4944,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let nm = names_of(&x);
             if !nm.is_empty() {
                 set_names(&res, nm);
-            } else if matches!(data(&x), RData::Str(_)) {
+            } else if kind(&x) == RKind::Str {
                 set_names(&res, as_str(&x));
             }
             Ok(simplify(&res))
@@ -4935,7 +4983,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 let nm = names_of(first);
                 if !nm.is_empty() {
                     set_names(&res, nm);
-                } else if matches!(data(first), RData::Str(_)) {
+                } else if kind(first) == RKind::Str {
                     set_names(&res, as_str(first));
                 }
             }
@@ -5181,16 +5229,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
             with_host(|h| h.set_attr(&out, "dim", dim));
             // `dimnames = list(rownames, colnames)`, either element possibly NULL.
-            if let Some(dn) = a
-                .get(4, "dimnames")
-                .filter(|v| !matches!(data(v), RData::Null))
-            {
+            if let Some(dn) = a.get(4, "dimnames").filter(|v| kind(v) != RKind::Null) {
                 let parts = elements(&dn);
                 let pick = |i: usize| -> Option<Vec<Option<String>>> {
-                    parts
-                        .get(i)
-                        .filter(|e| !matches!(data(e), RData::Null))
-                        .map(as_str)
+                    parts.get(i).filter(|e| kind(e) != RKind::Null).map(as_str)
                 };
                 set_dimnames(&out, pick(0), pick(1));
             }
@@ -5500,7 +5542,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     Ok(take_positions(&x, &pos))
                 }
                 // `diag(n)` for a length-1 numeric builds the n×n identity.
-                None if matches!(data(&x), RData::Int(_) | RData::Dbl(_)) && len(&x) == 1 => {
+                None if matches!(kind(&x), RKind::Int | RKind::Dbl) && len(&x) == 1 => {
                     let n = num1(&x).unwrap_or(0.0) as usize;
                     let mut vals = vec![Some(0.0); n * n];
                     for i in 0..n {
@@ -5585,7 +5627,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── environments and dispatch ───────────────────────────────────
         "exists" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
-            Ok(scalar_lgl(with_host(|h| h.exists(&n)) || is_primitive(&n)))
+            // The base constants (`pi`, `letters`, `month.name`, …) are bindings
+            // in R's base environment just as the primitives are, so `exists`
+            // has to see them too — it reported FALSE for `pi` while `get("pi")`
+            // returned 3.141593.
+            Ok(scalar_lgl(
+                with_host(|h| h.exists(&n)) || is_primitive(&n) || base_constant(&n).is_some(),
+            ))
         }
         "get" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
@@ -5605,7 +5653,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "environment" | "new.env" => {
             let e = if name == "new.env" {
                 Rc::new(std::cell::RefCell::new(crate::host::EnvData {
-                    vars: IndexMap::new(),
+                    vars: NameMap::default(),
                     parent: Some(with_host(|h| h.global.clone())),
                 }))
             } else {
@@ -5691,10 +5739,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // Re-invoke the closure that is currently executing, one frame down
             // (the top frame is Recall's own primitive call is not pushed, so the
             // last closure frame is the caller).
-            let fun = with_host(|h| h.frames.last().map(|f| f.fun.clone()));
-            match fun {
-                Some(f) if !matches!(f, Value::Undef) => call_value(&f, a.all.clone(), None),
-                _ => Err("Recall called from outside a closure".into()),
+            let here = with_host(|h| h.frames.last().and_then(|f| f.fun.clone()));
+            match here {
+                Some((id, env)) => {
+                    let f = with_host(|h| h.alloc(RData::Closure { id, env }));
+                    call_value(&f, a.all.clone(), None)
+                }
+                None => Err("Recall called from outside a closure".into()),
             }
         }
         "factor" => {
@@ -5996,7 +6047,7 @@ fn concat(a: &Args) -> Value {
     }
     let rank = parts
         .iter()
-        .map(|(_, v)| with_host(|h| crate::host::type_rank(&h.data_of(v))))
+        .map(|(_, v)| with_host(|h| h.kind_of(v).rank()))
         .max()
         .unwrap_or(1);
 
@@ -6101,7 +6152,7 @@ fn simplify(list: &Value) -> Value {
     // result that is itself a length-1 *list* still simplifies, to a flat list.
     // Bailing on any list element left `sapply(1:2, \(x) list(x))` doubly
     // nested. Longer list results have no matrix form, so those still stay put.
-    if k != 1 && items.iter().any(|v| matches!(data(v), RData::List(_))) {
+    if k != 1 && items.iter().any(|v| kind(v) == RKind::List) {
         return list.clone();
     }
     // Uniform scalar results collapse to a vector; uniform length-k (k > 1)
@@ -6374,7 +6425,7 @@ enum SortKey {
 
 impl SortKey {
     fn of(x: &Value) -> SortKey {
-        if matches!(data(x), RData::Str(_)) {
+        if kind(x) == RKind::Str {
             SortKey::Text(as_str(x))
         } else {
             SortKey::Num(as_dbl(x))
@@ -6801,7 +6852,7 @@ fn factor_levels(x: &Value) -> Vec<String> {
     // Logicals level as their labels, not their 0/1 codes: R's
     // `levels(factor(c(TRUE, FALSE)))` is `"FALSE" "TRUE"`, which the string
     // branch's sort already yields.
-    if matches!(data(x), RData::Int(_) | RData::Dbl(_)) {
+    if matches!(kind(x), RKind::Int | RKind::Dbl) {
         let mut u: Vec<f64> = Vec::new();
         for v in as_dbl(x).into_iter().flatten() {
             if !u.contains(&v) {
@@ -6877,7 +6928,7 @@ fn dimnames_of(x: &Value) -> Vec<Option<Vec<Option<String>>>> {
         Some(dn) => elements(&dn)
             .iter()
             .map(|e| {
-                if matches!(data(e), RData::Null) {
+                if kind(e) == RKind::Null {
                     None
                 } else {
                     Some(as_str(e))
@@ -7040,7 +7091,7 @@ fn cut(a: &Args) -> Result<Value, String> {
         .unwrap_or(3);
     let break_text = break_labels(&breaks, dig_lab);
     let labels: Vec<String> = match a.named("labels") {
-        Some(l) if matches!(data(&l), RData::Str(_)) => as_str(&l).into_iter().flatten().collect(),
+        Some(l) if kind(&l) == RKind::Str => as_str(&l).into_iter().flatten().collect(),
         _ => (0..breaks.len().saturating_sub(1))
             .map(|i| format!("({},{}]", break_text[i], break_text[i + 1]))
             .collect(),
@@ -7153,7 +7204,7 @@ fn signif(v: f64, digits: i32) -> f64 {
 
 /// Compile an R pattern to a `regex::Regex`, honoring `fixed` (literal) and
 /// `ignore.case` (the `(?i)` inline flag).
-fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<regex::Regex, String> {
+fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<Rc<regex::Regex>, String> {
     let body = if fixed {
         regex::escape(pattern)
     } else {
@@ -7164,7 +7215,44 @@ fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<regex::Re
     } else {
         body
     };
-    regex::Regex::new(&full).map_err(|e| format!("invalid regular expression '{pattern}': {e}"))
+    cached_regex(&full).map_err(|e| format!("invalid regular expression '{pattern}': {e}"))
+}
+
+/// How many distinct patterns the cache keeps before it starts over. A script
+/// works with a handful; a program that builds patterns from data could
+/// otherwise grow the cache without bound.
+const RE_CACHE_LIMIT: usize = 512;
+
+thread_local! {
+    /// Compiled regexes, keyed by the exact text handed to the engine.
+    ///
+    /// R's regex primitives are vectorised, so one call already compiles once
+    /// for the whole vector — but a *call in a loop* recompiled every
+    /// iteration, and building the engine (its literal prefilter above all)
+    /// dwarfs matching against a short subject. The failure is cached
+    /// alongside the engine so an invalid pattern keeps erroring on every call
+    /// instead of being quietly accepted the second time.
+    static RE_CACHE: RefCell<
+        std::collections::HashMap<String, Result<Rc<regex::Regex>, String>, rustc_hash::FxBuildHasher>,
+    > = RefCell::new(std::collections::HashMap::default());
+}
+
+/// The compiled form of `full`, built once per distinct pattern.
+fn cached_regex(full: &str) -> Result<Rc<regex::Regex>, String> {
+    RE_CACHE.with(|c| {
+        if let Some(hit) = c.borrow().get(full) {
+            return hit.clone();
+        }
+        let built = regex::Regex::new(full)
+            .map(Rc::new)
+            .map_err(|e| e.to_string());
+        let mut cache = c.borrow_mut();
+        if cache.len() >= RE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(full.to_string(), built.clone());
+        built
+    })
 }
 
 /// `sub`, `gsub`, `grepl`, `grep` over R's default (POSIX-flavored) regex.
@@ -7406,7 +7494,7 @@ fn format_c(a: &Args) -> Result<Value, String> {
     let mut width = a.get(2, "width").and_then(|v| num1(&v)).map(|w| w as i64);
     let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
     let left = flag.contains('-');
-    let is_int = matches!(data(&x), RData::Int(_) | RData::Lgl(_));
+    let is_int = matches!(kind(&x), RKind::Int | RKind::Lgl);
     let format = a
         .get(3, "format")
         .and_then(|v| str1(&v))
@@ -7415,7 +7503,7 @@ fn format_c(a: &Args) -> Result<Value, String> {
     // A character `x`, or an explicit `format = "s"`, is padded to a *display*
     // width and right-justified unless the `-` flag says otherwise — R's
     // `format.char`, not a printf spec. `sprintf` would count bytes.
-    if matches!(data(&x), RData::Str(_)) || format == "s" {
+    if kind(&x) == RKind::Str || format == "s" {
         let w = width.unwrap_or(0);
         let left = left || w < 0;
         let w = w.unsigned_abs() as usize;
@@ -8819,7 +8907,7 @@ fn format_rle(v: &Value) -> Vec<String> {
             .into_iter()
             .map(|s| {
                 let s = s.unwrap_or_else(|| "NA".into());
-                if matches!(data(field), RData::Str(_)) {
+                if kind(field) == RKind::Str {
                     format!("\"{s}\"")
                 } else {
                     s
@@ -8970,7 +9058,7 @@ fn format_vector(v: &Value) -> Vec<String> {
 
     // Character vectors are left-justified; everything else is right-justified.
     // A *named* vector right-justifies both rows regardless of type.
-    let left_align = matches!(data(v), RData::Str(_)) && names.is_empty();
+    let left_align = kind(v) == RKind::Str && names.is_empty();
     let justify = |cell: &str, w: usize| crate::strwidth::pad_display(cell, w, left_align);
 
     if !names.is_empty() {
@@ -9055,7 +9143,7 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
         .collect();
     // Character matrices are left-justified (cells and column headers alike),
     // like character vectors; numeric matrices are right-justified.
-    let left = matches!(data(v), RData::Str(_));
+    let left = kind(v) == RKind::Str;
     let just = |s: &str, w: usize| crate::strwidth::pad_display(s, w, left);
     let mut out = Vec::with_capacity(nr + 1);
     let header = (0..nc)
@@ -9141,7 +9229,7 @@ fn format_list(v: &Value) -> Vec<String> {
 /// Whether `format_value` would lay this value out as a list, i.e. it is a bare
 /// list with no class-specific print method of its own.
 fn is_plain_list(v: &Value) -> bool {
-    !has_print_layout(v) && matches!(data(v), RData::List(_) | RData::Args(_))
+    !has_print_layout(v) && matches!(kind(v), RKind::List | RKind::Args)
 }
 
 /// Render a list, heading each element with the full path taken to reach it.

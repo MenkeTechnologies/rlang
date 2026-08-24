@@ -1173,3 +1173,11 @@ print(format(c("a", "bbb"), justify = "centre"))
 print(format(c("a", "bb"), justify = "right", width = 5))
 print(format(c("ab", "c"), justify = "centre", width = 6))
 print(format(1:2, justify = "right"))
+#==#
+print(exists("pi"))
+print(exists("sum"))
+print(exists("letters"))
+print(exists("month.name"))
+print(exists("no_such_object_zz"))
+x <- 1
+print(exists("x"))

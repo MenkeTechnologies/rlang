@@ -90,6 +90,13 @@ icu_collator = "2.2.1"
 # and observable (`attributes(x)`), so IndexMap is the right container.
 indexmap = "2"
 
+# The hasher behind every environment and attribute map. R resolves a variable
+# by *name* on every read, so the default SipHash — a keyed, DoS-resistant hash
+# built for untrusted keys — was hashing short identifiers on the hottest path
+# in the interpreter. These keys are program identifiers, not attacker input, so
+# the collision-resistance buys nothing. No transitive dependencies.
+rustc-hash = "2"
+
 # Regular expressions for `grepl`/`sub`/`gsub`, which R programs lean on
 # constantly; R's default patterns are POSIX ERE, close enough to the regex
 # crate's syntax for the common cases.
