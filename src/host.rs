@@ -721,7 +721,7 @@ impl RHost {
     }
 
     /// R's `REFCNT`: how many durable references the value has. An unboxed
-    /// scalar has no heap cell at all, so it answers [`REFCNT_MAX`] — never
+    /// scalar has no heap cell at all, so it answers `REFCNT_MAX` — never
     /// eligible for in-place mutation.
     pub fn refcnt(&self, v: &Value) -> u32 {
         match v {
@@ -750,12 +750,7 @@ impl RHost {
     /// assignment skipped with `NULL` the way R's `EnlargeVector` does. `None`
     /// when the value is not a list, which leaves the caller on the rebuild
     /// path.
-    pub fn set_list_elements(
-        &mut self,
-        x: &Value,
-        positions: &[usize],
-        val: &Value,
-    ) -> Option<()> {
+    pub fn set_list_elements(&mut self, x: &Value, positions: &[usize], val: &Value) -> Option<()> {
         let null = self.null();
         let displaced = self.with_data_mut(x, |d| match d {
             RData::List(items) => Some(
@@ -1888,7 +1883,7 @@ pub fn flush_warnings(after_error: bool) {
 
 /// An uncaught error as R's `verrorcall_dflt` writes it: `Error in <call> : `
 /// then the message, folded onto the next line and indented two spaces when the
-/// line would run past [`LONGWARN`]. R allows 14 columns for the decoration
+/// line would run past `LONGWARN`. R allows 14 columns for the decoration
 /// around the call. Without a call it is a bare `Error: `, which is what a
 /// `stop()` at top level produces.
 pub fn error_report(msg: &str, call: Option<&str>) -> String {

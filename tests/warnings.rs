@@ -217,9 +217,7 @@ fn an_error_reports_its_call_and_the_warnings_that_preceded_it() {
 fn an_uncaught_error_shows_the_chain_it_came_through() {
     // `stop`'s own frame, and everything inside it, is dropped from the chain.
     assert_eq!(
-        merged(
-            r#"f <- function() stop("s"); g <- function() f(); h <- function() g(); h()"#
-        ),
+        merged(r#"f <- function() stop("s"); g <- function() f(); h <- function() g(); h()"#),
         "Error in f() : s\nCalls: h -> g -> f\nExecution halted\n"
     );
     // A chain that names only the call the error already reported is dropped:

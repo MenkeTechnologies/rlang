@@ -568,9 +568,9 @@ pub fn run_script(src: &str) -> Result<(), ScriptFailure> {
             // reporting the delegation.
             return Err(match api.last_error() {
                 Some(msg) => ScriptFailure::RError(msg),
-                None => ScriptFailure::Unavailable(format!(
-                    "CRAN bridge: R error evaluating `{code}`"
-                )),
+                None => {
+                    ScriptFailure::Unavailable(format!("CRAN bridge: R error evaluating `{code}`"))
+                }
             });
         }
     }

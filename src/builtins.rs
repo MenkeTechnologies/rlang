@@ -519,7 +519,12 @@ fn b_open_call(vm: &mut VM, _: u8) -> Value {
     // Emitted only where R makes a function context, so the flag is settled
     // here rather than waiting for the callee to resolve.
     let text = vm.peek().clone();
-    with_host(|h| h.calls.push(crate::host::CallCtx { text, closure: true }));
+    with_host(|h| {
+        h.calls.push(crate::host::CallCtx {
+            text,
+            closure: true,
+        })
+    });
     vm.pop()
 }
 
@@ -830,7 +835,12 @@ fn call_fun(f: &Value, args: Vec<(Option<String>, Value)>, call: &str) -> Result
 /// definition would have made, which is what a condition raised inside reports.
 fn push_context(call: &str) {
     let text = Value::str(call);
-    with_host(|h| h.calls.push(crate::host::CallCtx { text, closure: true }));
+    with_host(|h| {
+        h.calls.push(crate::host::CallCtx {
+            text,
+            closure: true,
+        })
+    });
 }
 
 /// The context R's `lapply`-family C code evaluates `FUN` under.
@@ -4174,8 +4184,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     true => Some(format!("{own}(x)")),
                     false => with_host(|h| h.current_call()),
                 };
-                let warn_min =
-                    || signal_warning_in("no non-missing arguments to min; returning Inf", at("min"));
+                let warn_min = || {
+                    signal_warning_in("no non-missing arguments to min; returning Inf", at("min"))
+                };
                 let warn_max = || {
                     signal_warning_in("no non-missing arguments to max; returning -Inf", at("max"))
                 };
@@ -9560,9 +9571,8 @@ fn matrix_fill_warning(lendat: usize, nr: usize, nc: usize) -> Option<String> {
             "data length [{lendat}] is not a sub-multiple or multiple of the number of columns [{nc}]"
         ));
     }
-    (total != lendat).then(|| {
-        format!("data length differs from size of matrix: [{lendat} != {nr} x {nc}]")
-    })
+    (total != lendat)
+        .then(|| format!("data length differs from size of matrix: [{lendat} != {nr} x {nc}]"))
 }
 
 /// R quotes a `$name` list header in backticks when the name is not a syntactic
