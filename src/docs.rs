@@ -1337,6 +1337,21 @@ const ENVIRONMENTS: &[Entry] = &[
         "is.symbol(x)",
         "Whether x is a name, identical to is.name.",
     ),
+    (
+        "sys.call",
+        "sys.call()",
+        "The call that made the frame now running, as a language object. NULL at top level. A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.",
+    ),
+    (
+        "match.call",
+        "match.call()",
+        "The current call with every argument that binds to a named formal carrying that formal's name, and the arguments in formal order. Arguments absorbed by ... keep their own tag and follow.",
+    ),
+    (
+        "sys.function",
+        "sys.function()",
+        "The closure being executed — the function itself, not its call.",
+    ),
 ];
 
 /// The operators, which R makes ordinary functions — that is what lets

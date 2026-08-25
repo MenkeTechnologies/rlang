@@ -491,6 +491,15 @@ pub struct CallCtx {
     /// compiler's own string constant, so opening a context is an `Arc` bump
     /// rather than a copy. Every call pays for this; only a warning reads it.
     pub text: Value,
+    /// Whether the call has actually been entered, or is only open around the
+    /// evaluation of its own arguments. rlang evaluates arguments eagerly but
+    /// opens a closure's context before them, so both states exist here where
+    /// R has a promise instead. The diagnostics want the open call — a warning
+    /// raised while evaluating an argument to `print` reports `print(…)`, as it
+    /// does in R — while `sys.call()` wants the entered one, because a promise
+    /// belongs to the frame whose body wrote it: `h <- function() g(sys.call())`
+    /// answers `h()`, not `g(…)`.
+    pub entered: bool,
     /// Whether *R* would make a function context for this call — R's
     /// `CTXT_FUNCTION`, which every closure sets and no primitive does. It is
     /// decided by the compiler from R's primitive list rather than by what
@@ -1313,12 +1322,31 @@ impl RHost {
     }
 
     fn innermost_context(&self, skip: usize) -> Option<String> {
+        self.enclosing_ctx(skip).map(|c| ctx_text(&c.text))
+    }
+
+    /// The innermost enclosing closure call as whole R source — what
+    /// `sys.call()` parses back into a language object. The same search
+    /// `enclosing_call` runs for the diagnostics, and it skips one frame for
+    /// the same reason: `sys.call()` is itself a call.
+    pub fn enclosing_source(&self) -> Option<String> {
         self.calls
             .iter()
             .rev()
-            .skip(skip)
-            .find(|c| c.closure)
-            .map(|c| ctx_text(&c.text))
+            .skip(1)
+            .find(|c| c.closure && c.entered)
+            .map(|c| ctx_source(&c.text))
+    }
+
+    fn enclosing_ctx(&self, skip: usize) -> Option<&CallCtx> {
+        self.calls.iter().rev().skip(skip).find(|c| c.closure)
+    }
+
+    /// The formals of the closure now executing, for the builtins that have to
+    /// know what a call's arguments were matched *against*.
+    pub fn current_formals(&self) -> Option<Vec<String>> {
+        let (id, _) = self.frames.last()?.fun.as_ref()?;
+        Some(self.closures.get(*id)?.params.clone())
     }
 
     /// Bind `name` in the current environment.

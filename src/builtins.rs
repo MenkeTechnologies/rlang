@@ -12,7 +12,7 @@ use crate::host::{
     call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
     CombinatorKind, RData, RKind, Signal,
 };
-use crate::ast::Expr;
+use crate::ast::{Arg, Expr};
 use fusevm::{Value, VM};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -160,6 +160,55 @@ pub(crate) fn mk_lang(e: Expr) -> Value {
         Expr::Null => null(),
         other => with_host(|h| h.alloc(RData::Lang(other))),
     }
+}
+
+/// Parse one R expression and hand it back as a language object.
+fn parse_one(src: &str) -> Result<Value, String> {
+    let mut exprs = crate::parser::parse(src)?;
+    match exprs.len() {
+        1 => Ok(mk_lang(exprs.remove(0))),
+        _ => Err(format!("not a single expression: {src}")),
+    }
+}
+
+/// `src` re-written the way `match.call()` shows it: every argument that binds
+/// to a named formal carries that formal's name, and the arguments come back in
+/// formal order. Arguments that went to `...` keep their own tag (or none) and
+/// stay in the order written, after the named ones — which is where R puts
+/// them.
+///
+/// `None` when the source is not a call at all, which leaves the caller to hand
+/// back the expression unchanged.
+fn matched_call(src: &str, params: &[String]) -> Result<Option<Expr>, String> {
+    let mut exprs = crate::parser::parse(src)?;
+    if exprs.len() != 1 {
+        return Ok(None);
+    }
+    let Expr::Call { fun, args } = exprs.remove(0) else {
+        return Ok(None);
+    };
+    let tags: Vec<Option<String>> = args.iter().map(|a| a.name.clone()).collect();
+    let to = crate::host::match_positions(params, &tags)?;
+    // Formal order first: walk the formals and emit whichever argument matched.
+    let mut out: Vec<Arg> = Vec::with_capacity(args.len());
+    for (pi, p) in params.iter().enumerate() {
+        if p == "..." {
+            continue;
+        }
+        if let Some(ai) = to.iter().position(|slot| *slot == Some(pi)) {
+            out.push(Arg {
+                name: Some(p.clone()),
+                value: args[ai].value.clone(),
+            });
+        }
+    }
+    // …then the ones that fell through to `...`, in the order written.
+    for (ai, arg) in args.iter().enumerate() {
+        if to[ai].is_none() {
+            out.push(arg.clone());
+        }
+    }
+    Ok(Some(Expr::Call { fun, args: out }))
 }
 
 /// How many parts [`lang_parts`] would produce, counted without building any of
@@ -683,6 +732,8 @@ fn b_open_call(vm: &mut VM, _: u8) -> Value {
         h.calls.push(crate::host::CallCtx {
             text,
             closure: true,
+            // Open, not entered: what runs next is the argument list.
+            entered: false,
         })
     });
     vm.pop()
@@ -729,15 +780,20 @@ fn call_op(vm: &mut VM, opened: bool) -> Value {
     // With `OPEN_CALL` the context is already open, and already flagged: the
     // compiler emits it exactly where R makes one. Without it the callee is one
     // R implements as a primitive and makes no context for — unless the name
-    // has been rebound to a closure, which does.
-    if !opened {
-        with_host(|h| {
-            h.calls.push(crate::host::CallCtx {
-                text: call,
-                closure,
-            })
-        });
-    }
+    // has been rebound to a closure, which does. Either way the call is being
+    // *entered* now: its arguments are evaluated.
+    with_host(|h| match opened {
+        true => {
+            if let Some(c) = h.calls.last_mut() {
+                c.entered = true;
+            }
+        }
+        false => h.calls.push(crate::host::CallCtx {
+            text: call,
+            closure,
+            entered: true,
+        }),
+    });
     let out = call_value(&f, args, name);
     with_host(|h| {
         // A primitive that failed by returning `Err` has recorded no call, and
@@ -999,6 +1055,7 @@ fn push_context(call: &str) {
         h.calls.push(crate::host::CallCtx {
             text,
             closure: true,
+            entered: true,
         })
     });
 }
@@ -2076,6 +2133,15 @@ fn index_double(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
         let key = str1(idx).unwrap_or_default();
         return Ok(e.borrow().vars.get(&key).cloned().unwrap_or_else(null));
     }
+    // A call indexes into its own parts: `quote(f(1))[[1]]` is the name `f`.
+    if let RData::Lang(e) = data(x) {
+        let parts = lang_parts(&e);
+        let i = num1(idx).unwrap_or(0.0) as usize;
+        return match i.checked_sub(1).and_then(|i| parts.get(i)) {
+            Some((_, v)) => Ok(v.clone()),
+            None => Err("subscript out of bounds".into()),
+        };
+    }
     let names = names_of(x);
     let i = match data(idx) {
         RData::Str(k) => {
@@ -2939,6 +3005,9 @@ pub const PRIMITIVES: &[&str] = &[
     "bquote",
     "as.name",
     "as.symbol",
+    "sys.call",
+    "match.call",
+    "sys.function",
     "is.call",
     "is.name",
     "is.symbol",
@@ -3095,6 +3164,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "as.list" => {
             let x = a.req(0, "x")?;
+            // A call becomes the list of its parts, tagged where an argument
+            // was named — `as.list(quote(f(a = 1)))` keeps the `a`.
+            if let RData::Lang(e) = data(&x) {
+                let parts = lang_parts(&e);
+                let out = mk_list(parts.iter().map(|(_, v)| v.clone()).collect());
+                // An untagged argument becomes an *empty* name, not a missing
+                // one: R heads it `[[i]]`, where an `NA` name heads `$<NA>`.
+                if parts.iter().any(|(t, _)| t.is_some()) {
+                    let nm = parts
+                        .iter()
+                        .map(|(t, _)| Some(t.clone().unwrap_or_default()))
+                        .collect();
+                    set_names(&out, nm);
+                }
+                return Ok(out);
+            }
             let out = mk_list(elements(&x));
             let nm = names_of(&x);
             if !nm.is_empty() {
@@ -3515,6 +3600,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "deparse" => {
             let x = a.req(0, "expr")?;
+            // A lone name deparses to its bare text — R backquotes a
+            // non-syntactic name inside an expression (`` `my var` + 1 ``) but
+            // not when it is the whole expression.
+            if let RData::Sym(n) = data(&x) {
+                return Ok(scalar_str(n));
+            }
             // An expression deparses to its own source lines, one character
             // element per line, the way a function's does.
             if let Some(e) = lang_of(&x) {
@@ -6351,6 +6442,35 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 _ => Err(format!("invalid expression in quote: {src}")),
             }
         }
+        // `sys.call()` is the call that made the frame now running, verbatim.
+        // The context stack holds its deparse; parsing that back is what makes
+        // it an expression rather than a string.
+        "sys.call" => Ok(match with_host(|h| h.enclosing_source()) {
+            Some(src) => parse_one(&src)?,
+            None => null(),
+        }),
+        // `match.call()` is the same call with every argument named and put in
+        // formal order — what R's own `match.arg` and `update` read to find out
+        // how they were called.
+        "match.call" => {
+            let Some(src) = with_host(|h| h.enclosing_source()) else {
+                return Ok(null());
+            };
+            let Some(params) = with_host(|h| h.current_formals()) else {
+                return parse_one(&src);
+            };
+            match matched_call(&src, &params)? {
+                Some(e) => Ok(mk_lang(e)),
+                None => parse_one(&src),
+            }
+        }
+        // `sys.function()` is the closure being executed, not its call.
+        "sys.function" => Ok(with_host(|h| {
+            match h.frames.last().and_then(|f| f.fun.clone()) {
+                Some((id, env)) => h.alloc(RData::Closure { id, env }),
+                None => h.null(),
+            }
+        })),
         "as.name" | "as.symbol" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
             Ok(with_host(|h| h.alloc(RData::Sym(n))))
@@ -9229,7 +9349,12 @@ fn format_value_body(v: &Value) -> Vec<String> {
         // An unevaluated expression prints as its source, unquoted and
         // unindexed — `print(quote(f(1)))` is `f(1)`, not `[1] "f(1)"`.
         RData::Lang(e) => crate::deparse::deparse_all_lines(&e),
-        RData::Sym(n) => vec![n],
+        // A name prints backquoted unless the parser would read it back as the
+        // same symbol — `as.name("+")` shows as `+` in backticks.
+        RData::Sym(n) => vec![match crate::deparse::is_syntactic_name(&n) {
+            true => n,
+            false => format!("`{n}`"),
+        }],
         RData::Args(_) => format_list(v),
         RData::List(_) => format_list(v),
         _ => {
