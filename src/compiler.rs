@@ -1189,6 +1189,7 @@ impl Compiler {
         match target {
             Expr::Index { kind, obj, args } => {
                 self.expr(b, obj)?;
+                self.mark_shared_intermediate(b, obj);
                 match kind {
                     IndexKind::Dollar | IndexKind::At => {
                         match args.first().and_then(|a| a.value.clone()) {
@@ -1230,6 +1231,21 @@ impl Compiler {
         }
     }
 
+    /// The object of an assignment target has just been pushed. When it is a
+    /// bare variable, its reference count describes exactly how many bindings
+    /// can see it, so `x[i] <- v` may write into it. When it is anything else
+    /// (`x$a[i] <- v`, `f(x)[i] <- v`) the pushed value is an element of some
+    /// container, and the count on the element says nothing about how many
+    /// bindings reach the container — so it is pinned shared and the write
+    /// rebuilds, as it did before reference counting existed. R reaches the
+    /// same place from the other direction: `EnsureLocal` duplicates a shared
+    /// container, and the duplicate increments every element it shares.
+    fn mark_shared_intermediate(&mut self, b: &mut ChunkBuilder, obj: &Expr) {
+        if !matches!(obj, Expr::Ident(_) | Expr::Str(_)) {
+            b.emit(Op::CallBuiltin(ops::MARK_SHARED, 1), 0);
+        }
+    }
+
     /// Assign the value already on top of the stack to `target`.
     fn assign_stack(
         &mut self,
@@ -1249,6 +1265,7 @@ impl Compiler {
             Expr::Index { kind, obj, args } => {
                 // Stack: [value]. Build [obj, args, value] with a rotate.
                 self.expr(b, obj)?;
+                self.mark_shared_intermediate(b, obj);
                 match kind {
                     IndexKind::Dollar | IndexKind::At => {
                         match args.first().and_then(|a| a.value.clone()) {

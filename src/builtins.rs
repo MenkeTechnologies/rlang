@@ -88,6 +88,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SET_VISIBLE, b_set_visible);
     vm.register_builtin(ops::SWITCH_INDEX, b_switch_index);
     vm.register_builtin(ops::WARN_FLUSH, b_warn_flush);
+    vm.register_builtin(ops::MARK_SHARED, b_mark_shared);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -1830,6 +1831,36 @@ fn index_double(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     }
 }
 
+/// `MARK_SHARED`: pin the value on top of the stack as permanently shared.
+fn b_mark_shared(vm: &mut VM, _: u8) -> Value {
+    let v = vm.peek().clone();
+    with_host(|h| h.mark_shared(&v));
+    vm.pop()
+}
+
+/// Whether `x` may be written into rather than rebuilt — R's `!MAYBE_SHARED`,
+/// plus the references R does not need to count and rlang does.
+///
+/// R counts bindings, containers and the argument promise, and relies on the
+/// promise to cover an argument that is mid-evaluation. rlang evaluates
+/// arguments eagerly, so a value that has already been computed for the current
+/// call sits on the fusevm operand stack instead of in a promise, and a
+/// slot-bound top-level local (see `compiler::slot_locals`) sits in the VM's
+/// `globals` rather than in an environment. Neither is reachable from the
+/// reference count, so both are scanned here. Both are small — the operand
+/// stack is a handful of pending operands, `globals` is one entry per name in
+/// the chunk — and the scan only runs once the count has already agreed.
+fn may_mutate(vm: &VM, x: &Value) -> bool {
+    let Value::Obj(i) = x else { return false };
+    if !with_host(|h| h.may_mutate(x)) {
+        return false;
+    }
+    let same = |o: &Value| matches!(o, Value::Obj(j) if j == i);
+    !vm.stack.iter().any(same)
+        && !vm.globals.iter().any(same)
+        && !vm.frames.iter().any(|f| f.slots.iter().any(same))
+}
+
 fn b_index_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
@@ -1837,7 +1868,8 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[<-", x, args_of(&argv), value);
     }
-    match assign_index(&x, &args_of(&argv), &value, false) {
+    let inplace = may_mutate(vm, &x);
+    match assign_index(&x, &args_of(&argv), &value, false, inplace) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -1850,7 +1882,8 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
     }
-    match assign_index(&x, &args_of(&argv), &value, true) {
+    let inplace = may_mutate(vm, &x);
+    match assign_index(&x, &args_of(&argv), &value, true, inplace) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -1861,7 +1894,7 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
     let x = vm.pop();
     if let RData::Environment(e) = data(&x) {
-        e.borrow_mut().vars.insert(name, value);
+        with_host(|h| h.bind(&e, &name, value));
         return x;
     }
     if kind(&x) == RKind::RForeign {
@@ -1870,7 +1903,8 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     }
     let key = scalar_str(name);
     let args = vec![(None, key)];
-    match assign_index(&x, &args, &value, true) {
+    let inplace = may_mutate(vm, &x);
+    match assign_index(&x, &args, &value, true, inplace) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -1884,6 +1918,7 @@ fn assign_index(
     args: &[(Option<String>, Value)],
     value: &Value,
     single_slot: bool,
+    inplace: bool,
 ) -> Result<Value, String> {
     // `a[i, j, …] <- v`: turn the N-D selection into linear column-major
     // positions and reuse the 1-D path (which promotes type and preserves the
@@ -1898,7 +1933,7 @@ fn assign_index(
                 let (pos, _) = array_positions(args, &d, &dimnames_of(x))?;
                 let lin: Vec<Option<i64>> =
                     pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
-                return assign_index(x, &[(None, mk_int(lin))], value, false);
+                return assign_index(x, &[(None, mk_int(lin))], value, false, inplace);
             }
         }
     }
@@ -1909,7 +1944,7 @@ fn assign_index(
     // read path. `[[` never takes a matrix subscript, so `single_slot` is out.
     if !single_slot && args.len() == 1 {
         if let Some(lin) = matrix_subscript(x, idx)? {
-            return assign_index(x, &[(None, mk_int(lin))], value, false);
+            return assign_index(x, &[(None, mk_int(lin))], value, false, inplace);
         }
     }
     let is_list = kind(x) == RKind::List
@@ -1947,6 +1982,61 @@ fn assign_index(
                     Some(i) => positions.push(i),
                     None => return Err("NAs are not allowed in subscripted assignments".into()),
                 }
+            }
+        }
+    }
+
+    // R's reference-count rule (`REFCNT`, real counting since R 4.0): a value
+    // nothing else holds is written into, and only a shared one is copied
+    // first. Everything below this point rebuilds the vector, which is what
+    // made `for (i in 1:n) x[i] <- v` — R's most idiomatic loop — quadratic.
+    //
+    // The write is only equivalent to the rebuild when nothing about the
+    // object's shape changes: no growth, no new name, and no type promotion.
+    // Anything else falls through to the general path.
+    if inplace
+        && new_names.is_empty()
+        && positions.iter().all(|p| *p < n)
+        && !positions.is_empty()
+    {
+        let xk = kind(x);
+        let vk = kind(value);
+        if is_list
+            && xk == RKind::List
+            && single_slot
+            && !is_null(value)
+            && with_host(|h| h.set_list_elements(x, &positions, value)).is_some()
+        {
+            return Ok(x.clone());
+        }
+        if !is_list && vk.rank() <= xk.rank() {
+            // The four atomic arms differ only in the vector type they coerce
+            // the replacement to before splicing it in; `None` (a type the
+            // in-place path does not handle) and `false` (the handle turned out
+            // to hold something else) both leave the rebuild path to run.
+            macro_rules! write_into {
+                ($variant:ident, $coerce:expr) => {{
+                    let s = $coerce;
+                    with_host(|h| {
+                        h.with_data_mut(x, |d| match d {
+                            RData::$variant(v) => {
+                                splice(v, &positions, &s, n);
+                                true
+                            }
+                            _ => false,
+                        })
+                    })
+                }};
+            }
+            let wrote = match xk {
+                RKind::Lgl => write_into!(Lgl, as_lgl(value)),
+                RKind::Int => write_into!(Int, as_int(value)),
+                RKind::Dbl => write_into!(Dbl, as_dbl(value)),
+                RKind::Str => write_into!(Str, as_str(value)),
+                _ => None,
+            };
+            if wrote == Some(true) {
+                return Ok(x.clone());
             }
         }
     }

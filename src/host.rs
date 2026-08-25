@@ -124,6 +124,11 @@ pub mod ops {
     /// finishes, then prints the whole batch, so this is where a top-level
     /// expression ends as far as the warning machinery is concerned.
     pub const WARN_FLUSH: u16 = 56;
+    /// `[v]` → v, marked permanently shared. Emitted for the intermediate of a
+    /// nested assignment target (`x$a[i] <- v`), whose object is an element of
+    /// a container rather than the value of a binding, so the reference count
+    /// on it does not describe how many bindings can see it.
+    pub const MARK_SHARED: u16 = 57;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -167,11 +172,92 @@ pub enum Signal {
     Return(Value),
 }
 
-/// One R value: its data and its attributes (`names`, `dim`, `class`, …).
+/// One R value: its data, its attributes (`names`, `dim`, `class`, …), and the
+/// count of durable references to it.
+///
+/// `refcnt` is R's `REFCNT` (true reference counting since R 4.0, where `NAMED`
+/// used to be a saturating 0/1/2 approximation). It counts the places that
+/// *keep* the object — an environment binding, an attribute slot, a list
+/// element, a call frame's argument list — and deliberately not the operand
+/// stack, exactly as R does not count C-stack references. A value with a count
+/// of one is mutated in place by `x[i] <- v`; anything above one is copied
+/// first. See [`RHost::may_mutate`].
 #[derive(Clone)]
 pub struct RObj {
     pub data: RData,
     pub attrs: NameMap,
+    pub refcnt: u32,
+}
+
+/// The count at which reference counting stops. R's `REFCNTMAX` works the same
+/// way: once a value has been referenced this many times the count saturates
+/// and never decrements again, so the value stays permanently shared rather
+/// than risking an undercount.
+const REFCNT_MAX: u32 = u32::MAX;
+
+/// Take a durable reference to `v` — R's `INCREMENT_REFCNT`.
+///
+/// A call-site argument list (`RData::Args`) is the one container that does not
+/// count its elements when it is built: it exists for the duration of one call
+/// and counting there would leave every argument of every call permanently
+/// shared, which is the pessimisation this whole mechanism exists to avoid.
+/// Binding one to a name — which is how `...` becomes durable — counts them
+/// here instead, and [`release`] gives them back.
+fn retain(heap: &mut [RObj], v: &Value) {
+    let Value::Obj(i) = v else { return };
+    let nested = {
+        let Some(o) = heap.get_mut(*i as usize) else {
+            return;
+        };
+        if o.refcnt == REFCNT_MAX {
+            return;
+        }
+        o.refcnt += 1;
+        match &o.data {
+            RData::Args(items) => items.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        }
+    };
+    for v in &nested {
+        retain(heap, v);
+    }
+}
+
+/// Give up a durable reference to `v` — R's `DECREMENT_REFCNT`.
+fn release(heap: &mut [RObj], v: &Value) {
+    let Value::Obj(i) = v else { return };
+    let nested = {
+        let Some(o) = heap.get_mut(*i as usize) else {
+            return;
+        };
+        if o.refcnt == REFCNT_MAX || o.refcnt == 0 {
+            return;
+        }
+        o.refcnt -= 1;
+        match &o.data {
+            RData::Args(items) => items.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        }
+    };
+    for v in &nested {
+        release(heap, v);
+    }
+}
+
+/// Bind `name` to `val` in `env`, keeping the counts R's `SETCAR` keeps: the
+/// new value gains a reference, the one it displaces loses one, and rebinding a
+/// name to the object it already holds changes neither. That last rule is what
+/// lets `x[i] <- v` re-bind `x` to the vector it just mutated in place without
+/// marking it shared — R's `SETCAR` has the same early return.
+fn bind_in(heap: &mut [RObj], env: &Env, name: &str, val: Value) {
+    let old = env.borrow_mut().vars.insert(name.to_string(), val.clone());
+    if old.as_ref() == Some(&val) {
+        return;
+    }
+    if let Some(o) = old {
+        release(heap, &o);
+    }
+    retain(heap, &val);
 }
 
 /// The R data types rlang represents. Atomic vectors hold `Option<T>`, where
@@ -536,8 +622,93 @@ impl RHost {
 
     /// Allocate `data` carrying `attrs`.
     pub fn alloc_with(&mut self, data: RData, attrs: NameMap) -> Value {
-        self.heap.push(RObj { data, attrs });
+        // A container holds a durable reference to each element, the way R's
+        // `SET_VECTOR_ELT` and `setAttrib` increment what they store. rlang
+        // builds a container by allocating a fresh one, so this is the single
+        // site where a list's or a combinator's elements are counted.
+        match &data {
+            RData::List(xs) => {
+                for v in xs {
+                    retain(&mut self.heap, v);
+                }
+            }
+            RData::Combinator { inner, .. } => retain(&mut self.heap, inner),
+            _ => {}
+        }
+        for v in attrs.values() {
+            retain(&mut self.heap, v);
+        }
+        self.heap.push(RObj {
+            data,
+            attrs,
+            refcnt: 0,
+        });
         Value::Obj((self.heap.len() - 1) as u32)
+    }
+
+    /// R's `REFCNT`: how many durable references the value has. An unboxed
+    /// scalar has no heap cell at all, so it answers [`REFCNT_MAX`] — never
+    /// eligible for in-place mutation.
+    pub fn refcnt(&self, v: &Value) -> u32 {
+        match v {
+            Value::Obj(i) => self.heap.get(*i as usize).map_or(REFCNT_MAX, |o| o.refcnt),
+            _ => REFCNT_MAX,
+        }
+    }
+
+    /// R's `!MAYBE_SHARED`: whether nothing but the binding being assigned
+    /// through holds this object, so `x[i] <- v` may write into it rather than
+    /// rebuilding it.
+    pub fn may_mutate(&self, v: &Value) -> bool {
+        self.refcnt(v) <= 1
+    }
+
+    /// Run `f` on a heap object's data in place. The caller must have
+    /// established [`RHost::may_mutate`] first — this is the write half of R's
+    /// reference-count rule and there is no other way to reach it.
+    pub fn with_data_mut<R>(&mut self, v: &Value, f: impl FnOnce(&mut RData) -> R) -> Option<R> {
+        self.get_mut(v).map(|o| f(&mut o.data))
+    }
+
+    /// Write `val` into a list's slots in place, keeping the element counts:
+    /// each slot written takes a reference to `val` and gives back the one it
+    /// held. `None` when the value is not a list, which leaves the caller on
+    /// the rebuild path.
+    pub fn set_list_elements(
+        &mut self,
+        x: &Value,
+        positions: &[usize],
+        val: &Value,
+    ) -> Option<()> {
+        let displaced = self.with_data_mut(x, |d| match d {
+            RData::List(items) => Some(
+                positions
+                    .iter()
+                    .map(|p| std::mem::replace(&mut items[*p], val.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })??;
+        for old in &displaced {
+            release(&mut self.heap, old);
+        }
+        for _ in 0..positions.len() {
+            retain(&mut self.heap, val);
+        }
+        Some(())
+    }
+
+    /// Mark a value permanently shared, so no later `x[i] <- v` writes into it.
+    /// The compiler emits this for the intermediate of a *nested* assignment
+    /// target (`x$a[i] <- v`), whose object is an element of a container rather
+    /// than the value of a binding: R reaches the same conclusion by having
+    /// `EnsureLocal`'s shallow duplicate increment every element it shares.
+    pub fn mark_shared(&mut self, v: &Value) {
+        if let Value::Obj(i) = v {
+            if let Some(o) = self.heap.get_mut(*i as usize) {
+                o.refcnt = REFCNT_MAX;
+            }
+        }
     }
 
     /// The object behind a handle, if the value is one.
@@ -623,12 +794,22 @@ impl RHost {
     /// Set (or, with `NULL`, remove) one attribute in place.
     pub fn set_attr(&mut self, v: &Value, name: &str, val: Value) {
         let is_null = matches!(self.data_of(&val), RData::Null);
-        if let Some(o) = self.get_mut(v) {
-            if is_null {
-                o.attrs.shift_remove(name);
-            } else {
-                o.attrs.insert(name.to_string(), val);
-            }
+        let Some(o) = self.get_mut(v) else { return };
+        let old = if is_null {
+            o.attrs.shift_remove(name)
+        } else {
+            o.attrs.insert(name.to_string(), val.clone())
+        };
+        // An attribute slot is a durable reference, like a binding: the value it
+        // held loses one and the value replacing it gains one.
+        if old.as_ref() == Some(&val) {
+            return;
+        }
+        if let Some(o) = old {
+            release(&mut self.heap, &o);
+        }
+        if !is_null {
+            retain(&mut self.heap, &val);
         }
     }
 
@@ -1003,7 +1184,14 @@ impl RHost {
 
     /// Bind `name` in the current environment.
     pub fn set_var(&mut self, name: &str, val: Value) {
-        self.env().borrow_mut().vars.insert(name.to_string(), val);
+        let env = self.env();
+        bind_in(&mut self.heap, &env, name, val);
+    }
+
+    /// Bind `name` in `env`, maintaining reference counts. Used by the call
+    /// machinery, which binds into a frame environment that is not yet current.
+    pub fn bind(&mut self, env: &Env, name: &str, val: Value) {
+        bind_in(&mut self.heap, env, name, val);
     }
 
     /// Bind `name` in a binding environment (`<<-`): the first enclosing frame
@@ -1013,12 +1201,13 @@ impl RHost {
         while let Some(cur) = e {
             let has = cur.borrow().vars.contains_key(name);
             if has {
-                cur.borrow_mut().vars.insert(name.to_string(), val);
+                bind_in(&mut self.heap, &cur, name, val);
                 return;
             }
             e = cur.borrow().parent.clone();
         }
-        self.global.borrow_mut().vars.insert(name.to_string(), val);
+        let g = self.global.clone();
+        bind_in(&mut self.heap, &g, name, val);
     }
 
     /// Whether a name is bound anywhere in the chain.
@@ -1561,13 +1750,18 @@ pub fn call_closure(
     }
     let frame_env = new_env(Some(env.clone()));
     let bindings = match_args(&params, &args)?;
-    {
-        let mut e = frame_env.borrow_mut();
-        for (k, v) in bindings {
-            e.vars.insert(k, v);
-        }
-    }
     with_host(|h| {
+        for (k, v) in bindings {
+            h.bind(&frame_env, &k, v);
+        }
+    });
+    with_host(|h| {
+        // The frame keeps the evaluated arguments for `UseMethod`/`NextMethod`
+        // to re-dispatch on, so they are durable references for as long as the
+        // call runs — R's promise holds the same reference.
+        for (_, v) in &args {
+            retain(&mut h.heap, v);
+        }
         // The dispatch that selected this method, if it was one — set just
         // before the call so `NextMethod` in the body can continue it.
         let dispatch = h.pending_dispatch.take();
@@ -1586,7 +1780,21 @@ pub fn call_closure(
     // frame before the result is propagated.
     let exits = with_host(|h| {
         let e = h.frames.last_mut().map(|f| std::mem::take(&mut f.on_exit));
-        h.frames.pop();
+        // Leaving the frame gives back every reference it held: its arguments
+        // always, and its bindings when the environment dies with it — which it
+        // does unless a closure defined inside captured it, or `environment()`
+        // handed it out, in which case another `Rc` is still alive.
+        if let Some(f) = h.frames.pop() {
+            for (_, v) in &f.args {
+                release(&mut h.heap, v);
+            }
+            if Rc::strong_count(&f.env) == 1 {
+                let held: Vec<Value> = f.env.borrow().vars.values().cloned().collect();
+                for v in &held {
+                    release(&mut h.heap, v);
+                }
+            }
+        }
         e.unwrap_or_default()
     });
     // `run_chunk` has already moved any error out of the host and into `out`,
