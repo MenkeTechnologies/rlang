@@ -9395,6 +9395,10 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     let row_labels: Vec<String> = (0..nr)
         .map(|r| dn_at(0, r).unwrap_or_else(|| format!("[{},]", r + 1)))
         .collect();
+    // R's `MatrixRowLabel` pads a *name* on the right and a generated `[i,]` on
+    // the left, so a 10-row matrix's labels line up on the comma: ` [9,]` then
+    // `[10,]`.
+    let row_names = dn.first().and_then(|o| o.as_ref()).is_some();
     let col_labels: Vec<String> = (0..nc)
         .map(|c| dn_at(1, c).unwrap_or_else(|| format!("[,{}]", c + 1)))
         .collect();
@@ -9423,31 +9427,65 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     let left = kind(v) == RKind::Str;
     let just = |s: &str, w: usize| crate::strwidth::pad_display(s, w, left);
     let mut out = Vec::with_capacity(nr + 1);
-    let header = (0..nc)
-        .map(|c| just(&col_labels[c], widths[c]))
-        .collect::<Vec<_>>()
-        .join(" ");
     // With no columns there is nothing after the label gutter, and R does not
     // leave the separating space dangling — the header is a bare run of spaces
     // and each row is its label alone.
     let sep = if nc == 0 { "" } else { " " };
-    out.push(format!("{:w$}{sep}{header}", "", w = label_w));
-    for (r, label) in row_labels.iter().enumerate() {
-        let row = (0..nc)
-            .map(|c| {
-                just(
-                    &cells.get(c * nr + r).cloned().unwrap_or_default(),
-                    widths[c],
-                )
-            })
+    for (first, last) in column_blocks(&widths, label_w) {
+        let header = (first..last)
+            .map(|c| just(&col_labels[c], widths[c]))
             .collect::<Vec<_>>()
             .join(" ");
-        out.push(format!(
-            "{}{sep}{row}",
-            crate::strwidth::pad_display(label, label_w, true)
-        ));
+        out.push(format!("{:w$}{sep}{header}", "", w = label_w));
+        for (r, label) in row_labels.iter().enumerate() {
+            let row = (first..last)
+                .map(|c| {
+                    just(
+                        &cells.get(c * nr + r).cloned().unwrap_or_default(),
+                        widths[c],
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push(format!(
+                "{}{sep}{row}",
+                crate::strwidth::pad_display(label, label_w, row_names)
+            ));
+        }
     }
     out
+}
+
+/// Split a matrix's columns into the runs R prints one under the other —
+/// `printarray.c`'s `_PRINT_MATRIX_` loop, which lays down as many columns as
+/// fit `getOption("width")` and starts a fresh header for the rest.
+///
+/// Each column costs its own width plus the one-space gap, and the row-label
+/// gutter is charged once per block. A block always takes at least one column,
+/// however wide, and then takes the next only while the running width *plus*
+/// that column stays strictly under the limit — R's `<`, not `<=`, which is
+/// what leaves its full lines one column short of 80.
+fn column_blocks(widths: &[usize], label_w: usize) -> Vec<(usize, usize)> {
+    if widths.is_empty() {
+        return vec![(0, 0)];
+    }
+    const WIDTH: usize = 80;
+    let mut blocks = Vec::new();
+    let mut first = 0;
+    while first < widths.len() {
+        let mut last = first;
+        let mut width = label_w;
+        loop {
+            width += widths[last] + 1;
+            last += 1;
+            if last >= widths.len() || width + widths[last] + 1 >= WIDTH {
+                break;
+            }
+        }
+        blocks.push((first, last));
+        first = last;
+    }
+    blocks
 }
 
 /// R quotes a `$name` list header in backticks when the name is not a syntactic

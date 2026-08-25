@@ -214,8 +214,13 @@ impl RApi {
         // Shape has to cross the bridge too, or every base function rlang
         // delegates sees a matrix as a bare vector: `upper.tri(m)` returned nine
         // `FALSE`s for a 3x3 because R was handed a dimensionless length-9
-        // vector. `dim` and `dimnames` marshal like any other attribute.
-        for key in ["dim", "dimnames"] {
+        // vector. `dim` and `dimnames` marshal like any other attribute, and so
+        // do `levels` and `class`, without which a factor crosses as the bare
+        // integer codes and `str(f)` answers `int [1:2] 1 2` rather than
+        // `Factor w/ 2 levels`. `class` goes last: it is what a delegated
+        // function dispatches on, and the attributes it dispatches *about* have
+        // to be in place first.
+        for key in ["dim", "dimnames", "levels", "class"] {
             let Some(a) = with_host(|h| h.attr(v, key)) else {
                 continue;
             };

@@ -1259,3 +1259,16 @@ print(pmin(c(1, 2, 3), c(1, 2)))
 print(pmax(c(1, 2, 3), c(1, 2)))
 print(log(-1))
 print(log(c(-1, 1)))
+#==#
+print(matrix(1:60, 3, 20))
+print(matrix(1:200, 10, 20))
+#==#
+print(matrix(paste0("value", 1:20), 2, 10))
+print(matrix(1:60, 20, 3))
+m <- matrix(1:40, 2, 20, dimnames = list(c("alpha", "beta"), paste0("col", 1:20)))
+print(m)
+#==#
+str(factor(c("a", "b")))
+str(structure(1:2, class = "foo"))
+str(1:5)
+str(list(a = 1, b = "x"))
