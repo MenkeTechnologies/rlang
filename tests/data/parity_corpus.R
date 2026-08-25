@@ -1485,3 +1485,14 @@ g <- function() {
 }
 h <- g()
 print(ls(environment(h)))
+#==#
+print(head(matrix(1:20, 4), 2))
+print(tail(matrix(1:20, 4), 2))
+m <- matrix(1:20, 4, dimnames = list(letters[1:4], NULL))
+print(head(m, 2))
+print(tail(m, -1))
+n <- matrix(1:6, 3, dimnames = list(NULL, c("a", "b")))
+print(tail(n, 2))
+print(head(1:10, -7))
+print(Map(function(k, v) paste0(k, v), c("a", "b"), 1:2))
+print(mapply(function(x, y) x + y, c(a = 1, b = 2), c(3, 4)))

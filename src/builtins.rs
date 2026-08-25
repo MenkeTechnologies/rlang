@@ -221,6 +221,63 @@ fn inline_call_text(f: &Value) -> String {
     }
 }
 
+/// The row count of a two-dimensional value, or `None` for anything else —
+/// `head`/`tail` only have a matrix method for rank 2.
+fn matrix_rows(x: &Value) -> Option<usize> {
+    let dim = with_host(|h| h.attr(x, "dim"))?;
+    let d = as_int(&dim);
+    match d.len() {
+        2 => Some(d[0]? as usize),
+        _ => None,
+    }
+}
+
+/// How many rows `head`/`tail` keep: a negative `n` drops that many from the
+/// far end, the way it drops elements from a plain vector.
+fn row_count(n: i64, rows: i64) -> usize {
+    let kept = match n < 0 {
+        true => (rows + n).max(0),
+        false => n.min(rows),
+    };
+    kept as usize
+}
+
+/// The named rows of a matrix, as a matrix — column-major, so each kept row
+/// contributes one cell per column, and the row dimnames come with it.
+fn take_rows(x: &Value, rows: &[usize]) -> Value {
+    let dim = with_host(|h| h.attr(x, "dim")).map(|d| as_int(&d)).unwrap();
+    let (nr, nc) = (dim[0].unwrap() as usize, dim[1].unwrap() as usize);
+    let pos: Vec<Option<usize>> = (0..nc)
+        .flat_map(|c| rows.iter().map(move |r| Some(c * nr + r)))
+        .collect();
+    let out = take_positions(x, &pos);
+    let d = mk_int(vec![Some(rows.len() as i64), Some(nc as i64)]);
+    with_host(|h| h.set_attr(&out, "dim", d));
+    let dn = dimnames_of(x);
+    let pick = |i: usize| dn.get(i).and_then(|o| o.clone());
+    let rn = pick(0).map(|names| {
+        rows.iter()
+            .map(|r| names.get(*r).cloned().flatten())
+            .collect()
+    });
+    if rn.is_some() || pick(1).is_some() {
+        set_dimnames(&out, rn, pick(1));
+    }
+    out
+}
+
+/// R's `USE.NAMES`: a mapped result is labelled from the FIRST mapped argument,
+/// by its names or — for a character vector with none — by its own values.
+fn label_from_first(out: &Value, first: Option<&Value>) {
+    let Some(first) = first else { return };
+    let nm = names_of(first);
+    if !nm.is_empty() {
+        set_names(out, nm);
+    } else if kind(first) == RKind::Str {
+        set_names(out, as_str(first));
+    }
+}
+
 /// The environment a value holds, for the builtins that take an `envir`.
 fn env_of(v: &Value) -> Option<crate::host::Env> {
     match data(v) {
@@ -4172,6 +4229,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "head" | "tail" => {
             let x = a.req(0, "x")?;
             let n = a.get(1, "n").and_then(|v| num1(&v)).unwrap_or(6.0) as i64;
+            // `head.matrix` takes the first *rows*, not the first cells: R has a
+            // method for a value with `dim`, and `head(m, 2)` of a 4x5 is a 2x5.
+            if let Some(rows) = matrix_rows(&x) {
+                let k = row_count(n, rows as i64);
+                let taken: Vec<usize> = match name == "head" {
+                    true => (0..k).collect(),
+                    false => (rows - k..rows).collect(),
+                };
+                let out = take_rows(&x, &taken);
+                // `tail.matrix` keeps `keepnums = TRUE`: a matrix with no row
+                // labels of its own gets the *original* row numbers, so the
+                // last two rows of a 4-row matrix still read `[3,]` and `[4,]`
+                // rather than being renumbered from one. `head` needs none —
+                // its rows already start at one.
+                let dn = dimnames_of(&x);
+                if name == "tail" && dn.first().map_or(true, |d| d.is_none()) {
+                    let labels = taken.iter().map(|r| Some(format!("[{},]", r + 1)));
+                    let cols = dn.get(1).and_then(|c| c.clone());
+                    set_dimnames(&out, Some(labels.collect()), cols);
+                }
+                return Ok(out);
+            }
             let total = len(&x) as i64;
             let k = if n < 0 {
                 (total + n).max(0)
@@ -5818,7 +5897,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "Map" => {
             let f = a.req(0, "f")?;
-            let lists: Vec<Vec<Value>> = a.rest(1).iter().map(|(_, v)| elements(v)).collect();
+            let rest = a.rest(1);
+            let lists: Vec<Vec<Value>> = rest.iter().map(|(_, v)| elements(v)).collect();
             let n = lists.iter().map(|l| l.len()).min().unwrap_or(0);
             let mut out = Vec::with_capacity(n);
             for i in 0..n {
@@ -5826,7 +5906,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     lists.iter().map(|l| (None, l[i].clone())).collect();
                 out.push(call_value(&f, call_args, None)?);
             }
-            Ok(mk_list(out))
+            let res = mk_list(out);
+            // R defines `Map` as `mapply(SIMPLIFY = FALSE)`, so it labels its
+            // result the same way — from the first mapped argument.
+            label_from_first(&res, rest.first().map(|(_, v)| v));
+            Ok(res)
         }
         "mapply" => {
             // Like `Map` but simplified to an atomic vector when every result
@@ -5843,17 +5927,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .collect();
                 out.push(call_value(&f, call_args, None)?);
             }
-            // `USE.NAMES`: the result is labelled from the FIRST mapped argument,
-            // by its names or — for a character vector — by its own values.
             let res = mk_list(out);
-            if let Some((_, first)) = rest.first() {
-                let nm = names_of(first);
-                if !nm.is_empty() {
-                    set_names(&res, nm);
-                } else if kind(first) == RKind::Str {
-                    set_names(&res, as_str(first));
-                }
-            }
+            label_from_first(&res, rest.first().map(|(_, v)| v));
             Ok(simplify(&res))
         }
         "Filter" => {
