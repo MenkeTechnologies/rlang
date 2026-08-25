@@ -315,6 +315,13 @@ pub enum RData {
     /// A call-site argument list: `(tag, value)` pairs, produced by `MKARGS`.
     /// `Value::Undef` is an empty argument (`x[, 1]`).
     Args(Vec<(Option<String>, Value)>),
+    /// An unevaluated R expression — R's `LANGSXP`. What `quote(f(x))` builds,
+    /// what `sys.call()` hands back, and what a condition's `call` slot holds.
+    /// The payload is the parse tree itself, so it deparses back to source and
+    /// takes apart the way R's does.
+    Lang(crate::ast::Expr),
+    /// An R name — `SYMSXP`. `quote(x)`, and the head of every call.
+    Sym(String),
 }
 
 /// Which [`RData`] variant a value holds, without its payload.
@@ -338,6 +345,8 @@ pub enum RKind {
     Combinator,
     Environment,
     Args,
+    Lang,
+    Sym,
 }
 
 impl RKind {
@@ -356,6 +365,8 @@ impl RKind {
             RData::Combinator { .. } => RKind::Combinator,
             RData::Environment(_) => RKind::Environment,
             RData::Args(_) => RKind::Args,
+            RData::Lang(_) => RKind::Lang,
+            RData::Sym(_) => RKind::Sym,
         }
     }
 
@@ -964,6 +975,9 @@ impl RHost {
             Some(RData::List(x)) => x.len(),
             Some(RData::Args(x)) => x.len(),
             Some(RData::Environment(e)) => e.borrow().vars.len(),
+            // A call's length is its parts: the function and its arguments.
+            // A name is one thing.
+            Some(RData::Lang(e)) => crate::builtins::lang_len(e),
             _ => 1,
         }
     }
@@ -1202,6 +1216,10 @@ impl RHost {
             | Some(RData::Combinator { .. }) => "function",
             Some(RData::Environment(_)) => "environment",
             Some(RData::Args(_)) => "list",
+            // An unevaluated expression's implicit class is what it *is*: a
+            // call, or the name of one thing.
+            Some(RData::Lang(_)) => "call",
+            Some(RData::Sym(_)) => "name",
             // A foreign R object's real class is only known to R.
             Some(RData::RForeign(_)) => "R_object",
         }
@@ -1227,6 +1245,8 @@ impl RHost {
             Some(RData::Closure { .. }) | Some(RData::Combinator { .. }) => "closure",
             Some(RData::Builtin(_)) => "builtin",
             Some(RData::Environment(_)) => "environment",
+            Some(RData::Lang(_)) => "language",
+            Some(RData::Sym(_)) => "symbol",
         }
     }
 

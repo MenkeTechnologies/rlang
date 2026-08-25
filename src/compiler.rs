@@ -721,6 +721,15 @@ impl Compiler {
                             return self.expr(b, &call_thunk(body));
                         }
                     }
+                    // `quote(x)` yields the expression, not its value, so the
+                    // argument must not be compiled at all. Its deparse is
+                    // carried across as a string the way a formula's is, and
+                    // `.rlang_quote` parses it back into a language object.
+                    if matches!(name.as_str(), "quote" | "bquote") && args.len() == 1 {
+                        if let Some(inner) = args[0].value.clone() {
+                            return self.expr(b, &quote_call(&inner));
+                        }
+                    }
                 }
                 // `tryCatch` / `try` / `on.exit` take their body *unevaluated*:
                 // rlang evaluates arguments eagerly, so the body is wrapped in a
@@ -1707,6 +1716,19 @@ fn call_thunk(body: Expr) -> Expr {
 /// expressions to run under the handlers, while the handlers are already
 /// functions and are left alone. `try(expr)` and `on.exit(expr)` defer their one
 /// body argument the same way.
+/// `.rlang_quote("<source>")` — the eager call that stands in for a quoted
+/// expression. The deparse is the whole tree, newline-separated, so the
+/// primitive parses back the call that was written.
+fn quote_call(inner: &Expr) -> Expr {
+    Expr::Call {
+        fun: Box::new(Expr::Ident(".rlang_quote".into())),
+        args: vec![Arg {
+            name: None,
+            value: Some(Expr::Str(deparse_lines(inner))),
+        }],
+    }
+}
+
 fn thunk_lazy_args(name: &str, args: &[Arg]) -> Option<Vec<Arg>> {
     // The argument names whose values are bodies rather than handlers, per
     // special form. An empty name means "the first positional argument".

@@ -12,6 +12,7 @@ use crate::host::{
     call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
     CombinatorKind, RData, RKind, Signal,
 };
+use crate::ast::Expr;
 use fusevm::{Value, VM};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -144,6 +145,165 @@ pub(crate) fn mk_str(xs: Vec<Option<String>>) -> Value {
 }
 pub(crate) fn mk_list(xs: Vec<Value>) -> Value {
     with_host(|h| h.list(xs))
+}
+/// The R object an unevaluated expression *is*. R does not wrap everything in a
+/// language object: `quote(1)` is the number, `quote(x)` is a name, and only a
+/// compound expression is a call. `quote((x))` keeps its parentheses, because
+/// R's parse tree keeps the `(` call.
+pub(crate) fn mk_lang(e: Expr) -> Value {
+    match e {
+        Expr::Ident(n) => with_host(|h| h.alloc(RData::Sym(n))),
+        Expr::Num(x) => scalar_dbl(x),
+        Expr::Int(n) => scalar_int(n),
+        Expr::Str(t) => scalar_str(t),
+        Expr::Bool(b) => scalar_lgl(b),
+        Expr::Null => null(),
+        other => with_host(|h| h.alloc(RData::Lang(other))),
+    }
+}
+
+/// How many parts [`lang_parts`] would produce, counted without building any of
+/// them. `length()` runs with the host already borrowed, so it cannot allocate
+/// the parts to count them.
+pub(crate) fn lang_len(e: &Expr) -> usize {
+    match e {
+        Expr::Call { args, .. } => 1 + args.len(),
+        Expr::Binary { .. } | Expr::Special { .. } | Expr::Assign { .. } => 3,
+        Expr::Unary { .. } | Expr::Paren(_) | Expr::Repeat(_) => 2,
+        Expr::Block(xs) => 1 + xs.len(),
+        Expr::If { els, .. } => 3 + usize::from(els.is_some()),
+        Expr::While { .. } => 3,
+        Expr::For { .. } => 4,
+        Expr::Index { args, .. } => 2 + args.len(),
+        _ => 1,
+    }
+}
+
+/// A call taken apart the way R's `as.list` does: the function or operator
+/// first, then one element per argument, keeping the tag a named argument was
+/// written with. Every part is itself a language object, a name or a constant.
+///
+/// R decomposes every compound form this way, control flow included, because in
+/// R they *are* calls — `quote(if (a) b)` is a call to `if`. The forms rlang's
+/// tree keeps as their own nodes are unfolded back into that shape here.
+pub(crate) fn lang_parts(e: &Expr) -> Vec<(Option<String>, Value)> {
+    use crate::ast::{IndexKind, UnOp};
+    let sym = |n: &str| with_host(|h| h.alloc(RData::Sym(n.to_string())));
+    let part = |x: &Expr| (None, mk_lang(x.clone()));
+    match e {
+        Expr::Call { fun, args } => {
+            let mut out = vec![(None, mk_lang((**fun).clone()))];
+            for arg in args {
+                let v = match &arg.value {
+                    Some(x) => mk_lang(x.clone()),
+                    None => Value::Undef,
+                };
+                out.push((arg.name.clone(), v));
+            }
+            out
+        }
+        Expr::Binary { op, lhs, rhs } => vec![
+            (None, sym(crate::deparse::binop_symbol(op))),
+            part(lhs),
+            part(rhs),
+        ],
+        Expr::Special { name, lhs, rhs } => {
+            // The lexer strips the `%`s; `%%` and `%/%` lex to "" and "/".
+            let spelled = match name.as_str() {
+                "" => "%%".to_string(),
+                "/" => "%/%".to_string(),
+                other => format!("%{other}%"),
+            };
+            vec![(None, sym(&spelled)), part(lhs), part(rhs)]
+        }
+        Expr::Unary { op, operand } => {
+            let n = match op {
+                UnOp::Neg => "-",
+                UnOp::Plus => "+",
+                UnOp::Not => "!",
+            };
+            vec![(None, sym(n)), part(operand)]
+        }
+        Expr::Paren(x) => vec![(None, sym("(")), part(x)],
+        Expr::Block(xs) => {
+            let mut out = vec![(None, sym("{"))];
+            out.extend(xs.iter().map(part));
+            out
+        }
+        Expr::If { cond, then, els } => {
+            let mut out = vec![(None, sym("if")), part(cond), part(then)];
+            if let Some(e) = els {
+                out.push(part(e));
+            }
+            out
+        }
+        Expr::While { cond, body } => vec![(None, sym("while")), part(cond), part(body)],
+        Expr::Repeat(b) => vec![(None, sym("repeat")), part(b)],
+        Expr::For { var, seq, body } => vec![
+            (None, sym("for")),
+            (None, sym(var)),
+            part(seq),
+            part(body),
+        ],
+        Expr::Assign {
+            target,
+            value,
+            super_assign,
+        } => vec![
+            (None, sym(if *super_assign { "<<-" } else { "<-" })),
+            part(target),
+            part(value),
+        ],
+        Expr::Index { kind, obj, args } => {
+            let head = match kind {
+                IndexKind::Single => "[",
+                IndexKind::Double => "[[",
+                IndexKind::Dollar => "$",
+                IndexKind::At => "@",
+            };
+            let mut out = vec![(None, sym(head)), part(obj)];
+            for arg in args {
+                let v = match &arg.value {
+                    // `x$name` holds the name as a string in the tree; R keeps
+                    // it as a symbol.
+                    Some(Expr::Str(n))
+                        if matches!(kind, IndexKind::Dollar | IndexKind::At) =>
+                    {
+                        sym(n)
+                    }
+                    Some(x) => mk_lang(x.clone()),
+                    None => Value::Undef,
+                };
+                out.push((arg.name.clone(), v));
+            }
+            out
+        }
+        // Anything left is a leaf as far as taking it apart goes.
+        other => vec![(None, mk_lang(other.clone()))],
+    }
+}
+
+/// A language object as the character vector `as.character` gives: a name is
+/// its own text, and a call is one element per part, each deparsed.
+fn lang_text(e: &Expr) -> Vec<String> {
+    match e {
+        Expr::Ident(n) => vec![n.clone()],
+        other => lang_parts(other)
+            .into_iter()
+            .map(|(_, v)| deparse_value(&v))
+            .collect(),
+    }
+}
+
+/// The expression behind a language object, for a caller that needs the tree
+/// rather than the value: `Some` for a call or a name, and for a constant the
+/// literal it came from, so `as.list(quote(f(1)))` can take its elements apart.
+pub(crate) fn lang_of(v: &Value) -> Option<Expr> {
+    match data(v) {
+        RData::Lang(e) => Some(e),
+        RData::Sym(n) => Some(Expr::Ident(n)),
+        _ => None,
+    }
 }
 fn scalar_dbl(x: f64) -> Value {
     with_host(|h| h.scalar_dbl(x))
@@ -2774,6 +2934,14 @@ pub const PRIMITIVES: &[&str] = &[
     "suppressWarnings",
     "suppressPackageStartupMessages",
     ".rlang_formula",
+    ".rlang_quote",
+    "quote",
+    "bquote",
+    "as.name",
+    "as.symbol",
+    "is.call",
+    "is.name",
+    "is.symbol",
 ];
 
 /// Invoke a runtime-constructed function ([`RData::Combinator`]): `Negate`
@@ -2872,6 +3040,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "as.character" => {
             let x = a.req(0, "x")?;
+            // A name is its own text; a call is its parts, each deparsed —
+            // `as.character(quote(f(1)))` is `c("f", "1")`.
+            if let Some(e) = lang_of(&x) {
+                return Ok(mk_str(lang_text(&e).into_iter().map(Some).collect()));
+            }
             // `as.character(factor)` yields the level labels, not the codes.
             if class_of(&x).iter().any(|c| c == "factor") {
                 let levels = with_host(|h| h.attr(&x, "levels"))
@@ -3015,6 +3188,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_str(match t {
                 "integer" | "double" => "numeric",
                 "closure" | "builtin" => "function",
+                // R's `mode` names an unevaluated expression by what it is
+                // rather than by its internal type.
+                "language" => "call",
+                "symbol" => "name",
                 other => other,
             }))
         }
@@ -3338,6 +3515,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "deparse" => {
             let x = a.req(0, "expr")?;
+            // An expression deparses to its own source lines, one character
+            // element per line, the way a function's does.
+            if let Some(e) = lang_of(&x) {
+                return Ok(mk_str(
+                    crate::deparse::deparse_all_lines(&e)
+                        .into_iter()
+                        .map(Some)
+                        .collect(),
+                ));
+            }
             // A function deparses to its source *lines* — one character element
             // per line, not one string with embedded newlines.
             if let Some(src) = function_src(&x) {
@@ -3350,6 +3537,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `format` of a function is its deparsed source, like `deparse`.
             if let Some(src) = function_src(&x) {
                 return Ok(mk_str(src.into_iter().map(Some).collect()));
+            }
+            // …and so is `format` of an expression.
+            if let Some(e) = lang_of(&x) {
+                return Ok(mk_str(
+                    crate::deparse::deparse_all_lines(&e)
+                        .into_iter()
+                        .map(Some)
+                        .collect(),
+                ));
             }
             // `format(NULL)` is the *word* `"NULL"`, not the empty character
             // vector that formatting NULL's (zero) elements would produce. This
@@ -6144,6 +6340,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "suppressMessages" | "suppressPackageStartupMessages" => suppress_conditions(&a, "message"),
         // A model formula (compiled from `lhs ~ rhs`): build the real formula
         // object in embedded R so `lm`/`glm`/`aggregate` receive it intact.
+        // `quote(x)` / `bquote(x)`: the compiler has replaced the argument with
+        // its deparse (see `compiler::quote_call`), so what arrives is R source
+        // to parse back into the expression the caller wrote.
+        ".rlang_quote" | "quote" | "bquote" => {
+            let src = str1(&a.req(0, "expr")?).unwrap_or_default();
+            let mut exprs = crate::parser::parse(&src)?;
+            match exprs.len() {
+                1 => Ok(mk_lang(exprs.remove(0))),
+                _ => Err(format!("invalid expression in quote: {src}")),
+            }
+        }
+        "as.name" | "as.symbol" => {
+            let n = str1(&a.req(0, "x")?).unwrap_or_default();
+            Ok(with_host(|h| h.alloc(RData::Sym(n))))
+        }
+        "is.call" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::Lang)),
+        "is.name" | "is.symbol" => Ok(scalar_lgl(kind(&a.req(0, "x")?) == RKind::Sym)),
         ".rlang_formula" => {
             let src = str1(&a.req(0, "src")?).unwrap_or_default();
             cran_eval(&format!("stats::as.formula({src:?})"))
@@ -7298,6 +7511,9 @@ fn deparse_value(v: &Value) -> String {
     };
     match data(v) {
         RData::Null => "NULL".into(),
+        // An expression deparses to itself, not to a quoted string.
+        RData::Lang(e) => crate::deparse::deparse_lines(&e),
+        RData::Sym(n) => n,
         RData::Int(xs) => {
             if let Some(seq) = int_colon(&xs) {
                 return seq;
@@ -9010,6 +9226,10 @@ fn format_value_body(v: &Value) -> Vec<String> {
         #[cfg(target_arch = "wasm32")]
         RData::RForeign(_) => vec!["<R object>".into()],
         RData::Environment(_) => vec!["<environment>".into()],
+        // An unevaluated expression prints as its source, unquoted and
+        // unindexed — `print(quote(f(1)))` is `f(1)`, not `[1] "f(1)"`.
+        RData::Lang(e) => crate::deparse::deparse_all_lines(&e),
+        RData::Sym(n) => vec![n],
         RData::Args(_) => format_list(v),
         RData::List(_) => format_list(v),
         _ => {

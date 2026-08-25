@@ -1272,3 +1272,33 @@ str(factor(c("a", "b")))
 str(structure(1:2, class = "foo"))
 str(1:5)
 str(list(a = 1, b = "x"))
+#==#
+print(quote(f(1)))
+print(class(quote(f(1))))
+print(typeof(quote(f(1))))
+print(mode(quote(f(1))))
+print(quote(x))
+print(class(quote(x)))
+print(mode(quote(x)))
+print(quote(1))
+#==#
+print(quote(a + b))
+print(quote(!a))
+print(quote(if (a) b else c))
+print(quote({
+    a
+    b
+}))
+print(quote(x[[1]]))
+print(quote(x$y))
+print(quote(a <- b))
+#==#
+print(deparse(quote(f(1, 2))))
+print(as.character(quote(x)))
+print(as.character(quote(f(1))))
+print(length(quote(f(1, 2))))
+print(length(quote(if (a) b else c)))
+print(as.name("x"))
+print(is.call(quote(f(1))))
+print(is.name(quote(x)))
+print(format(quote(f(1))))

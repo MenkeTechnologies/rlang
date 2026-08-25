@@ -418,6 +418,37 @@ pub fn deparse_first_line(e: &Expr) -> String {
     d.finish().into_iter().next().unwrap_or_default()
 }
 
+/// How R spells a binary operator as a function name — what the head of the
+/// call is when `as.list(quote(a + b))` takes it apart.
+pub fn binop_symbol(op: &BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Pow => "^",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::Le => "<=",
+        BinOp::Ge => ">=",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::And => "&",
+        BinOp::Or => "|",
+        BinOp::And2 => "&&",
+        BinOp::Or2 => "||",
+        BinOp::Colon => ":",
+    }
+}
+
+/// `e`'s deparse as separate lines — what `print` on a language object shows
+/// and what `deparse()` returns as a character vector.
+pub fn deparse_all_lines(e: &Expr) -> Vec<String> {
+    let mut d = Deparser::new();
+    d.expr(e);
+    d.finish()
+}
+
 /// `e`'s full deparse, newline-separated — R source that parses back to the
 /// same tree. The lines must be *joined by newlines*, not concatenated: R's
 /// layout separates the statements inside a `{ }` by line breaks alone, so
