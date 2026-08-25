@@ -153,6 +153,12 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Types
 
+- **An rlang closure does not cross the bridge as an R function.** `setRefClass`
+  works — fields, methods and `<<-` into a field all behave — but R's own
+  machinery calls `formals()` and `body()` on the methods it was handed, and
+  those are rlang closures marshalled as opaque values, so three
+  "argument is not a function" warnings ride along with a correct answer.
+  Marshalling a closure as a real R function is what that needs.
 - **No *native* data frames / raw vectors / dates / S4 objects — they live in
   the CRAN bridge instead.** rlang has no rlang-side type for these, so a value
   of one is held as an opaque handle to the embedded GNU R (see below), and any
