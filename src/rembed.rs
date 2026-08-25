@@ -32,6 +32,7 @@ type Sexp = *mut c_void;
 
 // R's SEXPTYPE tags (Rinternals.h).
 const NILSXP: c_int = 0;
+const SYMSXP: c_int = 1;
 const LGLSXP: c_int = 10;
 const INTSXP: c_int = 13;
 const REALSXP: c_int = 14;
@@ -62,6 +63,14 @@ struct RApi {
     get_attrib: unsafe extern "C" fn(Sexp, Sexp) -> Sexp,
     set_attrib: unsafe extern "C" fn(Sexp, Sexp, Sexp) -> Sexp,
     install: unsafe extern "C" fn(*const c_char) -> Sexp,
+    /// The attribute pairlist, walked with `tag`/`car`/`cdr` so an attribute
+    /// rlang has no name for still crosses back — `regexec`'s `match.length`
+    /// is one, and without it `regmatches` has nothing to cut with.
+    attrib: unsafe extern "C" fn(Sexp) -> Sexp,
+    tag: unsafe extern "C" fn(Sexp) -> Sexp,
+    car: unsafe extern "C" fn(Sexp) -> Sexp,
+    cdr: unsafe extern "C" fn(Sexp) -> Sexp,
+    printname: unsafe extern "C" fn(Sexp) -> Sexp,
     define_var: unsafe extern "C" fn(Sexp, Sexp, Sexp),
     preserve: unsafe extern "C" fn(Sexp),
     global_env: Sexp,
@@ -151,6 +160,11 @@ fn init() -> Option<RApi> {
             get_attrib: sym!(_, b"Rf_getAttrib"),
             set_attrib: sym!(_, b"Rf_setAttrib"),
             install: sym!(_, b"Rf_install"),
+            attrib: sym!(_, b"ATTRIB"),
+            tag: sym!(_, b"TAG"),
+            car: sym!(_, b"CAR"),
+            cdr: sym!(_, b"CDR"),
+            printname: sym!(_, b"PRINTNAME"),
             define_var: sym!(_, b"Rf_defineVar"),
             preserve: sym!(_, b"R_PreserveObject"),
             global_env: **ge,
@@ -433,7 +447,39 @@ impl RApi {
                 with_host(|h| h.set_attr(&out, key, av));
             }
         }
+        // Everything else the value carries, walked off the attribute pairlist
+        // rather than looked up by a name rlang had to know in advance. Without
+        // this an attribute rlang has no use of its own for — `regexec`'s
+        // `match.length`, which `regmatches` cuts with — was simply dropped.
+        // `names` and `class` are already settled above, and re-setting `class`
+        // here would make the value foreign on the next crossing.
+        for (key, av) in self.other_attributes(s) {
+            if matches!(key.as_str(), "names" | "class" | "dim" | "dimnames") {
+                continue;
+            }
+            with_host(|h| h.set_attr(&out, &key, av));
+        }
         Ok(out)
+    }
+
+    /// Every attribute on `s`, read off its pairlist. Empty for a value with
+    /// none, which is the common case and costs one pointer read.
+    unsafe fn other_attributes(&self, s: Sexp) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        let mut node = (self.attrib)(s);
+        while (self.typeof_)(node) != NILSXP {
+            let tag = (self.tag)(node);
+            if (self.typeof_)(tag) == SYMSXP {
+                let name = CStr::from_ptr((self.r_char)((self.printname)(tag)))
+                    .to_string_lossy()
+                    .into_owned();
+                if let Ok(v) = self.sexp_to_value((self.car)(node)) {
+                    out.push((name, v));
+                }
+            }
+            node = (self.cdr)(node);
+        }
+        out
     }
 
     /// Parse and evaluate R source in the global environment, returning the last

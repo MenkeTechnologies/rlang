@@ -6554,6 +6554,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             });
             Ok(v)
         }
+        // `environment(f)` is the environment a *closure* carries, and R
+        // answers NULL for a primitive, which has none.
+        "environment" if a.get(0, "fun").is_some_and(|v| !is_null(&v)) => {
+            let f = a.req(0, "fun")?;
+            Ok(match data(&f) {
+                RData::Closure { env, .. } => with_host(|h| h.alloc(RData::Environment(env))),
+                _ => null(),
+            })
+        }
         "environment" | "new.env" => {
             let e = if name == "new.env" {
                 Rc::new(std::cell::RefCell::new(crate::host::EnvData {
@@ -6845,6 +6854,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let e = a.req(0, "env")?;
             // Only the global environment has a name rlang can give: the rest
             // are anonymous frames, which R also names with the empty string.
+            // Anything that is not an environment — R's NULL for a
+            // primitive's environment — has no name either.
             let global = env_of(&e).is_some_and(|e| with_host(|h| Rc::ptr_eq(&e, &h.global)));
             Ok(scalar_str(match global {
                 true => "R_GlobalEnv",

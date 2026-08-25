@@ -1471,3 +1471,17 @@ e$.hidden <- 1
 print(ls(e))
 print(ls(e, all.names = TRUE))
 print(environmentName(globalenv()))
+#==#
+print(regexec("(a)(b)", "zab"))
+print(regmatches("zab", regexec("(a)(b)", "zab")))
+print(regmatches("a1b22", gregexpr("[0-9]+", "a1b22")))
+print(environment(sum))
+print(environmentName(environment(sum)))
+f <- function() 1
+print(class(environment(f)))
+g <- function() {
+    x <- 1
+    function() x
+}
+h <- g()
+print(ls(environment(h)))
