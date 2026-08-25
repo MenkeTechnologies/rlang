@@ -221,6 +221,21 @@ fn inline_call_text(f: &Value) -> String {
     }
 }
 
+/// Write `text` to `path`, truncating or appending. The error is R's own
+/// wording for a path it cannot open.
+fn write_text(path: &str, text: &str, append: bool) -> Result<(), String> {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(path)
+        .map_err(|_| format!("cannot open file '{path}'"))?;
+    f.write_all(text.as_bytes())
+        .map_err(|e| format!("cannot write to '{path}': {e}"))
+}
+
 /// The row count of a two-dimensional value, or `None` for anything else —
 /// `head`/`tail` only have a matrix method for rank 2.
 fn matrix_rows(x: &Value) -> Option<usize> {
@@ -3711,7 +3726,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // contains one — `cat(c("a", "b"), sep = "\n")` prints three lines'
             // worth of output, not two.
             let tail = if sep.contains('\n') { "\n" } else { "" };
-            crate::host::emit(&format!("{out}{tail}"));
+            let text = format!("{out}{tail}");
+            // `file = ""` is stdout, which is the default; a path writes there
+            // instead, truncating unless `append = TRUE`. Without this the text
+            // went to stdout and the file was never created, so a later
+            // `readLines` of it found nothing.
+            match a.named("file").and_then(|v| str1(&v)).filter(|p| !p.is_empty()) {
+                Some(path) => {
+                    let append = a.named("append").and_then(|v| lgl1(&v)).unwrap_or(false);
+                    write_text(&path, &text, append)?;
+                }
+                None => crate::host::emit(&text),
+            }
             with_host(|h| h.visible = false);
             Ok(null())
         }

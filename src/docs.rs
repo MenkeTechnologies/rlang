@@ -270,8 +270,8 @@ const OUTPUT: &[Entry] = &[
     ),
     (
         "cat",
-        "cat(..., sep = \" \")",
-        "Write every argument's elements with no quotes and no trailing newline, joined by `sep`. The separator sits between arguments as well as between elements, so a leading zero-length argument still earns its successor one: cat(NULL, \"x\") writes \" x\". A separator containing a newline also ends the output with one. A list or a function argument is an error, as in R.",
+        "cat(..., sep = \" \", file = \"\", append = FALSE)",
+        "Write every argument's elements with no quotes and no trailing newline, joined by `sep`. The separator sits between arguments as well as between elements, so a leading zero-length argument still earns its successor one: cat(NULL, \"x\") writes \" x\". A separator containing a newline also ends the output with one. With a non-empty file the text goes there instead of to stdout, truncating unless append is TRUE. A list or a function argument is an error, as in R.",
     ),
     (
         "message",
