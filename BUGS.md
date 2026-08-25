@@ -76,12 +76,18 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `+ - * /` and `[[` lower to native fusevm ops and index builtins carrying no
   call text, and pushing one on every arithmetic op would cost the hot path the
   design keeps native; the call-less form is printed rather than the enclosing
-  call, which would name the wrong one. R's `Calls: f -> g` traceback *is*
+  call, which would name the wrong one. The language-object work does not
+  change that: a call could only be recovered at raise time from a map keyed by
+  the bytecode position, and the ops that raise these — `+ - * /` lowered to
+  native fusevm ops, `[[` to an index builtin — carry neither a constant to
+  hang one on nor a way to reach such a map. R's `Calls: f -> g` traceback *is*
   printed — the chain of function
   contexts, outermost first, with `stop`'s own frame dropped and R's mid-chain
   elision past `R_NShowCalls` — but it shows what rlang's own call graph looks
-  like, which for a function R layers over an S3 method is one link shorter:
-  `Calls: print -> seq` where R has `print -> seq -> seq.default`.
+  like. Where R's own definition of a function dispatches to a method, rlang
+  pushes the context that dispatch would have made, so `seq(7, 5, by = 3)`
+  reports `seq.default(7, 5, by = 3)` and `Calls: seq -> seq.default` — but only
+  for the generics rlang has been taught, not for every S3 layer in base R.
 - **A restart object does not `format()` the way R's does.** `print` gives R's
   `<restart: name >` and `$name` / `restartDescription` / `computeRestarts`
   ordering all match, but the `handler`, `test` and `interactive` slots hold

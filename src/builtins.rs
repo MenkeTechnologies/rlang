@@ -185,6 +185,32 @@ fn call_arg_sources(src: &str) -> Option<Vec<String>> {
     )
 }
 
+/// Run `body` under the context R's own dispatch would have made: the same
+/// call with its head replaced by the method that handles it. `seq(7, 5, by =
+/// 3)` fails inside `seq.default(7, 5, by = 3)` in R, and names it.
+fn in_method<T>(method: &str, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let dispatched = with_host(|h| h.current_call_source()).and_then(|src| {
+        let (_, rest) = src.split_once('(')?;
+        Some(format!("{method}({rest}"))
+    });
+    let Some(call) = dispatched else {
+        return body();
+    };
+    push_context(&call);
+    let out = body();
+    with_host(|h| {
+        // The method's context comes off on the next line, so an error raised
+        // under it has to claim the call here — as `call_op` does for a
+        // primitive that failed by returning `Err`.
+        if out.is_err() && h.error.is_none() {
+            let c = h.current_call_source();
+            h.set_error_call(c);
+        }
+        h.calls.pop();
+    });
+    out
+}
+
 /// The call text R uses when a function is invoked without a name to call it
 /// by: the function's own deparse, parenthesised — `(function (a, b) `. Only
 /// the first line, which is all a diagnostic shows and all `<Anonymous>` needs.
@@ -3863,7 +3889,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let n = len(&a.req(0, "along.with")?) as i64;
             Ok(mk_int((1..=n).map(Some).collect()))
         }
-        "seq" | "seq.int" => seq(&a),
+        // `seq` is a generic in R; the error a bad `by` raises comes from
+        // `seq.default`, and both the message's call and the chain name it.
+        "seq" => in_method("seq.default", || seq(&a)),
+        "seq.int" => seq(&a),
         "rep" => Ok(rep(&a)),
         "rep_len" => {
             let x = a.req(0, "x")?;
