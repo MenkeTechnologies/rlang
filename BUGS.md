@@ -128,7 +128,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   and `[[` on an environment. `sys.nframe()` and `sys.frame(n)` are not: a
   builtin pushes no frame in rlang where R's closures do, so the numbering they
   report would not be R's. `baseenv()`/`emptyenv()` have no rlang-side
-  representation and go to the CRAN bridge.
+  representation and go to the CRAN bridge, and `environmentName` knows only
+   the global environment's name — every other frame is anonymous, which is the
+   empty string R gives one too.
 
 ## Types
 
