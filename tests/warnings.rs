@@ -195,7 +195,7 @@ fn an_error_reports_its_call_and_the_warnings_that_preceded_it() {
     // A primitive that fails names itself, not whatever encloses it.
     assert_eq!(
         merged(r#"f <- function(v) sqrt(v); f("x")"#),
-        "Error in sqrt(v) : non-numeric argument to mathematical function\nExecution halted\n"
+        "Error in sqrt(v) : non-numeric argument to mathematical function\nCalls: f\nExecution halted\n"
     );
     // Long enough to fold, under the 14 columns R allows an error's decoration.
     assert_eq!(
@@ -208,6 +208,50 @@ fn an_error_reports_its_call_and_the_warnings_that_preceded_it() {
     assert_eq!(
         merged(r#"f <- function() { warning("w"); stop("e") }; f()"#),
         "Error in f() : e\nIn addition: Warning message:\nIn f() : w\nExecution halted\n"
+    );
+}
+
+/// R's `Calls:` line under an uncaught error — the chain of function contexts
+/// it came through, outermost first, naming functions rather than calls.
+#[test]
+fn an_uncaught_error_shows_the_chain_it_came_through() {
+    // `stop`'s own frame, and everything inside it, is dropped from the chain.
+    assert_eq!(
+        merged(
+            r#"f <- function() stop("s"); g <- function() f(); h <- function() g(); h()"#
+        ),
+        "Error in f() : s\nCalls: h -> g -> f\nExecution halted\n"
+    );
+    // A chain that names only the call the error already reported is dropped:
+    // `Error in f() : boom` says everything `Calls: f` would.
+    assert_eq!(
+        merged(r#"f <- function() stop("boom"); f()"#),
+        "Error in f() : boom\nExecution halted\n"
+    );
+    // A callee that is not a plain symbol has no name to show.
+    assert_eq!(
+        merged(r#"f <- function() (function() stop("anon"))(); f()"#),
+        "Error in (function() stop(\"anon\"))() : anon\nCalls: f -> <Anonymous>\nExecution halted\n"
+    );
+    // The apply family's own call is in the chain, under the name R's
+    // implementation calls it by.
+    assert_eq!(
+        merged(r#"invisible(sapply(1:2, function(i) stop("z")))"#),
+        "Error in FUN(X[[i]], ...) : z\nCalls: sapply -> lapply -> FUN\nExecution halted\n"
+    );
+    // Past `R_NShowCalls` the middle is elided, keeping the outermost frame.
+    assert_eq!(
+        merged(
+            r#"aaaaaaaaaa <- function() stop("x"); bbbbbbbbbb <- function() aaaaaaaaaa(); cccccccccc <- function() bbbbbbbbbb(); dddddddddd <- function() cccccccccc(); eeeeeeeeee <- function() dddddddddd(); ffffffffff <- function() eeeeeeeeee(); ffffffffff()"#
+        ),
+        "Error in aaaaaaaaaa() : x\nCalls: ffffffffff ... dddddddddd -> cccccccccc -> bbbbbbbbbb -> aaaaaaaaaa\nExecution halted\n"
+    );
+    // The chain comes before the held warnings, which come before the exit.
+    assert_eq!(
+        merged(
+            r#"f <- function() { warning("w"); stop("e") }; g <- function() f(); h <- function() g(); h()"#
+        ),
+        "Error in f() : e\nCalls: h -> g -> f\nIn addition: Warning message:\nIn f() : w\nExecution halted\n"
     );
 }
 

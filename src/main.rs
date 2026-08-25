@@ -267,10 +267,14 @@ fn fail(msg: &str) -> ExitCode {
 /// all — and unlike `fail` it is only half a report, with the queued warnings
 /// and `Execution halted` still to follow.
 fn r_error(msg: &str) {
-    let call = rlang::host::with_host(|h| {
+    let (call, trace) = rlang::host::with_host(|h| {
         let c = h.error_call.take();
+        let t = std::mem::take(&mut h.error_trace);
         h.clear_error_call();
-        c
+        (c, t)
     });
     eprint!("{}", rlang::host::error_report(msg, call.as_deref()));
+    if let Some(tr) = rlang::host::traceback(&trace, call.as_deref()) {
+        eprintln!("Calls: {tr}");
+    }
 }

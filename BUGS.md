@@ -74,8 +74,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `<simpleError: msg>` rather than `<simpleError in f(): msg>`, and `try`'s
   string is `"Error : msg\n"` rather than `"Error in f() : msg\n"`. The context
   stack the diagnostics already use is what that needs, so it is wiring, not
-  substrate. R's `Calls: f -> g` traceback under an uncaught error is not
-  printed at all.
+  substrate. R's `Calls: f -> g` traceback *is* printed — the chain of function
+  contexts, outermost first, with `stop`'s own frame dropped and R's mid-chain
+  elision past `R_NShowCalls` — but it shows what rlang's own call graph looks
+  like, which for a function R layers over an S3 method is one link shorter:
+  `Calls: print -> seq` where R has `print -> seq -> seq.default`.
 - **A restart object does not `format()` the way R's does.** `print` gives R's
   `<restart: name >` and `$name` / `restartDescription` / `computeRestarts`
   ordering all match, but the `handler`, `test` and `interactive` slots hold

@@ -500,6 +500,10 @@ pub struct RHost {
     /// recorded: by the time the unwind reaches the top the context stack has
     /// been cut back past it. Written through [`RHost::set_error_call`].
     pub error_call: Option<String>,
+    /// The deparsed call of every *function* context the pending error was
+    /// raised under, innermost last — what R's `Calls:` line is built from.
+    /// Snapshotted with [`RHost::set_error_call`], for the same reason.
+    pub error_trace: Vec<String>,
     /// Whether the pending error's call has been decided. `error_call` alone
     /// cannot say: a top-level `stop()` decides on *no* call, which is an
     /// answer rather than an absence, and every frame the unwind passes through
@@ -656,6 +660,7 @@ impl RHost {
             error: None,
             error_classes: Vec::new(),
             error_call: None,
+            error_trace: Vec::new(),
             error_call_known: false,
             handlers: Vec::new(),
             restarts: Vec::new(),
@@ -1352,6 +1357,12 @@ impl RHost {
         if self.error_call_known {
             return;
         }
+        self.error_trace = self
+            .calls
+            .iter()
+            .filter(|c| c.closure)
+            .map(|c| ctx_text(&c.text))
+            .collect();
         self.error_call = call;
         self.error_call_known = true;
     }
@@ -1360,6 +1371,7 @@ impl RHost {
     /// over.
     pub fn clear_error_call(&mut self) {
         self.error_call = None;
+        self.error_trace.clear();
         self.error_call_known = false;
     }
 
@@ -1884,6 +1896,83 @@ pub fn error_report(msg: &str, call: Option<&str>) -> String {
         None => format!("Error: {msg}\n"),
         // The trailing space after the colon is R's, and survives the fold.
         Some(c) => format!("Error in {c} : {}", fold_error(c, msg)),
+    }
+}
+
+/// R's `R_NShowCalls`: how much of the traceback is shown before its middle is
+/// elided.
+const N_SHOW_CALLS: usize = 50;
+
+/// R's `R_ConciseTraceback` — the `Calls:` line under an uncaught error.
+///
+/// `frames` is the deparsed call of every function context the error was raised
+/// under, innermost last; `call` is the one the error itself reports. The chain
+/// reads outermost first and names functions, not calls: a callee that is not a
+/// plain symbol shows as `<Anonymous>`.
+///
+/// `stop`, `warning` and the suppress wrappers clear everything collected
+/// *inside* them, which is what keeps `stop()`'s own frame and the machinery
+/// under it out of the chain. A chain naming nothing but the call the error
+/// already reported is dropped — R does not repeat itself — and a long one is
+/// elided in the middle, keeping the outermost frame and the innermost few.
+pub fn traceback(frames: &[String], call: Option<&str>) -> Option<String> {
+    // Collected innermost-first and reversed at the end, so a reset drops
+    // exactly what was seen inside the frame that triggered it.
+    let mut names: Vec<String> = Vec::new();
+    let mut ncalls = 0usize;
+    let mut top: Option<String> = None;
+    let mut elided = false;
+    for text in frames.iter().rev() {
+        let this = call_name(text);
+        if matches!(
+            this.as_str(),
+            "stop" | "warning" | "suppressWarnings" | ".signalSimpleWarning"
+        ) {
+            names.clear();
+            ncalls = 0;
+            top = None;
+            elided = false;
+            continue;
+        }
+        ncalls += 1;
+        if elided || names.join(" -> ").len() > N_SHOW_CALLS {
+            elided = true;
+            top = Some(this);
+        } else {
+            names.push(this);
+        }
+    }
+    let mut out = names
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    if elided {
+        out = match top.filter(|t| t.len() < 50) {
+            Some(t) => format!("{t} ... {out}"),
+            None => format!("... {out}"),
+        };
+    }
+    if ncalls == 1 && call.map(call_name).as_deref() == Some(out.as_str()) {
+        return None;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The function name a traceback shows for a call: the callee when it is a
+/// plain symbol, `<Anonymous>` for anything else — a call in function position,
+/// a function literal. Read off the deparsed text, where the callee is
+/// everything before the argument list.
+fn call_name(text: &str) -> String {
+    let head = text.split('(').next().unwrap_or_default();
+    let head = head
+        .strip_prefix('`')
+        .and_then(|h| h.strip_suffix('`'))
+        .unwrap_or(head);
+    match crate::deparse::is_syntactic_name(head) {
+        true => head.to_string(),
+        false => "<Anonymous>".into(),
     }
 }
 
