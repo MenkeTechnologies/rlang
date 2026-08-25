@@ -418,6 +418,16 @@ pub fn deparse_first_line(e: &Expr) -> String {
     d.finish().into_iter().next().unwrap_or_default()
 }
 
+/// `e`'s full deparse, newline-separated — R source that parses back to the
+/// same tree. The lines must be *joined by newlines*, not concatenated: R's
+/// layout separates the statements inside a `{ }` by line breaks alone, so
+/// gluing them together would fuse two statements into one expression.
+pub fn deparse_lines(e: &Expr) -> String {
+    let mut d = Deparser::new();
+    d.expr(e);
+    d.finish().join("\n")
+}
+
 /// A numeric literal as R writes it: the same fixed-vs-scientific choice
 /// `print` makes for a length-one double, so `100000` deparses to `1e+05`.
 fn num_literal(x: f64) -> String {

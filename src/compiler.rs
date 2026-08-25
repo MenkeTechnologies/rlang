@@ -12,7 +12,7 @@
 //! targets like `x$a\[\[2\]\] <- v` unwind outward-in through the same two rules.
 
 use crate::ast::*;
-use crate::deparse::{deparse_expr, deparse_first_line};
+use crate::deparse::{deparse_expr, deparse_lines};
 use crate::host::{ops, ClosureDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 
@@ -736,12 +736,15 @@ impl Compiler {
                 };
                 let args: &[Arg] = thunked.as_deref().unwrap_or(args);
                 // R's contexts carry the call that created them, and every
-                // condition raised inside one reports it (`In f(1) : …`). The
-                // deparse is fixed at compile time and rides under the callee,
-                // so it nests with the call itself and needs no save/restore:
-                // `CALL` takes it as its third operand and pushes it on the
-                // host's context stack for as long as the call runs.
-                self.kstr(b, &deparse_first_line(e));
+                // condition raised inside one reports it (`In f(1) : …`), while
+                // `sys.call()` hands it back as data. The deparse is fixed at
+                // compile time and rides under the callee, so it nests with the
+                // call itself and needs no save/restore: `CALL` takes it as its
+                // third operand and pushes it on the host's context stack for
+                // as long as the call runs. The *whole* deparse is carried, not
+                // just the line a diagnostic shows, because a language object
+                // built from it has to parse back to the same call.
+                self.kstr(b, &deparse_lines(e));
                 // R makes a closure's context *before* forcing its argument
                 // promises, and none at all for a primitive, so a condition
                 // raised while evaluating an argument reports the enclosing

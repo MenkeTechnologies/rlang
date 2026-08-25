@@ -459,6 +459,15 @@ pub const RESTART_UNWIND: &str = "\u{1}restart";
 /// where R's `findCall` finds no enclosing call either.
 /// A context's call text, read back out of the constant holding it.
 fn ctx_text(v: &Value) -> String {
+    // A diagnostic shows one line: R's `deparse1s(call)` keeps only the first,
+    // so `withCallingHandlers({ … })` reports as `withCallingHandlers({`. The
+    // rest of the deparse is there for `sys.call()`, which needs source that
+    // parses back.
+    ctx_source(v).lines().next().unwrap_or_default().to_string()
+}
+
+/// A context's call as whole R source — every line of the deparse.
+pub fn ctx_source(v: &Value) -> String {
     match v {
         Value::Str(s) => s.to_string(),
         _ => String::new(),
