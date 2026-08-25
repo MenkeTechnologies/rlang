@@ -1272,7 +1272,14 @@ impl RHost {
 
     /// Look a name up through the environment chain.
     pub fn lookup(&self, name: &str) -> Option<Value> {
-        let mut e = Some(self.env());
+        self.lookup_from(self.env(), name)
+    }
+
+    /// Look a name up starting from `env` rather than from the current frame —
+    /// what `get`, `exists` and `mget` do when handed an `envir`. The search
+    /// still walks the enclosure chain, which is R's `inherits = TRUE` default.
+    pub fn lookup_from(&self, env: Env, name: &str) -> Option<Value> {
+        let mut e = Some(env);
         while let Some(cur) = e {
             if let Some(v) = cur.borrow().vars.get(name) {
                 return Some(v.clone());

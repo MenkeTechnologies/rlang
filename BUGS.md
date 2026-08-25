@@ -21,9 +21,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   that prints as source, deparses, indexes (`quote(f(1))[[1]]`), decomposes with
   `as.list`, and answers `class`/`typeof`/`mode`/`is.call`/`is.name`. `eval`
   runs one in the caller's environment, so it reads and binds there.
-- **Arguments are evaluated eagerly, not as promises.** `substitute()` on an
-  argument, and any rule that depends on *when* an argument is forced, is out of
-  reach: `f <- function(a) a; f(1, x + y)` with `x` unbound reports
+- **Arguments are evaluated eagerly, not as promises.** `substitute()` does
+  *not* need them — the caller's call is on the context stack, so the expression
+  a formal stands for is recoverable — but anything that depends on an argument
+  never being forced does. `f <- function(a, b) a; f(1, stop("no"))` stops where
+  R returns 1, and `f <- function(a) a; f(1, x + y)` with `x` unbound reports
   `object 'x' not found` where R reports `unused argument (x + y)`, because
   rlang evaluates the argument before the matching that would have rejected it.
   Where the distinction is observable through the context stack it is
@@ -113,17 +115,20 @@ run that compared nothing — no cases generated, or an oracle that never answer
   between two runs of R itself, so it is not a parity target for anyone.
 - **`local()` works; part of the environment surface does not.**
   `local(expr)` compiles to `(function() expr)()`, which is R's own definition,
-  so it gets a fresh environment enclosing the caller's. `sys.function()` and
-  `eval(expr, envir)` work now; `parent.frame()` is missing.
+  so it gets a fresh environment enclosing the caller's. `sys.function()`,
+  `parent.frame()` and `eval(expr, envir)` all work.
 - **Formulas (`~`) parse and become real formula objects** — `lhs ~ rhs` is
   deparsed to R source and built in the CRAN bridge, so `lm(y ~ x, data = df)`,
   `aggregate(v ~ g, df, sum)`, and one-sided `~ x` work. A formula referencing a
   bare rlang variable (`lm(y ~ x)` with `x` defined only in rlang) can't see it —
   pass the data explicitly, or use literal vectors.
-- **No environments as first-class manipulation targets** beyond `new.env()`,
-  `environment()`, `local()`, `assign`/`get`/`exists` with `envir`,
-  `eval(expr, envir)`, `$`, and `[[` on an environment. `parent.frame()` is
-  missing, and `ls(envir)` goes to the CRAN bridge.
+- **Environments are manipulable**: `new.env()`, `environment()`, `local()`,
+  `globalenv()`, `environmentName()`, `parent.frame()`, `ls`/`objects` with
+  `all.names`, `assign`/`get`/`exists` with `envir`, `eval(expr, envir)`, `$`
+  and `[[` on an environment. `sys.nframe()` and `sys.frame(n)` are not: a
+  builtin pushes no frame in rlang where R's closures do, so the numbering they
+  report would not be R's. `baseenv()`/`emptyenv()` have no rlang-side
+  representation and go to the CRAN bridge.
 
 ## Types
 

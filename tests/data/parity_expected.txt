@@ -1784,3 +1784,15 @@ list(a, b)
 [1] 1
 [1] 5
 2 + 1
+#==#
+[1] "environment"
+[1] "z"
+[1] 42
+#==#
+[1] "a" "b"
+[1] FALSE
+[1] TRUE
+[1] 9
+[1] "a" "b" "v"
+[1] ".hidden" "a"       "b"       "v"      
+[1] "R_GlobalEnv"

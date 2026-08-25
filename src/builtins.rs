@@ -3261,6 +3261,11 @@ pub const PRIMITIVES: &[&str] = &[
     "evalq",
     ".rlang_substitute",
     "substitute",
+    "parent.frame",
+    "ls",
+    "objects",
+    "globalenv",
+    "environmentName",
     "is.call",
     "is.name",
     "is.symbol",
@@ -6510,6 +6515,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── environments and dispatch ───────────────────────────────────
         "exists" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
+            // `envir = e` searches *that* environment and its enclosures.
+            if let Some(e) = a.named("envir").and_then(|v| env_of(&v)) {
+                return Ok(scalar_lgl(with_host(|h| h.lookup_from(e, &n)).is_some()));
+            }
             // The base constants (`pi`, `letters`, `month.name`, …) are bindings
             // in R's base environment just as the primitives are, so `exists`
             // has to see them too — it reported FALSE for `pi` while `get("pi")`
@@ -6520,7 +6529,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "get" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
-            with_host(|h| h.lookup(&n))
+            let env = a.named("envir").and_then(|v| env_of(&v));
+            let found = match env {
+                Some(e) => with_host(|h| h.lookup_from(e, &n)),
+                None => with_host(|h| h.lookup(&n)),
+            };
+            found
                 .or_else(|| primitive_value(&n))
                 .ok_or_else(|| format!("object '{n}' not found"))
         }
@@ -6801,6 +6815,62 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 return Ok(mk_lang(e));
             };
             Ok(mk_lang(substitute_in(&e, &map, true)))
+        }
+        // `parent.frame()` is the environment of the frame that called this
+        // one. A builtin pushes no frame, so the stack below the current one
+        // is the caller's closure — which is what R means by the parent frame.
+        "parent.frame" => {
+            let up = a.get(0, "n").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
+            Ok(with_host(|h| {
+                let n = h.frames.len();
+                match n.checked_sub(up + 1).and_then(|i| h.frames.get(i)) {
+                    Some(f) => {
+                        let e = f.env.clone();
+                        h.alloc(RData::Environment(e))
+                    }
+                    // Past the outermost frame there is only the global
+                    // environment, which is what R answers there too.
+                    None => {
+                        let g = h.global.clone();
+                        h.alloc(RData::Environment(g))
+                    }
+                }
+            }))
+        }
+        "globalenv" => Ok(with_host(|h| {
+            let g = h.global.clone();
+            h.alloc(RData::Environment(g))
+        })),
+        "environmentName" => {
+            let e = a.req(0, "env")?;
+            // Only the global environment has a name rlang can give: the rest
+            // are anonymous frames, which R also names with the empty string.
+            let global = env_of(&e).is_some_and(|e| with_host(|h| Rc::ptr_eq(&e, &h.global)));
+            Ok(scalar_str(match global {
+                true => "R_GlobalEnv",
+                false => "",
+            }))
+        }
+        // `ls(envir)` — the names bound there, sorted, with the dot-names left
+        // out unless asked for, exactly as R's does.
+        "ls" | "objects" => {
+            let env = a
+                .get(0, "envir")
+                .and_then(|v| env_of(&v))
+                .unwrap_or_else(|| with_host(|h| h.env()));
+            let all = a
+                .named("all.names")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(false);
+            let mut names: Vec<String> = env
+                .borrow()
+                .vars
+                .keys()
+                .filter(|k| all || !k.starts_with('.'))
+                .cloned()
+                .collect();
+            names.sort_by(|a, b| crate::collate::str_cmp(a, b));
+            Ok(mk_str(names.into_iter().map(Some).collect()))
         }
         // `sys.call()` is the call that made the frame now running, verbatim.
         // The context stack holds its deparse; parsing that back is what makes

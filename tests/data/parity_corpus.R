@@ -1440,3 +1440,34 @@ m <- function(x = 5) substitute(x)
 print(m())
 n <- function(a, b) substitute(a + b)
 print(n(b = 1, a = 2))
+#==#
+f <- function() parent.frame()
+g <- function() {
+    z <- 1
+    f()
+}
+e <- g()
+print(class(e))
+print(ls(e))
+h <- function() {
+    p <- parent.frame()
+    get("z", envir = p)
+}
+k <- function() {
+    z <- 42
+    h()
+}
+print(k())
+#==#
+e <- new.env()
+e$b <- 1
+e$a <- 2
+print(ls(e))
+assign("v", 9, envir = e)
+print(exists("v"))
+print(exists("v", envir = e))
+print(get("v", envir = e))
+e$.hidden <- 1
+print(ls(e))
+print(ls(e, all.names = TRUE))
+print(environmentName(globalenv()))

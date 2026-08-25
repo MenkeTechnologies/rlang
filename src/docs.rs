@@ -1368,6 +1368,31 @@ const ENVIRONMENTS: &[Entry] = &[
         "The expression with every symbol the current frame accounts for replaced by what it stands for: a formal the caller supplied stands for the expression they wrote, anything else bound in the frame stands for its value, and a symbol neither accounts for is left alone. `...` splices back into the arguments it stands for. At top level nothing is substituted, however much is bound. With env, that table is consulted instead of the frame.",
     ),
     (
+        "parent.frame",
+        "parent.frame(n = 1)",
+        "The environment of the frame that called this one, so a function can read or write the caller's variables. A builtin pushes no frame, so what this finds is the calling closure. Past the outermost frame it answers the global environment, as R does.",
+    ),
+    (
+        "ls",
+        "ls(envir, all.names = FALSE)",
+        "The names bound in an environment, sorted, defaulting to the current one. Names beginning with a dot are left out unless all.names is TRUE.",
+    ),
+    (
+        "objects",
+        "objects(envir, all.names = FALSE)",
+        "The names bound in an environment, identical to ls.",
+    ),
+    (
+        "globalenv",
+        "globalenv()",
+        "The global environment — where a top-level assignment binds.",
+    ),
+    (
+        "environmentName",
+        "environmentName(env)",
+        "\"R_GlobalEnv\" for the global environment and the empty string for any other, which is what R answers for an anonymous frame.",
+    ),
+    (
         "evalq",
         "evalq(expr, envir)",
         "Run an expression, identical to eval here: rlang's arguments are eager, so there is nothing left to quote against by the time either is called.",
