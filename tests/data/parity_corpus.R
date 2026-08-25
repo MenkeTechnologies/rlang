@@ -1181,3 +1181,54 @@ print(exists("month.name"))
 print(exists("no_such_object_zz"))
 x <- 1
 print(exists("x"))
+#==#
+x <- c(1, 2, 3)
+y <- x
+x[1] <- 9
+print(y)
+print(x)
+f <- function(a) { a[1] <- 99; a }
+print(f(x))
+print(x)
+L <- list(a = x, b = x)
+L$a[1] <- 0
+print(L$a)
+print(L$b)
+print(x)
+#==#
+mk <- function() { v <- c(1, 2, 3); function(i, val) { v[i] <<- val; v } }
+g <- mk()
+print(g(1, 9))
+print(g(2, 8))
+e <- new.env()
+e$v <- c(1, 2, 3)
+u <- e$v
+e$v[1] <- 7
+print(u)
+print(e$v)
+#==#
+x <- matrix(1:4, 2)
+x[5] <- 9L
+print(x)
+print(attributes(x))
+y <- array(1:4, c(2, 2), dimnames = list(c("r1", "r2"), c("c1", "c2")))
+y[[5]] <- 9L
+print(y)
+print(attributes(y))
+z <- 1:3
+dim(z) <- 3L
+z[5] <- 9L
+print(attributes(z))
+#==#
+x <- c(a = 1, b = 2)
+x[4] <- 9
+print(x)
+print(names(x))
+y <- c(1, 2)
+y["z"] <- 9
+print(y)
+print(names(y))
+l <- list(a = 1)
+l[[3]] <- 2
+print(names(l))
+print(l)

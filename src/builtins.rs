@@ -1950,17 +1950,24 @@ fn assign_index(
     let is_list = kind(x) == RKind::List
         || (single_slot && !is_null(value) && len(value) > 1)
         || matches!(kind(value), RKind::List | RKind::Closure | RKind::Builtin);
-    let mut names = names_of(x);
     let n = len(x);
+
+    // The names are needed to resolve a character subscript, and again to
+    // rebuild the vector — and nowhere else. Reading them up front cloned every
+    // name on every `x[i] <- v`, which left an assignment loop over a *named*
+    // vector quadratic even once the write itself was in place (65s at
+    // n = 40000 against R's 0.16s), so each user takes them when it needs them.
+    let mut names: Option<Vec<Option<String>>> = None;
 
     // Character index that names a new element appends it.
     let mut positions: Vec<usize> = Vec::new();
     let mut new_names: Vec<(usize, String)> = Vec::new();
     match data(idx) {
         RData::Str(keys) => {
+            let known = names.insert(names_of(x));
             let mut next = n;
             for k in keys.iter().flatten() {
-                match names
+                match known
                     .iter()
                     .position(|nm| nm.as_deref() == Some(k.as_str()))
                 {
@@ -1977,7 +1984,9 @@ fn assign_index(
             // Assigning past the end grows the vector, so resolve against the
             // larger of the current length and the highest index named.
             let highest = as_dbl(idx).iter().flatten().fold(0.0f64, |a, b| a.max(*b)) as usize;
-            for p in resolve_index(idx, n.max(highest), &names)? {
+            // A non-character subscript never consults the names, so this is
+            // the branch that must not read them.
+            for p in resolve_index(idx, n.max(highest), &[])? {
                 match p {
                     Some(i) => positions.push(i),
                     None => return Err("NAs are not allowed in subscripted assignments".into()),
@@ -2041,6 +2050,11 @@ fn assign_index(
         }
     }
 
+    // Everything from here rebuilds the vector, and every rebuild carries the
+    // names across, so this is where they are read if the subscript did not
+    // already need them.
+    let mut names = names.unwrap_or_else(|| names_of(x));
+
     if is_list {
         let mut items: Vec<Value> = match data(x) {
             RData::List(v) => v,
@@ -2073,25 +2087,22 @@ fn assign_index(
         for (k, p) in positions.iter().enumerate() {
             while items.len() <= *p {
                 items.push(null());
-                names.push(None);
+                names.push(blank());
             }
             items[*p] = vals[k % vals.len().max(1)].clone();
         }
         for (i, nm) in new_names {
             while names.len() <= i {
-                names.push(None);
+                names.push(blank());
             }
             names[i] = Some(nm);
         }
+        let grew = items.len() > n;
         let out = mk_list(items);
         if !names.is_empty() {
             set_names(&out, names.clone());
         }
-        for (k, v) in with_host(|h| h.attrs_of(x)) {
-            if k != "names" {
-                with_host(|h| h.set_attr(&out, &k, v));
-            }
-        }
+        copy_attrs(x, &out, grew);
         return Ok(out);
     }
 
@@ -2132,22 +2143,37 @@ fn assign_index(
     };
     for (i, nm) in new_names {
         while names.len() <= i {
-            names.push(None);
+            names.push(blank());
         }
         names[i] = Some(nm);
     }
     if !names.is_empty() {
         while names.len() < grow {
-            names.push(None);
+            names.push(blank());
         }
         set_names(&out, names);
     }
+    copy_attrs(x, &out, grow > n);
+    Ok(out)
+}
+
+/// The name R's `EnlargeNames` gives a slot the assignment skipped past:
+/// `R_BlankString`, not `NA`. `x <- c(a = 1); x[3] <- 9` names the gap `""`.
+fn blank() -> Option<String> {
+    Some(String::new())
+}
+
+/// Carry `x`'s attributes onto the vector an assignment rebuilt. `names` is
+/// always set separately by the caller, and `dim`/`dimnames` are dropped when
+/// the assignment grew the vector — R's `EnlargeVector` clears both, because a
+/// vector one element longer than its own `dim` says is no longer that array.
+fn copy_attrs(x: &Value, out: &Value, grew: bool) {
     for (k, v) in with_host(|h| h.attrs_of(x)) {
-        if k != "names" {
-            with_host(|h| h.set_attr(&out, &k, v));
+        let dropped = k == "names" || (grew && (k == "dim" || k == "dimnames"));
+        if !dropped {
+            with_host(|h| h.set_attr(out, &k, v));
         }
     }
-    Ok(out)
 }
 
 /// Write `src` (recycled) into `dst` at `positions`, growing `dst` to `grow`.
