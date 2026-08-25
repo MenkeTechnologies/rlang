@@ -1297,6 +1297,46 @@ const ENVIRONMENTS: &[Entry] = &[
         ".rlang_formula(src)",
         "Internal, not user surface: what the compiler emits for `lhs ~ rhs`. It takes the deparsed R source and builds a real formula object in the embedded R, so lm, glm and aggregate receive one intact.",
     ),
+    (
+        ".rlang_quote",
+        ".rlang_quote(src)",
+        "Internal, not user surface: what the compiler emits for quote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote.",
+    ),
+    (
+        "quote",
+        "quote(expr)",
+        "The expression itself, unevaluated. quote(1) is the number, quote(x) is a name, and a compound expression is a call — R's own three outcomes. The result prints as its source, deparses back to it, and takes apart with length and as.character.",
+    ),
+    (
+        "bquote",
+        "bquote(expr)",
+        "The expression itself, unevaluated, like quote. R's `.()` substitution inside the expression is not performed.",
+    ),
+    (
+        "as.name",
+        "as.name(x)",
+        "The name (symbol) whose text is x — R's as.symbol. as.name(\"foo\") prints as foo and has class \"name\".",
+    ),
+    (
+        "as.symbol",
+        "as.symbol(x)",
+        "The name (symbol) whose text is x, identical to as.name.",
+    ),
+    (
+        "is.call",
+        "is.call(x)",
+        "Whether x is an unevaluated call — TRUE for quote(f(1)) and for quote(a + b), FALSE for a name or a constant.",
+    ),
+    (
+        "is.name",
+        "is.name(x)",
+        "Whether x is a name — TRUE for quote(x) and as.name(\"x\"), FALSE for a call or a constant. R's is.symbol.",
+    ),
+    (
+        "is.symbol",
+        "is.symbol(x)",
+        "Whether x is a name, identical to is.name.",
+    ),
 ];
 
 /// The operators, which R makes ordinary functions — that is what lets

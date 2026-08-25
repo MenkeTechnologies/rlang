@@ -2154,69 +2154,88 @@ pub fn call_closure(
     }
 }
 
-/// R's argument matching: exact tags first, then unique partial tags, then
-/// positional fill of the still-unmatched formals. Everything left over goes to
-/// `...` when the function has it, and is an error when it does not.
-pub fn match_args(
+/// Which formal each supplied argument binds to — R's argument matching, in
+/// R's own order: an exact tag first, then a partial tag against the formals
+/// before `...`, then position. `None` for an argument that matched no formal
+/// and so belongs to `...`.
+///
+/// The rule lives here once because two callers need the same answer about
+/// different things: [`match_args`] binds *values* to formals, and
+/// `match.call()` re-tags the *expressions* the caller wrote.
+pub fn match_positions(
     params: &[String],
-    args: &[(Option<String>, Value)],
-) -> Result<Vec<(String, Value)>, String> {
-    let mut bound: Vec<Option<Value>> = vec![None; params.len()];
-    let mut used = vec![false; args.len()];
+    tags: &[Option<String>],
+) -> Result<Vec<Option<usize>>, String> {
+    let mut to = vec![None; tags.len()];
+    let mut taken = vec![false; params.len()];
     let dots_at = params.iter().position(|p| p == "...");
 
     // 1. exact tag matches
-    for (ai, (tag, val)) in args.iter().enumerate() {
+    for (ai, tag) in tags.iter().enumerate() {
         let Some(tag) = tag else { continue };
         if let Some(pi) = params.iter().position(|p| p == tag) {
-            if bound[pi].is_some() {
+            if taken[pi] {
                 return Err(format!(
                     "formal argument \"{tag}\" matched by multiple actual arguments"
                 ));
             }
-            bound[pi] = Some(val.clone());
-            used[ai] = true;
+            taken[pi] = true;
+            to[ai] = Some(pi);
         }
     }
     // 2. partial tag matches, only against formals before `...`
     let partial_limit = dots_at.unwrap_or(params.len());
-    for (ai, (tag, val)) in args.iter().enumerate() {
-        if used[ai] {
+    for (ai, tag) in tags.iter().enumerate() {
+        if to[ai].is_some() {
             continue;
         }
         let Some(tag) = tag else { continue };
         let hits: Vec<usize> = (0..partial_limit)
-            .filter(|&pi| bound[pi].is_none() && params[pi].starts_with(tag.as_str()))
+            .filter(|&pi| !taken[pi] && params[pi].starts_with(tag.as_str()))
             .collect();
         match hits.len() {
             0 => {}
             1 => {
-                bound[hits[0]] = Some(val.clone());
-                used[ai] = true;
+                taken[hits[0]] = true;
+                to[ai] = Some(hits[0]);
             }
             _ => return Err(format!("argument {tag} matches multiple formal arguments")),
         }
     }
-    // 3. positional fill
+    // 3. positional fill, stopping at `...` — everything past it is variadic
     let mut pi = 0usize;
-    for (ai, (tag, val)) in args.iter().enumerate() {
-        if used[ai] || tag.is_some() {
+    for (ai, tag) in tags.iter().enumerate() {
+        if to[ai].is_some() || tag.is_some() {
             continue;
         }
-        while pi < params.len() && (bound[pi].is_some() || params[pi] == "...") {
-            if params[pi] == "..." {
-                break;
-            }
+        while pi < params.len() && taken[pi] && params[pi] != "..." {
             pi += 1;
         }
         if pi >= params.len() || params[pi] == "..." {
             break;
         }
-        bound[pi] = Some(val.clone());
-        used[ai] = true;
+        taken[pi] = true;
+        to[ai] = Some(pi);
         pi += 1;
     }
+    Ok(to)
+}
 
+/// Bind a call's arguments to a closure's formals, R's way. Unmatched
+/// arguments go to `...` when the closure has one and are an error when it does
+/// not.
+pub fn match_args(
+    params: &[String],
+    args: &[(Option<String>, Value)],
+) -> Result<Vec<(String, Value)>, String> {
+    let tags: Vec<Option<String>> = args.iter().map(|(t, _)| t.clone()).collect();
+    let to = match_positions(params, &tags)?;
+    let mut bound: Vec<Option<Value>> = vec![None; params.len()];
+    for (ai, slot) in to.iter().enumerate() {
+        if let Some(pi) = slot {
+            bound[*pi] = Some(args[ai].1.clone());
+        }
+    }
     let mut out = Vec::new();
     for (i, p) in params.iter().enumerate() {
         if p == "..." {
@@ -2226,14 +2245,14 @@ pub fn match_args(
             out.push((p.clone(), v.clone()));
         }
     }
-    // 4. leftovers → `...`, or an error
+    // leftovers → `...`, or an error
     let rest: Vec<(Option<String>, Value)> = args
         .iter()
-        .enumerate()
-        .filter(|(i, _)| !used[*i])
-        .map(|(_, a)| a.clone())
+        .zip(&to)
+        .filter(|(_, slot)| slot.is_none())
+        .map(|(a, _)| a.clone())
         .collect();
-    if dots_at.is_some() {
+    if params.iter().any(|p| p == "...") {
         let dots = with_host(|h| h.alloc(RData::Args(rest)));
         out.push(("...".to_string(), dots));
     } else if let Some((tag, _)) = rest.first() {
