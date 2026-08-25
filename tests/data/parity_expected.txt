@@ -1566,3 +1566,12 @@ NULL
 
 [1]  1  2 NA NA  9
 [1] NA  NA  "c"
+#==#
+[1] NA
+[1] "NAs introduced by coercion"
+[1] "NaNs produced"
+saw: w 
+[1] 1 2 1
+[1] 1 2 3
+[1] NaN
+[1] NaN   0

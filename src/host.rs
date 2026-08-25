@@ -129,6 +129,17 @@ pub mod ops {
     /// a container rather than the value of a binding, so the reference count
     /// on it does not describe how many bindings can see it.
     pub const MARK_SHARED: u16 = 57;
+    /// `[text]` → text, with `text` opened as a call context *before* the
+    /// arguments are evaluated. Emitted for a callee R implements as a closure:
+    /// R makes the closure's context first and forces the argument promises
+    /// inside it, so a condition raised while evaluating an argument reports
+    /// the enclosing call. A callee R implements as a primitive makes no
+    /// context at all, and gets no `OPEN_CALL`.
+    pub const OPEN_CALL: u16 = 58;
+    /// `[text, fun, args]` → result, for a call whose context [`OPEN_CALL`]
+    /// already opened. Identical to [`CALL`] but for adopting that entry
+    /// instead of pushing a second one.
+    pub const CALL_OPENED: u16 = 59;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -443,6 +454,37 @@ pub type RestartInvoke = (u64, Vec<(Option<String>, Value)>);
 pub const RESTART_UNWIND: &str = "\u{1}restart";
 
 /// The R runtime: heap, environments, call stack, and pending control state.
+/// A queued warning: its message and the call it was raised from, which R
+/// prints as the `In <call> :` prefix. `None` for one raised at top level,
+/// where R's `findCall` finds no enclosing call either.
+/// A context's call text, read back out of the constant holding it.
+fn ctx_text(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// One entry on the call context stack.
+pub struct CallCtx {
+    /// The call's deparsed source, as `In <call> :` renders it — held as the
+    /// compiler's own string constant, so opening a context is an `Arc` bump
+    /// rather than a copy. Every call pays for this; only a warning reads it.
+    pub text: Value,
+    /// Whether *R* would make a function context for this call — R's
+    /// `CTXT_FUNCTION`, which every closure sets and no primitive does. It is
+    /// decided by the compiler from R's primitive list rather than by what
+    /// rlang implements the callee as, because rlang implements most of R's
+    /// base *closures* as Rust builtins and the condition machinery has to see
+    /// R's shape, not rlang's.
+    pub closure: bool,
+}
+
+pub struct Warning {
+    pub msg: String,
+    pub call: Option<String>,
+}
+
 pub struct RHost {
     heap: Vec<RObj>,
     pub global: Env,
@@ -485,10 +527,16 @@ pub struct RHost {
     /// Whether the top-level echo prints at all. On for `Rscript` and the REPL,
     /// off for embedding and for tests that want the value, not the transcript.
     pub echo: bool,
+    /// One entry per call now being evaluated, innermost last — R's context
+    /// stack, narrowed to what the condition machinery reads off it. R's
+    /// `findCall` walks it for the innermost *function* context, which is the
+    /// call `warning()` reports; a warning raised inside a primitive reports
+    /// that primitive's own call instead.
+    pub calls: Vec<CallCtx>,
     /// Warnings raised by the top-level statement now running, held until it
     /// finishes — R's default `options(warn = 0)`. Capped at [`MAX_WARNINGS`]
     /// entries the way R caps `nwarnings`.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
     /// How many warnings that statement raised, which keeps counting past the
     /// cap so the "50 or more" banner can say so.
     pub warn_count: usize,
@@ -598,6 +646,7 @@ impl RHost {
             signal: None,
             visible: true,
             echo: true,
+            calls: Vec::new(),
             warnings: Vec::new(),
             warn_count: 0,
             null: None,
@@ -1190,6 +1239,39 @@ impl RHost {
         None
     }
 
+    /// The call now being evaluated, whatever kind it is. A warning raised
+    /// inside a primitive reports this — `as.integer("x")` warns as
+    /// `In as.integer("x") : NAs introduced by coercion`.
+    pub fn current_call(&self) -> Option<String> {
+        self.calls.last().map(|c| ctx_text(&c.text))
+    }
+
+    /// The innermost *function* context — what R's C `warning()` reports when
+    /// it is called from inside a primitive that has no call of its own, as
+    /// `CoercionWarning` is. A primitive makes no context, so the warning lands
+    /// on the closure containing it: `print(as.integer("x"))`, and nothing at
+    /// all when that closure is the top level.
+    pub fn context_call(&self) -> Option<String> {
+        self.innermost_context(0)
+    }
+
+    /// R's `findCall`, which starts at `R_GlobalContext->nextcontext`: the
+    /// innermost function context *outside* the call now running. `warning()`
+    /// is itself a closure in R, so its own context is the one being skipped,
+    /// and what is left is the function that called it.
+    pub fn enclosing_call(&self) -> Option<String> {
+        self.innermost_context(1)
+    }
+
+    fn innermost_context(&self, skip: usize) -> Option<String> {
+        self.calls
+            .iter()
+            .rev()
+            .skip(skip)
+            .find(|c| c.closure)
+            .map(|c| ctx_text(&c.text))
+    }
+
     /// Bind `name` in the current environment.
     pub fn set_var(&mut self, name: &str, val: Value) {
         let env = self.env();
@@ -1619,6 +1701,17 @@ fn run_closure_chunk(id: usize) -> Result<Value, String> {
 
 /// Run a prepared VM to completion and read its outcome.
 fn drive(vm: &mut VM) -> Result<Value, String> {
+    // An `OPEN_CALL` in this chunk whose `CALL_OPENED` never ran — an argument
+    // errored, or a `return`/`break` jumped past it — would leave its context
+    // behind. Unwinding lands here, so the stack is cut back to the depth this
+    // chunk started at however it ends.
+    let depth = with_host(|h| h.calls.len());
+    let out = drive_inner(vm);
+    with_host(|h| h.calls.truncate(depth));
+    out
+}
+
+fn drive_inner(vm: &mut VM) -> Result<Value, String> {
     // The tracing JIT is deliberately NOT enabled. It cannot compile R: fusevm's
     // tracer rejects any trace containing `Op::CallBuiltin` (builtin bodies are
     // arbitrary Rust it can't lower to Cranelift IR), and R lowers nearly every
@@ -1659,16 +1752,47 @@ pub const MAX_WARNINGS: usize = 50;
 ///
 /// `options(warn = 0)` (the default) defers; a positive `warn` prints at once;
 /// a negative one drops the warning entirely.
-pub fn queue_warning(msg: &str) {
+pub fn queue_warning(msg: &str, call: Option<String>) {
     match warn_level() {
         w if w < 0 => {}
         0 => with_host(|h| {
             h.warn_count += 1;
             if h.warnings.len() < MAX_WARNINGS {
-                h.warnings.push(msg.to_string());
+                h.warnings.push(Warning {
+                    msg: msg.to_string(),
+                    call,
+                });
             }
         }),
-        _ => emit_stderr(&format!("Warning: {msg}\n")),
+        // `warn = 1` prints where the warning happens, under its own banner.
+        // R's `vwarningcall_dflt` allows 18 columns for the `Warning in ` and
+        // ` : ` around the call before deciding whether the message still fits.
+        _ => {
+            let text = match &call {
+                None => format!("Warning: {msg}\n"),
+                Some(c) => format!("Warning in {c} :{}", fold(c, msg, 18)),
+            };
+            emit_stderr(&text);
+        }
+    }
+}
+
+/// R's `LONGWARN`: the column past which a warning's first line is folded onto
+/// the next, indented.
+const LONGWARN: usize = 75;
+
+/// The tail of a warning line, from just after `<call> :` — either ` msg` on
+/// the same line, or a fold onto the next line indented two spaces. R keeps the
+/// message on the line when `overhead + width(call) + width(msg's first line)`
+/// fits in [`LONGWARN`]; `overhead` is R's allowance for the decoration around
+/// the call, which differs per banner.
+fn fold(call: &str, msg: &str, overhead: usize) -> String {
+    let first = msg.split('\n').next().unwrap_or(msg);
+    let width = |s: &str| crate::strwidth::display_width(s);
+    if overhead + width(call) + width(first) > LONGWARN {
+        format!("\n  {msg}\n")
+    } else {
+        format!(" {msg}\n")
     }
 }
 
@@ -1687,13 +1811,16 @@ pub fn flush_warnings(after_error: bool) {
         return;
     }
     let lead = if after_error { "In addition: " } else { "" };
+    // R's `PrintWarnings` allows 6 columns of decoration around the call for a
+    // lone warning and 10 for a numbered one — the extra 4 being the `N: `
+    // prefix — before deciding whether the message still fits on the line.
     let text = if count == 1 {
-        format!("{lead}Warning message:\n{} \n", msgs[0])
+        format!("{lead}Warning message:\n{}", warning_line(&msgs[0], 6))
     } else if count <= 10 {
         let body: String = msgs
             .iter()
             .enumerate()
-            .map(|(i, m)| format!("{}: {m} \n", i + 1))
+            .map(|(i, w)| format!("{}: {}", i + 1, warning_line(w, 10)))
             .collect();
         format!("{lead}Warning messages:\n{body}")
     } else if count < MAX_WARNINGS {
@@ -1704,6 +1831,15 @@ pub fn flush_warnings(after_error: bool) {
         )
     };
     emit_stderr(&text);
+}
+
+/// One queued warning as `PrintWarnings` writes it: the message followed by a
+/// space when it carries no call, and `In <call> : <message>` when it does.
+fn warning_line(w: &Warning, overhead: usize) -> String {
+    match &w.call {
+        None => format!("{} \n", w.msg),
+        Some(c) => format!("In {c} :{}", fold(c, &w.msg, overhead)),
+    }
 }
 
 /// The current `options(warn = )`, which defaults to 0 as it does in R.

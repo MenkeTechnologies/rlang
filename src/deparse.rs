@@ -408,6 +408,16 @@ pub fn deparse_expr(e: &Expr) -> String {
     d.finish().join("")
 }
 
+/// The first line of `e`'s deparse — R's `deparse1s(call)` followed by
+/// `STRING_ELT(., 0)`, which is how a condition renders the call it carries.
+/// A call whose deparse runs to several lines shows only its first, so
+/// `withCallingHandlers({ … }, warning = …)` reports as `withCallingHandlers({`.
+pub fn deparse_first_line(e: &Expr) -> String {
+    let mut d = Deparser::new();
+    d.expr(e);
+    d.finish().into_iter().next().unwrap_or_default()
+}
+
 /// A numeric literal as R writes it: the same fixed-vs-scientific choice
 /// `print` makes for a length-one double, so `100000` deparses to `1e+05`.
 fn num_literal(x: f64) -> String {

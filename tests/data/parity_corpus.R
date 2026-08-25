@@ -1245,3 +1245,17 @@ print(y)
 z <- character(0)
 z[3] <- "c"
 print(z)
+#==#
+print(suppressWarnings(as.integer("x")))
+print(tryCatch(as.numeric("x"), warning = function(w) conditionMessage(w)))
+f <- function(v) tryCatch(sqrt(v), warning = function(w) conditionMessage(w))
+print(f(-1))
+g <- function() withCallingHandlers(warning("w"), warning = function(w) {
+    cat("saw:", conditionMessage(w), "\n")
+    invokeRestart("muffleWarning")
+})
+g()
+print(pmin(c(1, 2, 3), c(1, 2)))
+print(pmax(c(1, 2, 3), c(1, 2)))
+print(log(-1))
+print(log(c(-1, 1)))

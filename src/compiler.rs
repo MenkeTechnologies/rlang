@@ -12,7 +12,7 @@
 //! targets like `x$a\[\[2\]\] <- v` unwind outward-in through the same two rules.
 
 use crate::ast::*;
-use crate::deparse::deparse_expr;
+use crate::deparse::{deparse_expr, deparse_first_line};
 use crate::host::{ops, ClosureDef};
 use fusevm::{Chunk, ChunkBuilder, Op, Value};
 
@@ -102,6 +102,234 @@ const DYNAMIC_ENV_FNS: &[&str] = &[
     "tapply",
     "outer",
 ];
+
+/// The functions R implements as primitives (`is.primitive`), in R 4.6.1.
+///
+/// The distinction matters to conditions, not to dispatch: a closure call makes
+/// an R *context* before its argument promises are forced, so a warning raised
+/// while evaluating an argument reports the enclosing call
+/// (`In print(as.integer("x")) : NAs introduced by coercion`), while a
+/// primitive makes none and the same warning at the same depth reports no call
+/// at all (`x <- sum(as.integer("x"))`). rlang implements nearly all of these
+/// as Rust builtins either way, so the list is what tells the two apart.
+const R_PRIMITIVES: &[&str] = &[
+    "-",
+    ":",
+    "::",
+    ":::",
+    "!",
+    "!=",
+    "...elt",
+    "...length",
+    "...names",
+    ".C",
+    ".cache_class",
+    ".Call",
+    ".Call.graphics",
+    ".class2",
+    ".External",
+    ".External.graphics",
+    ".External2",
+    ".Fortran",
+    ".Internal",
+    ".isMethodsDispatchOn",
+    ".Primitive",
+    ".primTrace",
+    ".primUntrace",
+    ".subset",
+    ".subset2",
+    "(",
+    "[",
+    "[[",
+    "[[<-",
+    "[<-",
+    "{",
+    "@",
+    "@<-",
+    "*",
+    "/",
+    "&",
+    "&&",
+    "%*%",
+    "%/%",
+    "%%",
+    "^",
+    "+",
+    "<",
+    "<-",
+    "<<-",
+    "<=",
+    "=",
+    "==",
+    ">",
+    ">=",
+    "|",
+    "||",
+    "~",
+    "$",
+    "$<-",
+    "abs",
+    "acos",
+    "acosh",
+    "all",
+    "any",
+    "anyNA",
+    "Arg",
+    "as.call",
+    "as.character",
+    "as.complex",
+    "as.double",
+    "as.environment",
+    "as.integer",
+    "as.logical",
+    "as.numeric",
+    "as.raw",
+    "asin",
+    "asinh",
+    "atan",
+    "atanh",
+    "attr",
+    "attr<-",
+    "attributes",
+    "attributes<-",
+    "baseenv",
+    "break",
+    "browser",
+    "c",
+    "call",
+    "ceiling",
+    "class",
+    "class<-",
+    "Conj",
+    "cos",
+    "cosh",
+    "cospi",
+    "crossprod",
+    "cummax",
+    "cummin",
+    "cumprod",
+    "cumsum",
+    "declare",
+    "digamma",
+    "dim",
+    "dim<-",
+    "dimnames",
+    "dimnames<-",
+    "emptyenv",
+    "enc2native",
+    "enc2utf8",
+    "environment<-",
+    "Exec",
+    "exp",
+    "expm1",
+    "expression",
+    "floor",
+    "for",
+    "forceAndCall",
+    "function",
+    "gamma",
+    "gc.time",
+    "globalenv",
+    "if",
+    "Im",
+    "interactive",
+    "invisible",
+    "is.array",
+    "is.atomic",
+    "is.call",
+    "is.character",
+    "is.complex",
+    "is.double",
+    "is.environment",
+    "is.expression",
+    "is.finite",
+    "is.function",
+    "is.infinite",
+    "is.integer",
+    "is.language",
+    "is.list",
+    "is.logical",
+    "is.matrix",
+    "is.na",
+    "is.name",
+    "is.nan",
+    "is.null",
+    "is.numeric",
+    "is.object",
+    "is.pairlist",
+    "is.raw",
+    "is.recursive",
+    "is.single",
+    "is.symbol",
+    "isS4",
+    "lazyLoadDBfetch",
+    "length",
+    "length<-",
+    "levels<-",
+    "lgamma",
+    "list",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
+    "max",
+    "min",
+    "missing",
+    "Mod",
+    "names",
+    "names<-",
+    "nargs",
+    "next",
+    "nzchar",
+    "oldClass",
+    "oldClass<-",
+    "on.exit",
+    "pos.to.env",
+    "proc.time",
+    "prod",
+    "quote",
+    "range",
+    "Re",
+    "rep",
+    "repeat",
+    "retracemem",
+    "return",
+    "round",
+    "seq_along",
+    "seq_len",
+    "seq.int",
+    "sign",
+    "signif",
+    "sin",
+    "sinh",
+    "sinpi",
+    "sqrt",
+    "standardGeneric",
+    "storage.mode<-",
+    "substitute",
+    "sum",
+    "switch",
+    "Tailcall",
+    "tan",
+    "tanh",
+    "tanpi",
+    "tcrossprod",
+    "tracemem",
+    "trigamma",
+    "trunc",
+    "unCfillPOSIXlt",
+    "unclass",
+    "untracemem",
+    "UseMethod",
+    "while",
+    "xtfrm",
+];
+
+/// Whether calling `name` makes an R context — true for everything R implements
+/// as a closure, which is what [`ops::OPEN_CALL`] is emitted for.
+fn makes_context(name: &str) -> bool {
+    !R_PRIMITIVES.contains(&name)
+}
 
 /// The names in a whole-program top level that are safe to bind to native frame
 /// slots: the unit must contain no nested `function` (a closure captures the
@@ -507,6 +735,26 @@ impl Compiler {
                     _ => None,
                 };
                 let args: &[Arg] = thunked.as_deref().unwrap_or(args);
+                // R's contexts carry the call that created them, and every
+                // condition raised inside one reports it (`In f(1) : …`). The
+                // deparse is fixed at compile time and rides under the callee,
+                // so it nests with the call itself and needs no save/restore:
+                // `CALL` takes it as its third operand and pushes it on the
+                // host's context stack for as long as the call runs.
+                self.kstr(b, &deparse_first_line(e));
+                // R makes a closure's context *before* forcing its argument
+                // promises, and none at all for a primitive, so a condition
+                // raised while evaluating an argument reports the enclosing
+                // call only in the first case. Opening the context here, ahead
+                // of the arguments, is that difference. A callee that is not a
+                // plain name cannot be a primitive.
+                let opens = match fun.as_ref() {
+                    Expr::Ident(name) => makes_context(name),
+                    _ => true,
+                };
+                if opens {
+                    b.emit(Op::CallBuiltin(ops::OPEN_CALL, 1), 0);
+                }
                 // A named callee resolves in function position, skipping
                 // non-function bindings (`c <- 1; c(1, 2)` still concatenates).
                 match fun.as_ref() {
@@ -516,6 +764,10 @@ impl Compiler {
                     }
                     other => self.expr(b, other)?,
                 }
+                let call_op = match opens {
+                    true => ops::CALL_OPENED,
+                    false => ops::CALL,
+                };
                 // `library(pkg)`/`require(pkg)` take the package name unevaluated
                 // (NSE); a bare symbol is compiled as its string name so the
                 // loader receives it instead of failing to find a variable.
@@ -536,7 +788,7 @@ impl Compiler {
                             value: Some(Expr::Str(sym.clone())),
                         };
                         self.args(b, &rewritten)?;
-                        b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                        b.emit(Op::CallBuiltin(call_op, 3), 0);
                         return Ok(());
                     }
                 }
@@ -556,7 +808,7 @@ impl Compiler {
                             value: Some(Expr::Str(sym.clone())),
                         });
                         self.args(b, &rewritten)?;
-                        b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                        b.emit(Op::CallBuiltin(call_op, 3), 0);
                         return Ok(());
                     }
                 }
@@ -603,11 +855,11 @@ impl Compiler {
                         ..label(&|e| Some(deparse_expr(e)))
                     });
                     self.args(b, &rewritten)?;
-                    b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                    b.emit(Op::CallBuiltin(call_op, 3), 0);
                     return Ok(());
                 }
                 self.args(b, args)?;
-                b.emit(Op::CallBuiltin(ops::CALL, 2), 0);
+                b.emit(Op::CallBuiltin(call_op, 3), 0);
             }
             Expr::Formula { lhs, rhs } => {
                 // A formula is unevaluated language: deparse it back to R source

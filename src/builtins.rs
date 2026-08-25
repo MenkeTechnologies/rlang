@@ -89,6 +89,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::SWITCH_INDEX, b_switch_index);
     vm.register_builtin(ops::WARN_FLUSH, b_warn_flush);
     vm.register_builtin(ops::MARK_SHARED, b_mark_shared);
+    vm.register_builtin(ops::OPEN_CALL, b_open_call);
+    vm.register_builtin(ops::CALL_OPENED, b_call_opened);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -508,9 +510,33 @@ fn b_mkargs(vm: &mut VM, argc: u8) -> Value {
     with_host(|h| h.alloc(RData::Args(out)))
 }
 
+/// Open a call context before the arguments are evaluated, for a callee R
+/// implements as a closure. The deparsed call is returned unchanged so it stays
+/// where the compiler put it — under the callee, as `CALL_OPENED`'s operand.
+fn b_open_call(vm: &mut VM, _: u8) -> Value {
+    // Emitted only where R makes a function context, so the flag is settled
+    // here rather than waiting for the callee to resolve.
+    let text = vm.peek().clone();
+    with_host(|h| h.calls.push(crate::host::CallCtx { text, closure: true }));
+    vm.pop()
+}
+
 fn b_call(vm: &mut VM, _: u8) -> Value {
+    call_op(vm, false)
+}
+
+/// `CALL` for a context [`b_open_call`] already opened.
+fn b_call_opened(vm: &mut VM, _: u8) -> Value {
+    call_op(vm, true)
+}
+
+fn call_op(vm: &mut VM, opened: bool) -> Value {
     let argv = vm.pop();
     let f = vm.pop();
+    // The deparsed call, pushed under the callee by the compiler. It stands on
+    // the host's context stack for the duration of the call so a condition
+    // raised inside can report it, and comes off however the call ends.
+    let call = vm.pop();
     let args = match data(&argv) {
         RData::Args(a) => a,
         _ => Vec::new(),
@@ -519,6 +545,7 @@ fn b_call(vm: &mut VM, _: u8) -> Value {
         RData::Builtin(n) => Some(n),
         _ => None,
     };
+    let closure = matches!(data(&f), RData::Closure { .. });
     // Most calls are visible by default (R sets `R_Visible = TRUE` on entry).
     // The `suppress*` wrappers are visibility-transparent: they return their
     // argument with its visibility intact. Because rlang evaluates arguments
@@ -532,7 +559,23 @@ fn b_call(vm: &mut VM, _: u8) -> Value {
     if !transparent {
         with_host(|h| h.visible = true);
     }
-    match call_value(&f, args, name) {
+    // With `OPEN_CALL` the context is already open, and already flagged: the
+    // compiler emits it exactly where R makes one. Without it the callee is one
+    // R implements as a primitive and makes no context for — unless the name
+    // has been rebound to a closure, which does.
+    if !opened {
+        with_host(|h| {
+            h.calls.push(crate::host::CallCtx {
+                text: call,
+                closure,
+            })
+        });
+    }
+    let out = call_value(&f, args, name);
+    with_host(|h| {
+        h.calls.pop();
+    });
+    match out {
         Ok(v) => propagate(vm, v),
         Err(e) => abort(vm, e),
     }
@@ -726,9 +769,63 @@ fn value_in(x: &Value, table: &Value) -> Value {
 /// R's binary operators, vectorized with recycling and NA propagation.
 /// Emit a warning the way R's top-level handler does: the banner, the message,
 /// and — for a warning carrying no call — a trailing space before the newline.
-fn r_warning(msg: &str) {
-    crate::host::queue_warning(msg);
+fn r_warning(msg: &str, call: Option<String>) {
+    crate::host::queue_warning(msg, call);
 }
+
+/// `warning(msg)`'s own default action. R's `do_warning` calls `findCall`,
+/// which walks past `warning()`'s own context — a builtin makes none — to the
+/// enclosing closure call, so `f <- function(x) warning("w"); f(1)` reports
+/// `In f(1) : w` and a top-level `warning("w")` reports no call at all.
+fn user_warning(msg: &str) {
+    let call = with_host(|h| h.enclosing_call());
+    crate::host::queue_warning(msg, call);
+}
+
+/// R's `CoercionWarning`, which raises its warning with plain `warning()`
+/// rather than `warningcall`: with no call of its own it lands on the innermost
+/// R *context*, and a builtin makes none, so the call reported is the caller's.
+fn coercion_warning(msg: &str) -> Result<(), String> {
+    signal_warning_in(msg, with_host(|h| h.context_call()))
+}
+
+/// A warning raised from an arithmetic or comparison operator. R names that
+/// call — `In 1:3 + 1:2 : longer object length …` — which rlang cannot: `+ - *
+/// /` lower to native fusevm ops carrying no call text, and pushing one on
+/// every arithmetic op would cost the hot path the whole design exists to keep
+/// native. Reported with no call, which is the shape R uses when there is none,
+/// rather than with the enclosing call, which would name the wrong one.
+fn binop_warning(msg: &str) -> Result<(), String> {
+    signal_warning_in(msg, None)
+}
+
+/// Call `f` from inside an apply-family primitive under the context R's own
+/// implementation makes. R builds that call itself — `do_lapply` evaluates
+/// `FUN(X[[i]], ...)`, `apply` evaluates `FUN(newX[, i], ...)`, `Reduce`
+/// evaluates `f(init, x[[i]])` — so a condition raised inside reports it rather
+/// than the `lapply(…)` the user wrote. A primitive `f` makes no context in R
+/// either, and then the apply function's own call stands, so nothing is pushed.
+fn call_fun(f: &Value, args: Vec<(Option<String>, Value)>, call: &str) -> Result<Value, String> {
+    if !matches!(data(f), RData::Closure { .. }) {
+        return call_value(f, args, None);
+    }
+    push_context(call);
+    let out = call_value(f, args, None);
+    with_host(|h| {
+        h.calls.pop();
+    });
+    out
+}
+
+/// Open a call context for R code rlang implements in Rust — the calls R's own
+/// definition would have made, which is what a condition raised inside reports.
+fn push_context(call: &str) {
+    let text = Value::str(call);
+    with_host(|h| h.calls.push(crate::host::CallCtx { text, closure: true }));
+}
+
+/// The context R's `lapply`-family C code evaluates `FUN` under.
+const FUN_CALL: &str = "FUN(X[[i]], ...)";
 
 /// End of a top-level statement: print whatever it queued. R holds warnings
 /// under the default `options(warn = 0)` until the statement finishes, so
@@ -750,7 +847,7 @@ fn warn_coerced_na(x: &Value, produced_na: impl Iterator<Item = bool>) -> Result
         .enumerate()
         .any(|(i, na)| na && src.get(i).is_some_and(|e| e.is_some()))
     {
-        signal_warning("NAs introduced by coercion")?;
+        coercion_warning("NAs introduced by coercion")?;
     }
     Ok(())
 }
@@ -840,7 +937,7 @@ fn ops_factor(op: &str, lhs: &Value, rhs: Option<&Value>) -> Option<Result<Value
         // A real condition, not just a printed line: `tryCatch(warning =)` can
         // catch it, `suppressWarnings` can muffle it, and a calling handler sees
         // it before the NA vector comes back.
-        if let Err(e) = signal_warning(&msg) {
+        if let Err(e) = binop_warning(&msg) {
             return Some(Err(e));
         }
         let n = len(lhs).max(rhs.map_or(0, len));
@@ -927,7 +1024,7 @@ fn recycle_len(a: usize, b: usize) -> Result<usize, String> {
     if hi % lo != 0 {
         // A real condition, so `tryCatch(warning = )` and `suppressWarnings`
         // reach it the way they reach `warning()`.
-        signal_warning("longer object length is not a multiple of shorter object length")?;
+        binop_warning("longer object length is not a multiple of shorter object length")?;
     }
     Ok(hi)
 }
@@ -999,7 +1096,8 @@ fn int_range_na(xs: Vec<Option<i64>>) -> Vec<Option<i64>> {
         })
         .collect();
     if lost {
-        r_warning(INT_COERCE_RANGE);
+        // Another `CoercionWarning` message, reported the same way.
+        r_warning(INT_COERCE_RANGE, with_host(|h| h.context_call()));
     }
     out
 }
@@ -1034,7 +1132,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
                 true => Value::Int(r as i64),
                 false => {
                     if r.is_finite() {
-                        r_warning(INT_OVERFLOW);
+                        r_warning(INT_OVERFLOW, None);
                     }
                     mk_int(vec![None])
                 }
@@ -1092,7 +1190,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             })
             .collect();
         if overflowed {
-            r_warning(INT_OVERFLOW);
+            r_warning(INT_OVERFLOW, None);
         }
         mk_int(ints)
     } else {
@@ -3052,7 +3150,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // Nothing took it — R's default action is to report and carry on.
                 Signalled::Fell => {
                     if warn {
-                        r_warning(&text);
+                        user_warning(&text);
                     } else {
                         eprint!("{text}");
                     }
@@ -3161,7 +3259,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         let (prev, warning) = crate::host::option_set(name, r_to_option_value(v)?)?;
                         record(name, prev);
                         if let Some(w) = warning {
-                            r_warning(&w);
+                            r_warning(&w, with_host(|h| h.current_call()));
                         }
                     }
                     // An untagged list is a restore: every named element is set.
@@ -3182,7 +3280,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                                 crate::host::option_set(name, r_to_option_value(e)?)?;
                             record(name, prev);
                             if let Some(w) = warning {
-                                r_warning(&w);
+                                r_warning(&w, with_host(|h| h.current_call()));
                             }
                         }
                     }
@@ -4052,8 +4150,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // R: `max` of nothing is `-Inf`, `min` is `Inf`, `range` is
                 // `c(Inf, -Inf)`; each extreme warns as it is taken, so `range`
                 // warns twice, once per end.
-                let warn_min = || signal_warning("no non-missing arguments to min; returning Inf");
-                let warn_max = || signal_warning("no non-missing arguments to max; returning -Inf");
+                // `range` is R code in R (`range.default` ends in
+                // `c(min(x), max(x))`), so its two warnings name *those* calls
+                // rather than the `range(…)` the user wrote.
+                let via_range = name == "range";
+                let at = |own: &str| match via_range {
+                    true => Some(format!("{own}(x)")),
+                    false => with_host(|h| h.current_call()),
+                };
+                let warn_min =
+                    || signal_warning_in("no non-missing arguments to min; returning Inf", at("min"));
+                let warn_max = || {
+                    signal_warning_in("no non-missing arguments to max; returning -Inf", at("max"))
+                };
                 return Ok(match name {
                     "min" => {
                         warn_min()?;
@@ -4197,11 +4306,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // R warns when a math function turns a real number into NaN —
             // `sqrt(-1)`, `log(-1)`, `asin(2)`. An input that was already NaN
             // does not warn, because nothing was produced.
-            if vals
-                .iter()
-                .zip(&input)
-                .any(|(o, i)| matches!((o, i), (Some(o), Some(i)) if o.is_nan() && !i.is_nan()))
-            {
+            if produced_nan(&vals, &input) {
                 nan_warning()?;
             }
             let out = mk_dbl(vals);
@@ -4211,20 +4316,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "log" => {
             let x = a.req(0, "x")?;
             let base = a.get(1, "base").and_then(|v| num1(&v));
-            shaped_like(
-                mk_dbl(
-                    as_dbl(&x)
-                        .iter()
-                        .map(|e| {
-                            e.map(|v| match base {
-                                Some(b) => v.log(b),
-                                None => v.ln(),
-                            })
-                        })
-                        .collect(),
-                ),
-                &x,
-            )
+            let input = as_dbl(&x);
+            let vals: Vec<Option<f64>> = input
+                .iter()
+                .map(|e| {
+                    e.map(|v| match base {
+                        Some(b) => v.log(b),
+                        None => v.ln(),
+                    })
+                })
+                .collect();
+            // R's `log` warns like every other `do_math1`: a real input that
+            // comes back NaN produced it, so `log(-1)` warns and `log(NaN)`
+            // does not.
+            if produced_nan(&vals, &input) {
+                nan_warning()?;
+            }
+            shaped_like(mk_dbl(vals), &x)
         }
         "atan2" => {
             let y = as_dbl(&a.req(0, "y")?);
@@ -4286,6 +4394,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .map(|(_, v)| as_dbl(v))
                 .collect();
             let n = cols.iter().map(|c| c.len()).max().unwrap_or(0);
+            // R's `do_pmin` checks every argument against the longest and warns
+            // once per one that does not tile it exactly — the same rule as
+            // arithmetic recycling, under a different message.
+            if cols.iter().any(|c| !c.is_empty() && n % c.len() != 0) {
+                signal_warning("an argument will be fractionally recycled")?;
+            }
             Ok(mk_dbl(
                 (0..n)
                     .map(|i| {
@@ -5018,11 +5132,33 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .filter(|(t, _)| !matches!(t.as_deref(), Some("simplify") | Some("USE.NAMES")))
                 .collect();
             let items = elements(&x);
+            // `sapply` is R code whose body is `lapply(X = X, FUN = FUN, ...)`,
+            // so a condition it does not attribute to `FUN` itself reports
+            // *that* call rather than the `sapply(…)` the user wrote.
+            let via_lapply = name == "sapply";
+            if via_lapply {
+                push_context("lapply(X = X, FUN = FUN, ...)");
+            }
             let mut out = Vec::with_capacity(items.len());
+            let mut err = None;
             for it in items {
                 let mut call_args = vec![(None, it)];
                 call_args.extend(extra.clone());
-                out.push(call_value(&f, call_args, None)?);
+                match call_fun(&f, call_args, FUN_CALL) {
+                    Ok(v) => out.push(v),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                }
+            }
+            if via_lapply {
+                with_host(|h| {
+                    h.calls.pop();
+                });
+            }
+            if let Some(e) = err {
+                return Err(e);
             }
             let res = mk_list(out);
             let nm = names_of(&x);
@@ -5060,7 +5196,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             let mut out = Vec::with_capacity(items.len());
             for it in items {
-                out.push(call_value(&f, vec![(None, it)], None)?);
+                out.push(call_fun(&f, vec![(None, it)], FUN_CALL)?);
             }
             // `vapply` carries names exactly as `sapply` does — from `X`, or from
             // a character `X` used as its own labels (`USE.NAMES`).
@@ -5120,7 +5256,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let nm = names_of(&x);
             let mut keep = Vec::new();
             for (i, it) in items.iter().enumerate() {
-                let r = call_value(&f, vec![(None, it.clone())], None)?;
+                let r = call_fun(&f, vec![(None, it.clone())], FUN_CALL)?;
                 if as_lgl(&r).first() == Some(&Some(true)) {
                     keep.push(Some(i));
                 }
@@ -5140,7 +5276,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let f = a.req(0, "f")?;
             let x = a.req(1, "x")?;
             for (i, it) in elements(&x).into_iter().enumerate() {
-                let r = call_value(&f, vec![(None, it.clone())], None)?;
+                let r = call_fun(&f, vec![(None, it.clone())], FUN_CALL)?;
                 if as_lgl(&r).first() == Some(&Some(true)) {
                     return Ok(if name == "Position" {
                         scalar_int(i as i64 + 1)
@@ -5184,7 +5320,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 } else {
                     vec![(None, acc), (None, e)]
                 };
-                acc = call_value(&f, args, None)?;
+                acc = call_fun(&f, args, "f(init, x[[i]])")?;
                 steps.push(acc.clone());
             }
             if accumulate {
@@ -5600,7 +5736,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 {
                     set_names(&slice, names);
                 }
-                results.push(call_value(&f, vec![(None, slice)], None)?);
+                results.push(call_fun(&f, vec![(None, slice)], "FUN(newX[, i], ...)")?);
                 for k in 0..margins.len() {
                     midx[k] += 1;
                     if midx[k] < margin_shape[k] {
@@ -8204,6 +8340,15 @@ fn signal_to_handlers(cond: &Value, classes: &[String]) -> Result<Signalled, Str
 
 /// R's "NaNs produced" warning, as a catchable condition. Returns `Err` when a
 /// `tryCatch(warning = )` is waiting for it, which unwinds to that handler.
+/// Whether a math function turned a real number into `NaN` — R's condition for
+/// "NaNs produced". An input that was already `NaN` does not warn, because
+/// nothing was produced.
+fn produced_nan(out: &[Option<f64>], input: &[Option<f64>]) -> bool {
+    out.iter()
+        .zip(input)
+        .any(|(o, i)| matches!((o, i), (Some(o), Some(i)) if o.is_nan() && !i.is_nan()))
+}
+
 fn nan_warning() -> Result<(), String> {
     signal_warning("NaNs produced")
 }
@@ -8212,12 +8357,20 @@ fn nan_warning() -> Result<(), String> {
 /// calling handlers see it, `tryCatch` unwinds to it, `suppressWarnings` eats
 /// it, and with nothing in scope it prints and evaluation carries on.
 fn signal_warning(msg: &str) -> Result<(), String> {
+    signal_warning_in(msg, with_host(|h| h.current_call()))
+}
+
+/// As [`signal_warning`], but naming `call` rather than the primitive's own.
+/// R's internal warnings do not all report the same context: `do_summary`
+/// passes its own call, `range.default` is R code so its warnings name the
+/// `min(x)` / `max(x)` it calls, and a coercion warning names its caller.
+fn signal_warning_in(msg: &str, call: Option<String>) -> Result<(), String> {
     let classes: Vec<String> = ["simpleWarning", "warning", "condition"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     match signal_condition_with_muffle(msg, &classes, "muffleWarning")? {
-        Signalled::Fell => r_warning(msg),
+        Signalled::Fell => r_warning(msg, call),
         Signalled::Muffled => {}
         Signalled::Unwind => {
             raise_condition(msg.to_string(), classes);

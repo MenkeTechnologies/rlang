@@ -39,17 +39,34 @@ run that compared nothing — no cases generated, or an oracle that never answer
   signalling point with the stack intact, and evaluation carries on from there
   unless the handler transfers to a restart — and `suppressWarnings` /
   `suppressMessages` muffle for real rather than passing the value through.
-  One gap remains: a condition carries **no `call`**, because the body reaching
-  a builtin is a value rather than an expression — so `conditionCall` is always
-  `NULL`, `print(cond)` is `<simpleError: msg>` rather than
-  `<simpleError in f(): msg>`, `try`'s string is R's call-less
-  `"Error : msg\n"` rather than `"Error in f() : msg\n"`, and a warning that
-  reaches the top level reports as `Warning message:\n<msg> ` without R's
-  `In <call> :` prefix. *Where* the batch prints is R's: an uncaught warning is
-  queued under the default `options(warn = 0)` and the whole batch is written
-  once the top-level statement finishes — after that statement's own stdout,
-  under R's singular/numbered/"there were N" banners — so only the per-warning
-  call text differs.
+  **A warning reports the call it was raised in**, the way R does: the compiler
+  fixes each call's deparsed text at compile time and the runtime keeps a
+  context stack, so a batch prints `In f(1) : msg` under R's own rules for
+  *which* call that is. Those rules are not "the innermost call": R makes a
+  context for a closure and none for a primitive, so `print(as.integer("x"))`
+  names `print(...)` while `sum(as.integer("x"))` names nothing, and `warning()`
+  skips its own frame to land on its caller. Where R's own definition of a
+  function makes the call itself, that call is what is reported — `lapply`'s
+  `FUN(X[[i]], ...)`, `apply`'s `FUN(newX[, i], ...)`, `Reduce`'s
+  `f(init, x[[i]])`, `range`'s `min(x)` / `max(x)`. R's fold rule is reproduced
+  too: the message stays on the line with the call while it fits `LONGWARN`, and
+  folds onto the next line indented two spaces when it does not, under the
+  different allowances R gives the singular, numbered and `warn = 1` banners.
+  *Where* the batch prints is R's as well: an uncaught warning is queued under
+  the default `options(warn = 0)` and the whole batch is written once the
+  top-level statement finishes, after that statement's own stdout.
+
+  Two gaps remain. A warning raised by an **arithmetic or comparison operator**
+  reports no call — R names it (`In 1:3 + 1:2 : longer object length …`,
+  `In Ops.factor(f, "b") : …`), but `+ - * /` lower to native fusevm ops
+  carrying no call text, and pushing one on every arithmetic op would cost the
+  hot path the design keeps native; the call-less form is printed rather than
+  the enclosing call, which would name the wrong one. And the **condition
+  object** still has no `call` slot: `conditionCall` is `NULL`, `print(cond)` is
+  `<simpleError: msg>` rather than `<simpleError in f(): msg>`, `try`'s string
+  is `"Error : msg\n"` rather than `"Error in f() : msg\n"`, and an uncaught
+  error prints without R's `Error in f() :` prefix. The context stack the
+  warnings already keep is what that needs, so it is wiring, not substrate.
 - **A restart object does not `format()` the way R's does.** `print` gives R's
   `<restart: name >` and `$name` / `restartDescription` / `computeRestarts`
   ordering all match, but the `handler`, `test` and `interactive` slots hold
@@ -92,9 +109,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `Summary.ordered`, and the type predicates exclude factors the way R's do
   (`is.numeric(f)` and `is.integer(f)` are FALSE). One cosmetic gap remains: the
   `Ops.factor` warning is emitted without R's `In Ops.factor(f, "b") :` call
-  prefix, because a builtin receives values rather than expressions and `+`
-  lowers to a native fusevm op that never sees the argument text. The message
-  body and the returned `NA`s match.
+  prefix, because `+` lowers to a native fusevm op that never sees the argument
+  text — the same reason arithmetic's recycling warning carries no call. The
+  message body and the returned `NA`s match.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
   a margin onto its result) work; the array-specific helpers (`slice.index`,
