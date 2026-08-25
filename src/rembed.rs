@@ -21,7 +21,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use crate::builtins::{mk_dbl, mk_int, mk_lgl, mk_list, mk_str, names_of, null, set_names};
+use crate::builtins::{mk_dbl, mk_int, mk_lgl, mk_list, mk_str, null, set_names};
 use crate::host::{with_host, RData};
 use fusevm::Value;
 use libloading::Library;
@@ -196,7 +196,13 @@ impl RApi {
         if s == self.nil {
             return s;
         }
-        let nm = names_of(v);
+        // The *attribute*, not what `names()` would answer: a 1-D array has no
+        // `names` of its own and R reads `dimnames[[1]]` for it, so marshalling
+        // the derived answer gave the embedded R a `names` attribute the value
+        // does not have — `str(table(x))` reported one instead of `dimnames`.
+        let nm = with_host(|h| h.attr(v, "names"))
+            .map(|a| with_host(|h| h.as_str(&a)))
+            .unwrap_or_default();
         if !nm.is_empty() {
             let ns = (self.protect)(s);
             let names_sexp = (self.protect)((self.alloc_vector)(STRSXP, nm.len() as isize));

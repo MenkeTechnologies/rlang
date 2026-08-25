@@ -1311,6 +1311,33 @@ impl RHost {
         self.calls.last().map(|c| ctx_source(&c.text))
     }
 
+    /// The deparsed source of each argument in the call now being entered —
+    /// what a diagnostic that quotes an argument back at the caller reads.
+    /// Empty when the context is not a call, which leaves the caller to say
+    /// nothing rather than something wrong.
+    pub fn current_call_arg_sources(&self) -> Vec<String> {
+        let Some(src) = self.current_call_source() else {
+            return Vec::new();
+        };
+        let Ok(mut exprs) = crate::parser::parse(&src) else {
+            return Vec::new();
+        };
+        if exprs.len() != 1 {
+            return Vec::new();
+        }
+        let crate::ast::Expr::Call { args, .. } = exprs.remove(0) else {
+            return Vec::new();
+        };
+        args.iter()
+            .map(|a| {
+                a.value
+                    .as_ref()
+                    .map(crate::deparse::deparse_first_line)
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     /// The call [`RHost::enclosing_call`] names, as whole R source.
     pub fn enclosing_call_source(&self) -> Option<String> {
         self.calls
@@ -2303,11 +2330,25 @@ pub fn match_args(
     if params.iter().any(|p| p == "...") {
         let dots = with_host(|h| h.alloc(RData::Args(rest)));
         out.push(("...".to_string(), dots));
-    } else if let Some((tag, _)) = rest.first() {
-        return Err(match tag {
-            Some(t) => format!("unused argument ({t} = ...)"),
-            None => "unused arguments".to_string(),
-        });
+    } else if !rest.is_empty() {
+        // R names the unused arguments as they were *written* — `f(1, x + y)`
+        // reports `unused argument (x + y)` — so the text comes from the call on
+        // the context stack, and the tag is put back in front of it.
+        let written = with_host(|h| h.current_call_arg_sources());
+        let named: Vec<String> = to
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.is_none())
+            .map(|(ai, _)| {
+                let src = written.get(ai).cloned().unwrap_or_default();
+                match &args[ai].0 {
+                    Some(t) => format!("{t} = {src}"),
+                    None => src,
+                }
+            })
+            .collect();
+        let plural = if named.len() > 1 { "s" } else { "" };
+        return Err(format!("unused argument{plural} ({})", named.join(", ")));
     }
     Ok(out)
 }

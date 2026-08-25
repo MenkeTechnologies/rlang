@@ -1725,3 +1725,16 @@ g(1)
 sqrt(a)
 NULL
 <simpleError: m>
+#==#
+ 'table' int [1:2(1d)] 2 1
+ - attr(*, "dimnames")=List of 1
+  ..$ : chr [1:2] "1" "2"
+ Named num [1:2] 1 2
+ - attr(*, "names")= chr [1:2] "a" "b"
+List of 2
+ $ a: num 1
+ $ b: chr "x"
+[[1]]
+[1] "1" "2"
+
+[1] "1" "2"
