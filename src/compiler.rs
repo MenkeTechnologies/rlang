@@ -730,6 +730,26 @@ impl Compiler {
                             return self.expr(b, &quote_call(&inner));
                         }
                     }
+                    // `substitute(x)` reads the *expression* a caller passed,
+                    // so like `quote` its argument is carried across as source
+                    // rather than compiled. A second argument is the lookup
+                    // table and is evaluated normally.
+                    if name == "substitute" && !args.is_empty() {
+                        if let Some(inner) = args[0].value.clone() {
+                            let mut call = args.to_vec();
+                            call[0] = Arg {
+                                name: None,
+                                value: Some(Expr::Str(deparse_lines(&inner))),
+                            };
+                            return self.expr(
+                                b,
+                                &Expr::Call {
+                                    fun: Box::new(Expr::Ident(".rlang_substitute".into())),
+                                    args: call,
+                                },
+                            );
+                        }
+                    }
                 }
                 // `tryCatch` / `try` / `on.exit` take their body *unevaluated*:
                 // rlang evaluates arguments eagerly, so the body is wrapped in a

@@ -275,6 +275,135 @@ fn eval_expr(e: &Expr) -> Result<Value, String> {
     out
 }
 
+/// What each name in the current *function* frame stands for, as R's
+/// `substitute` sees it: a formal the caller supplied stands for the expression
+/// they wrote, and anything else bound in the frame stands for its value.
+///
+/// `None` outside a closure — at top level R substitutes nothing, which is why
+/// this is an absence rather than an empty table.
+fn frame_substitutions() -> Option<Vec<(String, Expr)>> {
+    let params = with_host(|h| h.current_formals())?;
+    let src = with_host(|h| h.enclosing_source())?;
+    let mut exprs = crate::parser::parse(&src).ok()?;
+    if exprs.len() != 1 {
+        return None;
+    }
+    let Expr::Call { args, .. } = exprs.remove(0) else {
+        return None;
+    };
+    let tags: Vec<Option<String>> = args.iter().map(|a| a.name.clone()).collect();
+    let to = crate::host::match_positions(&params, &tags).ok()?;
+    let mut map: Vec<(String, Expr)> = Vec::new();
+    for (ai, slot) in to.iter().enumerate() {
+        let Some(pi) = slot else { continue };
+        if let (Some(p), Some(v)) = (params.get(*pi), args[ai].value.clone()) {
+            map.push((p.clone(), v));
+        }
+    }
+    // What fell through to `...` stands for itself, in order, so
+    // `substitute(list(...))` reads back as the arguments that were written.
+    let dots: Vec<Arg> = args
+        .iter()
+        .zip(&to)
+        .filter(|(_, slot)| slot.is_none())
+        .map(|(a, _)| a.clone())
+        .collect();
+    if !dots.is_empty() {
+        map.push((
+            "...".to_string(),
+            Expr::Call {
+                fun: Box::new(Expr::Ident("...".into())),
+                args: dots,
+            },
+        ));
+    }
+    Some(map)
+}
+
+/// A value written back as the expression that would produce it, for the
+/// symbols `substitute` replaces by value rather than by expression.
+fn value_as_expr(v: &Value) -> Option<Expr> {
+    let mut exprs = crate::parser::parse(&deparse_value(v)).ok()?;
+    match exprs.len() {
+        1 => Some(exprs.remove(0)),
+        _ => None,
+    }
+}
+
+/// Walk `e` replacing every symbol the table accounts for. `by_value` also
+/// resolves a symbol the table misses but the current frame binds — R's rule
+/// for a local, which stands for its value. A symbol neither accounts for is
+/// left as it was written.
+fn substitute_in(e: &Expr, map: &[(String, Expr)], by_value: bool) -> Expr {
+    let sub = |x: &Expr| substitute_in(x, map, by_value);
+    let boxed = |x: &Expr| Box::new(substitute_in(x, map, by_value));
+    match e {
+        Expr::Ident(n) => {
+            if let Some((_, r)) = map.iter().find(|(k, _)| k == n) {
+                return r.clone();
+            }
+            if by_value {
+                if let Some(v) = with_host(|h| h.lookup(n)) {
+                    if let Some(x) = value_as_expr(&v) {
+                        return x;
+                    }
+                }
+            }
+            e.clone()
+        }
+        Expr::Call { fun, args } => Expr::Call {
+            fun: boxed(fun),
+            args: substitute_args(args, map, by_value),
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: boxed(lhs),
+            rhs: boxed(rhs),
+        },
+        Expr::Special { name, lhs, rhs } => Expr::Special {
+            name: name.clone(),
+            lhs: boxed(lhs),
+            rhs: boxed(rhs),
+        },
+        Expr::Unary { op, operand } => Expr::Unary {
+            op: op.clone(),
+            operand: boxed(operand),
+        },
+        Expr::Paren(x) => Expr::Paren(boxed(x)),
+        Expr::Block(xs) => Expr::Block(xs.iter().map(sub).collect()),
+        Expr::If { cond, then, els } => Expr::If {
+            cond: boxed(cond),
+            then: boxed(then),
+            els: els.as_ref().map(|x| boxed(x)),
+        },
+        Expr::Index { kind, obj, args } => Expr::Index {
+            kind: *kind,
+            obj: boxed(obj),
+            args: substitute_args(args, map, by_value),
+        },
+        other => other.clone(),
+    }
+}
+
+/// An argument list with `...` spliced back into the arguments it stands for.
+fn substitute_args(args: &[Arg], map: &[(String, Expr)], by_value: bool) -> Vec<Arg> {
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        match &a.value {
+            Some(Expr::Dots) => match map.iter().find(|(k, _)| k == "...") {
+                Some((_, Expr::Call { args: dots, .. })) => out.extend(dots.iter().cloned()),
+                _ => out.push(a.clone()),
+            },
+            Some(v) => out.push(Arg {
+                name: a.name.clone(),
+                value: Some(substitute_in(v, map, by_value)),
+            }),
+            None => out.push(a.clone()),
+        }
+    }
+    out
+}
+
 /// Parse one R expression and hand it back as a language object.
 fn parse_one(src: &str) -> Result<Value, String> {
     let mut exprs = crate::parser::parse(src)?;
@@ -3130,6 +3259,8 @@ pub const PRIMITIVES: &[&str] = &[
     "sys.function",
     "eval",
     "evalq",
+    ".rlang_substitute",
+    "substitute",
     "is.call",
     "is.name",
     "is.symbol",
@@ -6640,6 +6771,36 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 Some(env) => in_env(env, || eval_expr(&e)),
                 None => eval_expr(&e),
             }
+        }
+        // `substitute(expr)`: the expression with every symbol the current
+        // frame can account for replaced by what it stands for. The compiler
+        // has already carried the argument across as source (see
+        // `compiler`'s rewrite), so what arrives is R text to parse back.
+        ".rlang_substitute" | "substitute" => {
+            let src = str1(&a.req(0, "expr")?).unwrap_or_default();
+            let mut exprs = crate::parser::parse(&src)?;
+            if exprs.len() != 1 {
+                return Err(format!("invalid expression in substitute: {src}"));
+            }
+            let e = exprs.remove(0);
+            // An explicit table is consulted instead of the frame — R's
+            // `substitute(x, list(x = 1))`.
+            if let Some(table) = a.get(1, "env") {
+                let names = names_of(&table);
+                let items = elements(&table);
+                let map: Vec<(String, Expr)> = names
+                    .iter()
+                    .zip(&items)
+                    .filter_map(|(n, v)| Some((n.clone()?, value_as_expr(v)?)))
+                    .collect();
+                return Ok(mk_lang(substitute_in(&e, &map, false)));
+            }
+            // At top level R substitutes nothing at all, however much is bound:
+            // `y <- 9; substitute(y + 1)` is `y + 1`.
+            let Some(map) = frame_substitutions() else {
+                return Ok(mk_lang(e));
+            };
+            Ok(mk_lang(substitute_in(&e, &map, true)))
         }
         // `sys.call()` is the call that made the frame now running, verbatim.
         // The context stack holds its deparse; parsing that back is what makes

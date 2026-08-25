@@ -1358,6 +1358,16 @@ const ENVIRONMENTS: &[Entry] = &[
         "Run an expression that was held rather than evaluated. With envir it runs in that environment, reading and binding there; without one it runs where the caller stands, so eval(quote(v + 1)) sees the caller's v and eval(quote(w <- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.",
     ),
     (
+        ".rlang_substitute",
+        ".rlang_substitute(expr, env)",
+        "Internal, not user surface: what the compiler emits for substitute(x). The first argument is never compiled; its deparse rides across as a string and this parses it back before substituting.",
+    ),
+    (
+        "substitute",
+        "substitute(expr, env)",
+        "The expression with every symbol the current frame accounts for replaced by what it stands for: a formal the caller supplied stands for the expression they wrote, anything else bound in the frame stands for its value, and a symbol neither accounts for is left alone. `...` splices back into the arguments it stands for. At top level nothing is substituted, however much is bound. With env, that table is consulted instead of the frame.",
+    ),
+    (
         "evalq",
         "evalq(expr, envir)",
         "Run an expression, identical to eval here: rlang's arguments are eager, so there is nothing left to quote against by the time either is called.",

@@ -1412,3 +1412,31 @@ f <- function() {
     eval(quote(x))
 }
 print(f())
+#==#
+f <- function(x) substitute(x)
+print(f(a + b))
+print(class(f(a + b)))
+print(f(1))
+print(class(f(1)))
+g <- function(x) deparse(substitute(x))
+print(g(a + b))
+print(substitute(a + b))
+y <- 9
+print(substitute(y + 1))
+#==#
+f <- function(x) {
+    y <- 2
+    substitute(x + y)
+}
+print(f(a))
+g <- function(x) substitute(x + z)
+print(g(a))
+h <- function(x, y) substitute(list(x, y))
+print(h(a, b))
+k <- function(...) substitute(list(...))
+print(k(a, b))
+print(substitute(x, list(x = 1)))
+m <- function(x = 5) substitute(x)
+print(m())
+n <- function(a, b) substitute(a + b)
+print(n(b = 1, a = 2))
