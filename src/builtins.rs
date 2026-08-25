@@ -2003,11 +2003,19 @@ fn assign_index(
     // The write is only equivalent to the rebuild when nothing about the
     // object's shape changes: no growth, no new name, and no type promotion.
     // Anything else falls through to the general path.
-    if inplace
-        && new_names.is_empty()
-        && positions.iter().all(|p| *p < n)
-        && !positions.is_empty()
-    {
+    //
+    // R's `EnlargeVector` also grows an unshared vector in place, over-
+    // committing its length by 5% so that appending one element at a time is
+    // amortised rather than quadratic; a Rust `Vec` over-commits on push
+    // already, so growing here is just letting `splice` extend it. It is
+    // allowed only for a vector carrying no attributes, which is the shape the
+    // un-preallocated loop has: `EnlargeVector` pads `names` and clears
+    // `dim`/`dimnames` as it grows, and maintaining those in place needs the
+    // same reference-count discipline for each attribute object that `x` itself
+    // just went through. An attributed vector keeps the rebuild path.
+    let grows = positions.iter().any(|p| *p >= n);
+    let bare = with_host(|h| h.get(x).is_some_and(|o| o.attrs.is_empty()));
+    if inplace && new_names.is_empty() && !positions.is_empty() && (!grows || bare) {
         let xk = kind(x);
         let vk = kind(value);
         if is_list

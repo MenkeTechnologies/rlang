@@ -1232,3 +1232,16 @@ l <- list(a = 1)
 l[[3]] <- 2
 print(names(l))
 print(l)
+#==#
+x <- numeric(0)
+for (i in 1:6) x[i] <- i * 2
+print(x)
+l <- list()
+for (i in 1:4) l[[i]] <- i
+print(l)
+y <- c(1, 2)
+y[5] <- 9
+print(y)
+z <- character(0)
+z[3] <- "c"
+print(z)

@@ -672,19 +672,27 @@ impl RHost {
 
     /// Write `val` into a list's slots in place, keeping the element counts:
     /// each slot written takes a reference to `val` and gives back the one it
-    /// held. `None` when the value is not a list, which leaves the caller on
-    /// the rebuild path.
+    /// held. A position past the end extends the list, filling the slots the
+    /// assignment skipped with `NULL` the way R's `EnlargeVector` does. `None`
+    /// when the value is not a list, which leaves the caller on the rebuild
+    /// path.
     pub fn set_list_elements(
         &mut self,
         x: &Value,
         positions: &[usize],
         val: &Value,
     ) -> Option<()> {
+        let null = self.null();
         let displaced = self.with_data_mut(x, |d| match d {
             RData::List(items) => Some(
                 positions
                     .iter()
-                    .map(|p| std::mem::replace(&mut items[*p], val.clone()))
+                    .map(|p| {
+                        while items.len() <= *p {
+                            items.push(null.clone());
+                        }
+                        std::mem::replace(&mut items[*p], val.clone())
+                    })
                     .collect::<Vec<_>>(),
             ),
             _ => None,
