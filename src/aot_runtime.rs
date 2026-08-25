@@ -143,10 +143,17 @@ pub unsafe extern "C" fn rlang_aot_main() -> i64 {
             if crate::rembed::available() {
                 if let Some(src) = AOT_SOURCE.with(|s| s.borrow().clone()) {
                     // Discard the captured native output; let R produce the real one.
+                    use crate::rembed::ScriptFailure;
                     return match crate::rembed::run_script(&src) {
                         Ok(()) => 0,
-                        Err(re) => {
-                            eprintln!("Rscript: {re}");
+                        // R composed this one itself, `Error in …` and all.
+                        Err(ScriptFailure::RError(msg)) => {
+                            eprint!("{msg}");
+                            eprintln!("Execution halted");
+                            1
+                        }
+                        Err(ScriptFailure::Unavailable(msg)) => {
+                            eprintln!("Rscript: {msg}");
                             1
                         }
                     };

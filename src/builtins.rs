@@ -337,6 +337,8 @@ fn pop_n(vm: &mut VM, n: usize) -> Vec<Value> {
 fn abort(vm: &mut VM, msg: String) -> Value {
     with_host(|h| {
         if h.error.is_none() {
+            let call = h.current_call();
+            h.set_error_call(call);
             h.error = Some(msg);
         }
     });
@@ -573,6 +575,13 @@ fn call_op(vm: &mut VM, opened: bool) -> Value {
     }
     let out = call_value(&f, args, name);
     with_host(|h| {
+        // A primitive that failed by returning `Err` has recorded no call, and
+        // the one R would name is this call — which comes off the stack on the
+        // next line, before `abort` below could read it.
+        if out.is_err() && h.error.is_none() {
+            let call = h.current_call();
+            h.set_error_call(call);
+        }
         h.calls.pop();
     });
     match out {
@@ -3196,7 +3205,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 ),
             };
             signal_to_handlers(&obj, &classes)?;
-            with_host(|h| h.error_classes = classes);
+            with_host(|h| {
+                // R's `do_stop` calls `findCall`, which starts one context out:
+                // `stop()` is itself a closure, so its own frame is skipped and
+                // the error names the function that called it.
+                let call = h.enclosing_call();
+                h.set_error_call(call);
+                h.error_classes = classes;
+            });
             Err(text)
         }
         "stopifnot" => {
@@ -4267,6 +4283,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "expm1"
         | "log1p" | "gamma" | "lgamma" | "factorial" | "lfactorial" => {
             let x = a.req(0, "x")?;
+            require_numeric(&x)?;
             let f: fn(f64) -> f64 = match name {
                 "abs" => f64::abs,
                 "sqrt" => f64::sqrt,
@@ -4315,6 +4332,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "log" => {
             let x = a.req(0, "x")?;
+            require_numeric(&x)?;
             let base = a.get(1, "base").and_then(|v| num1(&v));
             let input = as_dbl(&x);
             let vals: Vec<Option<f64>> = input
@@ -5470,6 +5488,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 (None, None) => (n, 1),
             };
             let total = nr * nc;
+            if let Some(msg) = matrix_fill_warning(len(&x), nr, nc) {
+                signal_warning(&msg)?;
+            }
             let byrow = a.named("byrow").and_then(|v| lgl1(&v)).unwrap_or(false);
             // R stores matrices column-major. With `byrow = TRUE` the data fills
             // rows first, so column-major slot `c*nr + r` draws from row-major
@@ -8343,6 +8364,20 @@ fn signal_to_handlers(cond: &Value, classes: &[String]) -> Result<Signalled, Str
 /// Whether a math function turned a real number into `NaN` — R's condition for
 /// "NaNs produced". An input that was already `NaN` does not warn, because
 /// nothing was produced.
+/// R's `do_math1` guard: only logical, integer and double reach a math
+/// function. Anything else — text, a list, `NULL` — stops rather than coercing,
+/// so `sqrt("x")` is an error where `as.numeric("x")` is a warning. A factor
+/// stops too, but with `Math.factor`'s own message.
+fn require_numeric(x: &Value) -> Result<(), String> {
+    if is_factor(x) {
+        return Err("\u{2018}sqrt\u{2019} not meaningful for factors".into());
+    }
+    match kind(x) {
+        RKind::Lgl | RKind::Int | RKind::Dbl => Ok(()),
+        _ => Err("non-numeric argument to mathematical function".into()),
+    }
+}
+
 fn produced_nan(out: &[Option<f64>], input: &[Option<f64>]) -> bool {
     out.iter()
         .zip(input)
@@ -8605,6 +8640,8 @@ fn restart_in_flight() -> bool {
 fn raise_condition(msg: String, classes: Vec<String>) {
     with_host(|h| {
         if h.error.is_none() {
+            let call = h.current_call();
+            h.set_error_call(call);
             h.error = Some(msg);
             h.error_classes = classes;
         }
@@ -8642,6 +8679,7 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     let out = call_value(&body, Vec::new(), None);
     let raised = with_host(|h| {
         h.handlers.pop();
+        h.clear_error_call();
         std::mem::take(&mut h.error_classes)
     });
     let result = match out {
@@ -8754,7 +8792,10 @@ fn r_try(a: &Args) -> Result<Value, String> {
         // A restart transfer is not an error and `try` does not catch one.
         Err(msg) if restart_in_flight() => Err(msg),
         Err(msg) => {
-            let classes = with_host(|h| std::mem::take(&mut h.error_classes));
+            let classes = with_host(|h| {
+                h.clear_error_call();
+                std::mem::take(&mut h.error_classes)
+            });
             let text = format!("Error : {msg}\n");
             if !silent {
                 eprint!("{text}");
@@ -9486,6 +9527,42 @@ fn column_blocks(widths: &[usize], label_w: usize) -> Vec<(usize, usize)> {
         first = last;
     }
     blocks
+}
+
+/// R's `do_matrix` complaint when the data does not tile the matrix — the
+/// recycling still happens, and R names the extent that does not divide it.
+///
+/// The two extents are tried in order and only one is reported: rows first,
+/// then columns, then the fall-through for a length that fits neither but
+/// divides both. `matrix(1:5, 2, 2)` names the rows, `matrix(1:4, 2, 3)` the
+/// columns.
+fn matrix_fill_warning(lendat: usize, nr: usize, nc: usize) -> Option<String> {
+    if lendat <= 1 {
+        return None;
+    }
+    let total = nr * nc;
+    if total == 0 {
+        return Some("non-empty data for zero-extent matrix".into());
+    }
+    if total % lendat == 0 {
+        return None;
+    }
+    // "Divides" in both directions: a length longer than the extent must be a
+    // whole number of them, and a shorter one must divide it exactly.
+    let tiles = |extent: usize| lendat % extent == 0 || extent % lendat == 0;
+    if !tiles(nr) {
+        return Some(format!(
+            "data length [{lendat}] is not a sub-multiple or multiple of the number of rows [{nr}]"
+        ));
+    }
+    if !tiles(nc) {
+        return Some(format!(
+            "data length [{lendat}] is not a sub-multiple or multiple of the number of columns [{nc}]"
+        ));
+    }
+    (total != lendat).then(|| {
+        format!("data length differs from size of matrix: [{lendat} != {nr} x {nc}]")
+    })
 }
 
 /// R quotes a `$name` list header in backticks when the name is not a syntactic

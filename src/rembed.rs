@@ -433,7 +433,17 @@ impl RApi {
     /// Parse and evaluate R source in the global environment, returning the last
     /// value.
     unsafe fn eval(&self, code: &str) -> Result<Sexp, String> {
-        let src = CString::new(code).map_err(|_| "CRAN bridge: NUL in R source".to_string())?;
+        self.eval_raw(code)
+            .map_err(|_| format!("CRAN bridge: R error evaluating `{code}`"))
+    }
+
+    /// Evaluate `code`, reporting only *whether* it failed. `R_tryEvalSilent`
+    /// swallows the message, so a caller that wants it asks
+    /// [`RApi::last_error`] next.
+    unsafe fn eval_raw(&self, code: &str) -> Result<Sexp, ()> {
+        let Ok(src) = CString::new(code) else {
+            return Err(());
+        };
         let mut status: c_int = 0;
         let expr = (self.protect)((self.parse)(
             (self.mk_string)(src.as_ptr()),
@@ -448,12 +458,34 @@ impl RApi {
             last = (self.try_eval_silent)((self.vector_elt)(expr, i), self.global_env, &mut err);
             if err != 0 {
                 (self.unprotect)(1);
-                return Err(format!("CRAN bridge: R error evaluating `{code}`"));
+                return Err(());
             }
         }
         (self.unprotect)(1);
         Ok(last)
     }
+
+    /// R's `geterrmessage()`: the last error, already formatted the way R
+    /// prints it — `"Error in f() : msg\n"`, fold and all. This is how the text
+    /// `R_tryEvalSilent` swallowed is recovered.
+    unsafe fn last_error(&self) -> Option<String> {
+        let s = self.eval_raw("geterrmessage()").ok()?;
+        let s = (self.protect)(s);
+        let v = self.sexp_to_value(s).ok();
+        (self.unprotect)(1);
+        let v = v?;
+        with_host(|h| h.str1(&v)).filter(|m| !m.is_empty())
+    }
+}
+
+/// Why a whole-script delegation to embedded R did not finish.
+pub enum ScriptFailure {
+    /// R ran the script and it stopped. The string is R's own
+    /// `geterrmessage()` — already in R's `Error in <call> : msg` form, so it
+    /// is written out as-is rather than reformatted.
+    RError(String),
+    /// The bridge itself could not run the script at all.
+    Unavailable(String),
 }
 
 /// Call a foreign R function handle (an R6 method, a closure returned by a
@@ -520,13 +552,27 @@ pub fn print_foreign(ptr: usize) -> Vec<String> {
 /// exactly as `Rscript` would. Used as the fallback when rlang's eager evaluator
 /// can't run a program (typically non-standard evaluation — `dplyr::filter(df,
 /// x > 2)`, `data.table` `[`), so such scripts still execute correctly.
-pub fn run_script(src: &str) -> Result<(), String> {
-    let api =
-        api().ok_or_else(|| "CRAN bridge unavailable (no R installation found)".to_string())?;
+pub fn run_script(src: &str) -> Result<(), ScriptFailure> {
+    let Some(api) = api() else {
+        return Err(ScriptFailure::Unavailable(
+            "CRAN bridge unavailable (no R installation found)".into(),
+        ));
+    };
     unsafe {
-        api.eval(&format!(
+        let code = format!(
             "invisible(source(textConnection({src:?}), echo = FALSE, print.eval = TRUE, spaced = FALSE, keep.source = FALSE))"
-        ))?;
+        );
+        if api.eval_raw(&code).is_err() {
+            // A script that stops in R is not a bridge malfunction: R has
+            // already composed the diagnostic, so hand that back rather than
+            // reporting the delegation.
+            return Err(match api.last_error() {
+                Some(msg) => ScriptFailure::RError(msg),
+                None => ScriptFailure::Unavailable(format!(
+                    "CRAN bridge: R error evaluating `{code}`"
+                )),
+            });
+        }
     }
     Ok(())
 }

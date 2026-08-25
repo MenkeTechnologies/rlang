@@ -133,17 +133,25 @@ fn eval_with_cran_fallback(
         Err(e) => {
             #[cfg(not(target_arch = "wasm32"))]
             if rlang::rembed::available() {
+                use rlang::rembed::ScriptFailure;
                 return match rlang::rembed::run_script(src) {
                     Ok(()) => ExitCode::SUCCESS,
-                    Err(re) => fail(&re),
+                    // R composed this one itself, `Error in …` and all.
+                    Err(ScriptFailure::RError(msg)) => {
+                        eprint!("{msg}");
+                        eprintln!("Execution halted");
+                        ExitCode::FAILURE
+                    }
+                    Err(ScriptFailure::Unavailable(msg)) => fail(&msg),
                 };
             }
             replay(&captured, &diagnostics);
-            let code = fail(&e);
-            // R reports the error first and the statement's queued warnings
-            // after it, under an `In addition:` lead.
+            // R reports the error first, then the statement's queued warnings
+            // under an `In addition:` lead, and closes with `Execution halted`.
+            r_error(&e);
             rlang::host::flush_warnings(true);
-            code
+            eprintln!("Execution halted");
+            ExitCode::FAILURE
         }
     }
 }
@@ -194,6 +202,7 @@ fn capture_stdout<R>(f: impl FnOnce() -> R) -> (R, Vec<u8>, Vec<(usize, String)>
         libc::close(saved);
         (r, file)
     };
+    rlang::host::clear_stderr_hook();
     let mut buf = Vec::new();
     let _ = file.seek(std::io::SeekFrom::Start(0));
     let _ = file.read_to_end(&mut buf);
@@ -250,4 +259,18 @@ fn atty_stdin() -> bool {
 fn fail(msg: &str) -> ExitCode {
     eprintln!("Rscript: {msg}");
     ExitCode::FAILURE
+}
+
+/// An R program that stopped, reported the way R reports it: `Error in <call> :`
+/// with the message, or a bare `Error:` when it carries no call. This is a
+/// *program* error, unlike [`fail`], which is the driver failing to run one at
+/// all — and unlike `fail` it is only half a report, with the queued warnings
+/// and `Execution halted` still to follow.
+fn r_error(msg: &str) {
+    let call = rlang::host::with_host(|h| {
+        let c = h.error_call.take();
+        h.clear_error_call();
+        c
+    });
+    eprint!("{}", rlang::host::error_report(msg, call.as_deref()));
 }

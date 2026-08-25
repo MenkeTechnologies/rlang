@@ -177,6 +177,40 @@ fn a_warning_names_the_context_it_was_raised_in() {
     );
 }
 
+/// An error takes the same treatment: `Error in <call> :` with R's fold, a
+/// bare `Error:` when it carries none, and — because both streams are merged
+/// here — the order R puts the pieces in when a statement both warns and stops.
+#[test]
+fn an_error_reports_its_call_and_the_warnings_that_preceded_it() {
+    assert_eq!(
+        merged(r#"f <- function() stop("boom"); f()"#),
+        "Error in f() : boom\nExecution halted\n"
+    );
+    // `stop()` skips its own frame like `warning()` does, so at top level there
+    // is no call and R drops the `in` clause entirely.
+    assert_eq!(
+        merged(r#"stop("plain")"#),
+        "Error: plain\nExecution halted\n"
+    );
+    // A primitive that fails names itself, not whatever encloses it.
+    assert_eq!(
+        merged(r#"f <- function(v) sqrt(v); f("x")"#),
+        "Error in sqrt(v) : non-numeric argument to mathematical function\nExecution halted\n"
+    );
+    // Long enough to fold, under the 14 columns R allows an error's decoration.
+    assert_eq!(
+        merged(r#"cat(list(5), "\n")"#),
+        "Error in cat(list(5), \"\\n\") : \n  argument 1 (type 'list') cannot be handled by 'cat'\nExecution halted\n"
+    );
+    // R holds the statement's warnings until *after* the error line and prints
+    // them under `In addition:`. rlang used to lose them here outright: they
+    // were written into a diagnostics sink that had already been replayed.
+    assert_eq!(
+        merged(r#"f <- function() { warning("w"); stop("e") }; f()"#),
+        "Error in f() : e\nIn addition: Warning message:\nIn f() : w\nExecution halted\n"
+    );
+}
+
 /// R keeps a warning's message on the line with its call only while the whole
 /// line fits `LONGWARN`; past that the message folds onto the next line,
 /// indented two spaces. The allowance for the decoration differs per banner, so

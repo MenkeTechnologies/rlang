@@ -495,6 +495,16 @@ pub struct RHost {
     /// `c("simpleError", "error", "condition")` and friends. It rides alongside
     /// `error` so a `tryCatch` handler can be selected by class.
     pub error_classes: Vec<String>,
+    /// The call the pending error was raised in — R's `errorcall`, rendered as
+    /// the `Error in <call> :` prefix. It has to be taken where the error is
+    /// recorded: by the time the unwind reaches the top the context stack has
+    /// been cut back past it. Written through [`RHost::set_error_call`].
+    pub error_call: Option<String>,
+    /// Whether the pending error's call has been decided. `error_call` alone
+    /// cannot say: a top-level `stop()` decides on *no* call, which is an
+    /// answer rather than an absence, and every frame the unwind passes through
+    /// would otherwise overwrite it with its own.
+    pub error_call_known: bool,
     /// The enclosing `tryCatch` / `withCallingHandlers` frames, innermost last.
     /// Every signalling site walks it outward: a calling handler runs in place,
     /// an exiting handler unwinds, and reaching the bottom with nothing matched
@@ -594,6 +604,14 @@ pub fn set_stderr_hook(f: Box<dyn Fn(&str)>) {
     STDERR_HOOK.with(|h| *h.borrow_mut() = Some(f));
 }
 
+/// Stop diverting diagnostics, so later ones go straight to stderr. Without
+/// this the batch a *failed* statement queued was written into a sink that had
+/// already been replayed, and vanished: R prints it after the error line, under
+/// `In addition:`, which is after the replay.
+pub fn clear_stderr_hook() {
+    STDERR_HOOK.with(|h| *h.borrow_mut() = None);
+}
+
 /// Write one diagnostic — through the installed hook, or to stderr.
 pub fn emit_stderr(s: &str) {
     let handled = STDERR_HOOK.with(|h| h.borrow().as_ref().map(|f| f(s)).is_some());
@@ -637,6 +655,8 @@ impl RHost {
             closures: Vec::new(),
             error: None,
             error_classes: Vec::new(),
+            error_call: None,
+            error_call_known: false,
             handlers: Vec::new(),
             restarts: Vec::new(),
             next_restart_id: 0,
@@ -1317,9 +1337,30 @@ impl RHost {
     /// program's error.
     pub fn fail<T>(&mut self, msg: impl Into<String>) -> Option<T> {
         if self.error.is_none() {
+            let call = self.current_call();
+            self.set_error_call(call);
             self.error = Some(msg.into());
         }
         None
+    }
+
+    /// Decide which call the pending error reports. The first site to decide
+    /// wins — `stop()` names its caller, a primitive that failed by returning
+    /// `Err` names itself, and neither may be overwritten by a frame the unwind
+    /// merely passes through.
+    pub fn set_error_call(&mut self, call: Option<String>) {
+        if self.error_call_known {
+            return;
+        }
+        self.error_call = call;
+        self.error_call_known = true;
+    }
+
+    /// Give the decision back: a handler took the error, so the next one starts
+    /// over.
+    pub fn clear_error_call(&mut self) {
+        self.error_call = None;
+        self.error_call_known = false;
     }
 
     /// Take and clear a pending error.
@@ -1831,6 +1872,31 @@ pub fn flush_warnings(after_error: bool) {
         )
     };
     emit_stderr(&text);
+}
+
+/// An uncaught error as R's `verrorcall_dflt` writes it: `Error in <call> : `
+/// then the message, folded onto the next line and indented two spaces when the
+/// line would run past [`LONGWARN`]. R allows 14 columns for the decoration
+/// around the call. Without a call it is a bare `Error: `, which is what a
+/// `stop()` at top level produces.
+pub fn error_report(msg: &str, call: Option<&str>) -> String {
+    match call {
+        None => format!("Error: {msg}\n"),
+        // The trailing space after the colon is R's, and survives the fold.
+        Some(c) => format!("Error in {c} : {}", fold_error(c, msg)),
+    }
+}
+
+/// The message half of an `Error in <call> : ` line — R's `tail` is `"\n  "`,
+/// appended before the message when the first line would not fit.
+fn fold_error(call: &str, msg: &str) -> String {
+    let first = msg.split('\n').next().unwrap_or(msg);
+    let width = |s: &str| crate::strwidth::display_width(s);
+    if 14 + width(call) + width(first) > LONGWARN {
+        format!("\n  {msg}\n")
+    } else {
+        format!("{msg}\n")
+    }
 }
 
 /// One queued warning as `PrintWarnings` writes it: the message followed by a
