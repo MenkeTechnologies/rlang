@@ -274,7 +274,10 @@ fn r_error(msg: &str) {
         (c, t)
     });
     eprint!("{}", rlang::host::error_report(msg, call.as_deref()));
-    if let Some(tr) = rlang::host::traceback(&trace, call.as_deref()) {
+    // R prints the chain only for an error that has a call — `R_ShowErrorCalls
+    // && call != R_NilValue`. An error raised at top level has none, and shows
+    // no `Calls:` line however deep the primitive that raised it sat.
+    if let Some(tr) = call.as_deref().and_then(|c| rlang::host::traceback(&trace, Some(c))) {
         eprintln!("Calls: {tr}");
     }
 }

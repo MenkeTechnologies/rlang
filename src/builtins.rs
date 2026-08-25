@@ -162,6 +162,39 @@ pub(crate) fn mk_lang(e: Expr) -> Value {
     }
 }
 
+/// The deparsed source of each argument in a call — what a builtin that names
+/// the expression a caller wrote (`stopifnot`) reads out of its own call.
+/// `None` when the source is not a call.
+fn call_arg_sources(src: &str) -> Option<Vec<String>> {
+    let mut exprs = crate::parser::parse(src).ok()?;
+    if exprs.len() != 1 {
+        return None;
+    }
+    let Expr::Call { args, .. } = exprs.remove(0) else {
+        return None;
+    };
+    Some(
+        args.iter()
+            .map(|a| {
+                a.value
+                    .as_ref()
+                    .map(crate::deparse::deparse_first_line)
+                    .unwrap_or_default()
+            })
+            .collect(),
+    )
+}
+
+/// The call text R uses when a function is invoked without a name to call it
+/// by: the function's own deparse, parenthesised — `(function (a, b) `. Only
+/// the first line, which is all a diagnostic shows and all `<Anonymous>` needs.
+fn inline_call_text(f: &Value) -> String {
+    match function_src(f).and_then(|s| s.into_iter().next()) {
+        Some(head) => format!("({head}"),
+        None => "FUN()".to_string(),
+    }
+}
+
 /// Parse one R expression and hand it back as a language object.
 fn parse_one(src: &str) -> Result<Value, String> {
     let mut exprs = crate::parser::parse(src)?;
@@ -3492,10 +3525,36 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Err(text)
         }
         "stopifnot" => {
-            for (_, v) in a.all.iter() {
-                if !as_lgl(v).iter().all(|e| *e == Some(true)) || len(v) == 0 {
-                    return Err("not all arguments are TRUE".into());
+            // R names the *expression* that failed, deparsed out of its own
+            // call — which is why the arguments come off the context stack here
+            // rather than being carried alongside their values.
+            let written = with_host(|h| h.current_call_source())
+                .and_then(|src| call_arg_sources(&src))
+                .unwrap_or_default();
+            for (i, (tag, v)) in a.all.iter().enumerate() {
+                let flags = as_lgl(v);
+                // An empty vector has no FALSE in it, so it passes — R's
+                // `stopifnot(logical(0))` is silent.
+                if flags.iter().all(|e| *e == Some(true)) {
+                    continue;
                 }
+                // R's `stopifnot` calls `stop` from inside itself, so the error
+                // names *its* caller, not the `stopifnot(…)` call.
+                with_host(|h| {
+                    let c = h.enclosing_call_source();
+                    h.set_error_call(c);
+                });
+                // `stopifnot("must be big" = x > 5)` uses the tag as the whole
+                // message.
+                if let Some(t) = tag {
+                    return Err(t.clone());
+                }
+                let what = written.get(i).cloned().unwrap_or_default();
+                let tail = match flags.len() > 1 {
+                    true => "are not all TRUE",
+                    false => "is not TRUE",
+                };
+                return Err(format!("{what} {tail}"));
             }
             with_host(|h| h.visible = false);
             Ok(null())
@@ -5756,7 +5815,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .enumerate()
                 .map(|(i, v)| (nm.get(i).cloned().flatten(), v))
                 .collect();
-            call_value(&f, call_args, None)
+            // R builds the call itself, with the function inline, so a
+            // condition raised inside reports the deparsed function rather than
+            // the `do.call(…)` that arranged it.
+            call_fun(&f, call_args, &inline_call_text(&f))
         }
         "Negate" => {
             let f = a.req(0, "f")?;

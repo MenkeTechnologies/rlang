@@ -253,6 +253,35 @@ fn an_uncaught_error_shows_the_chain_it_came_through() {
     );
 }
 
+/// A `stopifnot` failure names the expression that failed, and an error raised
+/// at top level shows no chain at all — R prints `Calls:` only for an error
+/// that carries a call.
+#[test]
+fn stopifnot_names_the_expression_that_failed() {
+    assert_eq!(
+        merged("stopifnot(1 == 2)"),
+        "Error: 1 == 2 is not TRUE\nExecution halted\n"
+    );
+    // A vector with a FALSE in it is plural…
+    assert_eq!(
+        merged("stopifnot(c(TRUE, FALSE))"),
+        "Error: c(TRUE, FALSE) are not all TRUE\nExecution halted\n"
+    );
+    // …and an empty one has no FALSE in it, so it passes.
+    assert_eq!(merged("stopifnot(logical(0)); cat(\"ok\\n\")"), "ok\n");
+    // A tagged assertion supplies its own message, whole.
+    assert_eq!(
+        merged(r#"stopifnot("must be big" = 1 > 5)"#),
+        "Error: must be big\nExecution halted\n"
+    );
+    // Called from a function, the error names that function — `stopifnot`
+    // raises through `stop`, which reports its caller — and the chain appears.
+    assert_eq!(
+        merged("f <- function() stopifnot(1 == 2); f()"),
+        "Error in f() : 1 == 2 is not TRUE\nCalls: f -> stopifnot\nExecution halted\n"
+    );
+}
+
 /// R keeps a warning's message on the line with its call only while the whole
 /// line fits `LONGWARN`; past that the message folds onto the next line,
 /// indented two spaces. The allowance for the decoration differs per banner, so
