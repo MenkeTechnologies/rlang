@@ -524,8 +524,9 @@ pub struct RHost {
     /// `c("simpleError", "error", "condition")` and friends. It rides alongside
     /// `error` so a `tryCatch` handler can be selected by class.
     pub error_classes: Vec<String>,
-    /// The call the pending error was raised in — R's `errorcall`, rendered as
-    /// the `Error in <call> :` prefix. It has to be taken where the error is
+    /// The call the pending error was raised in — R's `errorcall`. Held as
+    /// whole R source: the `Error in <call> :` line shows its first line, and
+    /// the condition object the error carries needs the rest. It has to be taken where the error is
     /// recorded: by the time the unwind reaches the top the context stack has
     /// been cut back past it. Written through [`RHost::set_error_call`].
     pub error_call: Option<String>,
@@ -1304,6 +1305,22 @@ impl RHost {
         self.calls.last().map(|c| ctx_text(&c.text))
     }
 
+    /// The same call, as whole R source. A *diagnostic* shows one line of it; a
+    /// condition object carries the call itself, so it needs all of it.
+    pub fn current_call_source(&self) -> Option<String> {
+        self.calls.last().map(|c| ctx_source(&c.text))
+    }
+
+    /// The call [`RHost::enclosing_call`] names, as whole R source.
+    pub fn enclosing_call_source(&self) -> Option<String> {
+        self.calls
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|c| c.closure)
+            .map(|c| ctx_source(&c.text))
+    }
+
     /// The innermost *function* context — what R's C `warning()` reports when
     /// it is called from inside a primitive that has no call of its own, as
     /// `CoercionWarning` is. A primitive makes no context, so the warning lands
@@ -1394,7 +1411,7 @@ impl RHost {
     /// program's error.
     pub fn fail<T>(&mut self, msg: impl Into<String>) -> Option<T> {
         if self.error.is_none() {
-            let call = self.current_call();
+            let call = self.current_call_source();
             self.set_error_call(call);
             self.error = Some(msg.into());
         }
@@ -1413,7 +1430,7 @@ impl RHost {
             .calls
             .iter()
             .filter(|c| c.closure)
-            .map(|c| ctx_text(&c.text))
+            .map(|c| ctx_source(&c.text))
             .collect();
         self.error_call = call;
         self.error_call_known = true;
@@ -1944,7 +1961,9 @@ pub fn flush_warnings(after_error: bool) {
 /// around the call. Without a call it is a bare `Error: `, which is what a
 /// `stop()` at top level produces.
 pub fn error_report(msg: &str, call: Option<&str>) -> String {
-    match call {
+    // One line, like every other diagnostic: the call is held as whole source
+    // for the condition object's sake.
+    match call.and_then(|c| c.lines().next()) {
         None => format!("Error: {msg}\n"),
         // The trailing space after the colon is R's, and survives the fold.
         Some(c) => format!("Error in {c} : {}", fold_error(c, msg)),
@@ -2017,7 +2036,8 @@ pub fn traceback(frames: &[String], call: Option<&str>) -> Option<String> {
 /// a function literal. Read off the deparsed text, where the callee is
 /// everything before the argument list.
 fn call_name(text: &str) -> String {
-    let head = text.split('(').next().unwrap_or_default();
+    let head = text.lines().next().unwrap_or_default();
+    let head = head.split('(').next().unwrap_or_default();
     let head = head
         .strip_prefix('`')
         .and_then(|h| h.strip_suffix('`'))

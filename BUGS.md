@@ -22,7 +22,7 @@ run that compared nothing — no cases generated, or an oracle that never answer
   didn't produce it. Set `RLANG_NO_CRAN=1` to force the native path only.
   Defaults behave lazily — they compile into a body prologue
   (`if (missing(p)) p <- <default>`), so a default may refer to another argument.
-- **The condition system is complete apart from the call a condition carries.**
+- **The condition system, including the call a condition carries.**
   `tryCatch` selects a handler by condition class (`error`, `warning`,
   `message`, `condition`), `finally` runs either way, and `try` returns a
   `"try-error"` string. `on.exit` runs when a frame is left, however it is left.
@@ -63,18 +63,21 @@ run that compared nothing — no cases generated, or an oracle that never answer
   script that stops inside the CRAN bridge reports R's own `geterrmessage()`
   verbatim rather than a message about the delegation.
 
-  Two gaps remain. A condition raised by an **operator or an index** reports no
+  **The condition object carries the call as well**, now that there is a type
+  for one: `conditionCall(e)` hands back the language object, `print(cond)`
+  shows `<simpleError in f(): msg>`, and `try`'s string is
+  `"Error in f() : msg\n"`. A condition that unwinds to a `tryCatch` is rebuilt
+  from what the raise recorded, because the unwind has already cut the context
+  stack back past the frame that raised it.
+
+  One gap remains. A condition raised by an **operator or an index** reports no
   call — R names them (`In 1:3 + 1:2 : longer object length …`,
   `Error in x[[5]] : subscript out of bounds`, `In Ops.factor(f, "b") : …`), but
   `+ - * /` and `[[` lower to native fusevm ops and index builtins carrying no
   call text, and pushing one on every arithmetic op would cost the hot path the
   design keeps native; the call-less form is printed rather than the enclosing
-  call, which would name the wrong one. And the **condition object** still has
-  no `call` slot: `conditionCall` is `NULL`, `print(cond)` is
-  `<simpleError: msg>` rather than `<simpleError in f(): msg>`, and `try`'s
-  string is `"Error : msg\n"` rather than `"Error in f() : msg\n"`. The context
-  stack the diagnostics already use is what that needs, so it is wiring, not
-  substrate. R's `Calls: f -> g` traceback *is* printed — the chain of function
+  call, which would name the wrong one. R's `Calls: f -> g` traceback *is*
+  printed — the chain of function
   contexts, outermost first, with `stop`'s own frame dropped and R's mid-chain
   elision past `R_NShowCalls` — but it shows what rlang's own call graph looks
   like, which for a function R layers over an S3 method is one link shorter:

@@ -1714,3 +1714,14 @@ NULL
 `my var` + 1
 f
 `+`
+#==#
+f()
+<simpleError in f(): boom>
+Error in f() : boom
+Error in try(stop("plain"), silent = TRUE) : plain
+#==#
+g(1)
+<simpleWarning in g(1): w>
+sqrt(a)
+NULL
+<simpleError: m>
