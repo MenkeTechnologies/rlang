@@ -5841,21 +5841,36 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "rapply" => {
-            // Only the common `how = "unlist"` path: apply FUN to each leaf and
-            // flatten. Nested lists recurse via `elements`/`unlist`.
+            // Apply FUN to each leaf, keeping the shape. `how = "list"` hands
+            // the nested list back as it is; `"unlist"` flattens it, and the
+            // names ride along either way — `rapply(list(a = 1:3), length)` is
+            // a *named* 3, not a bare one.
             let x = a.req(0, "object")?;
             let f = a.req(1, "f")?;
+            let how = a
+                .named("how")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "unlist".into());
             fn walk(v: &Value, f: &Value) -> Result<Value, String> {
                 match data(v) {
                     RData::List(items) => {
                         let mapped: Result<Vec<Value>, String> =
                             items.iter().map(|it| walk(it, f)).collect();
-                        Ok(mk_list(mapped?))
+                        let out = mk_list(mapped?);
+                        let nm = names_of(v);
+                        if !nm.is_empty() {
+                            set_names(&out, nm);
+                        }
+                        Ok(out)
                     }
                     _ => call_value(f, vec![(None, v.clone())], None),
                 }
             }
-            Ok(unlist(&walk(&x, &f)?))
+            let out = walk(&x, &f)?;
+            Ok(match how.as_str() {
+                "unlist" => unlist(&out),
+                _ => out,
+            })
         }
         "do.call" => {
             let f = a.req(0, "what")?;
@@ -6385,6 +6400,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "on.exit" => {
             let thunk = a.req(0, "expr")?;
             let add = a.named("add").and_then(|v| lgl1(&v)).unwrap_or(false);
+            // `after = FALSE` puts the new expression *first*, so a cleanup
+            // registered later runs before the ones already there.
+            let after = a.named("after").and_then(|v| lgl1(&v)).unwrap_or(true);
             with_host(|h| {
                 if let Some(f) = h.frames.last_mut() {
                     // Without `add = TRUE` a later `on.exit` replaces the
@@ -6392,7 +6410,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     if !add {
                         f.on_exit.clear();
                     }
-                    f.on_exit.push(thunk);
+                    match after {
+                        true => f.on_exit.push(thunk),
+                        false => f.on_exit.insert(0, thunk),
+                    }
                 }
                 h.visible = false;
             });

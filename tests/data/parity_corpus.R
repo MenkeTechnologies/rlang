@@ -1380,3 +1380,20 @@ print(eval(quote({
 q <- quote(x)
 print(eval(q))
 print(class(eval(quote(quote(f(1))))))
+#==#
+l <- list(a = 1:3, b = letters[1:2])
+print(rapply(l, length, how = "unlist"))
+print(rapply(l, length, how = "list"))
+print(rapply(list(1, 2), function(x) x * 2))
+f <- function() {
+    on.exit(cat("x\n"), add = TRUE)
+    on.exit(cat("y\n"), add = TRUE, after = FALSE)
+    1
+}
+invisible(f())
+g <- function() {
+    on.exit(cat("a\n"))
+    on.exit(cat("b\n"), add = TRUE)
+    1
+}
+invisible(g())
