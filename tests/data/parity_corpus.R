@@ -1357,3 +1357,26 @@ str(c(a = 1, b = 2))
 str(list(a = 1, b = "x"))
 print(dimnames(x))
 print(names(x))
+#==#
+print(eval(quote(1 + 2)))
+x <- 5
+print(eval(as.name("x")))
+f <- function() {
+    v <- 1
+    eval(quote(v + 1))
+}
+print(f())
+g <- function() {
+    eval(quote(w <- 7))
+    w
+}
+print(g())
+eval(quote(cat("hi\n")))
+print(eval(quote(if (TRUE) "y" else "n")))
+print(eval(quote({
+    a <- 1
+    a + 1
+})))
+q <- quote(x)
+print(eval(q))
+print(class(eval(quote(quote(f(1))))))

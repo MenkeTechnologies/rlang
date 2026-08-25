@@ -221,6 +221,28 @@ fn inline_call_text(f: &Value) -> String {
     }
 }
 
+/// Run an expression in the environment the caller is standing in.
+///
+/// It is compiled the way any other source is — deparsed back out and put
+/// through the front end — and run on its own VM, which resolves names through
+/// the current frame because that is where `run_chunk` leaves them. The
+/// closures it defines are *appended* to the table rather than replacing it:
+/// the program that called `eval` is still running out of the same table.
+fn eval_expr(e: &Expr) -> Result<Value, String> {
+    let src = crate::deparse::deparse_lines(e);
+    let prog = crate::compile(&src)?;
+    let base = with_host(|h| h.closures.len());
+    let shifted = crate::compiler::shift_closure_ids(prog, base);
+    // A whole-program chunk echoes each statement's value; an `eval` is one
+    // expression inside a running program, and its value belongs to whatever
+    // asked for it. R's `eval` returns visibly but prints nothing of its own.
+    let echo = with_host(|h| std::mem::replace(&mut h.echo, false));
+    with_host(|h| h.closures.extend(shifted.closures));
+    let out = crate::host::run_chunk(shifted.main);
+    with_host(|h| h.echo = echo);
+    out
+}
+
 /// Parse one R expression and hand it back as a language object.
 fn parse_one(src: &str) -> Result<Value, String> {
     let mut exprs = crate::parser::parse(src)?;
@@ -1688,7 +1710,14 @@ fn b_autoprint(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
     let show = with_host(|h| {
         let s = h.echo && h.visible && h.error.is_none() && h.signal.is_none();
-        h.visible = true;
+        // R sets `R_Visible` before each top-level statement, and this is where
+        // rlang arms the next one. A chunk that is not echoing has no next
+        // top-level statement — it is an `eval` inside a running program — and
+        // its last statement's visibility is the value's, so it stands:
+        // `eval(quote(cat("hi")))` returns NULL invisibly, as `cat` does.
+        if h.echo {
+            h.visible = true;
+        }
         s
     });
     if show {
@@ -3067,6 +3096,8 @@ pub const PRIMITIVES: &[&str] = &[
     "sys.call",
     "match.call",
     "sys.function",
+    "eval",
+    "evalq",
     "is.call",
     "is.name",
     "is.symbol",
@@ -6535,6 +6566,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             match exprs.len() {
                 1 => Ok(mk_lang(exprs.remove(0))),
                 _ => Err(format!("invalid expression in quote: {src}")),
+            }
+        }
+        // `eval(expr)` runs an expression that was held rather than evaluated.
+        // Anything that is not one is already a value and evaluates to itself,
+        // which is R's rule too: `eval(1 + 2)` sees the number 3.
+        "eval" | "evalq" => {
+            let x = a.req(0, "expr")?;
+            match lang_of(&x) {
+                Some(e) => eval_expr(&e),
+                None => Ok(x),
             }
         }
         // `sys.call()` is the call that made the frame now running, verbatim.

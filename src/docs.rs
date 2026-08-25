@@ -1352,6 +1352,16 @@ const ENVIRONMENTS: &[Entry] = &[
         "sys.function()",
         "The closure being executed — the function itself, not its call.",
     ),
+    (
+        "eval",
+        "eval(expr)",
+        "Run an expression that was held rather than evaluated, in the environment the caller is standing in, so eval(quote(v + 1)) sees the caller's v and eval(quote(w <- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.",
+    ),
+    (
+        "evalq",
+        "evalq(expr)",
+        "Run an expression in the caller's environment, identical to eval here — rlang has no separate environment argument to quote against.",
+    ),
 ];
 
 /// The operators, which R makes ordinary functions — that is what lets
