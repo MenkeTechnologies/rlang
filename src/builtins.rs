@@ -221,6 +221,35 @@ fn inline_call_text(f: &Value) -> String {
     }
 }
 
+/// The environment a value holds, for the builtins that take an `envir`.
+fn env_of(v: &Value) -> Option<crate::host::Env> {
+    match data(v) {
+        RData::Environment(e) => Some(e),
+        _ => None,
+    }
+}
+
+/// Run `body` with `env` as the environment names resolve through — a frame
+/// with no closure behind it, which is what R's `eval(expr, envir)` evaluates
+/// in. The frame comes off however `body` ends.
+fn in_env<T>(env: crate::host::Env, body: impl FnOnce() -> T) -> T {
+    with_host(|h| {
+        h.frames.push(crate::host::Frame {
+            env,
+            args: Vec::new(),
+            fun_name: None,
+            fun: None,
+            dispatch: None,
+            on_exit: Vec::new(),
+        })
+    });
+    let out = body();
+    with_host(|h| {
+        h.frames.pop();
+    });
+    out
+}
+
 /// Run an expression in the environment the caller is standing in.
 ///
 /// It is compiled the way any other source is — deparsed back out and put
@@ -230,7 +259,10 @@ fn inline_call_text(f: &Value) -> String {
 /// the program that called `eval` is still running out of the same table.
 fn eval_expr(e: &Expr) -> Result<Value, String> {
     let src = crate::deparse::deparse_lines(e);
-    let prog = crate::compile(&src)?;
+    // Without slots: a top-level binding must land in the *environment*, since
+    // that is what the caller reads afterwards and what an `envir` argument
+    // pointed at. The REPL compiles this way for the same reason.
+    let prog = crate::compile_no_slots(&src)?;
     let base = with_host(|h| h.closures.len());
     let shifted = crate::compiler::shift_closure_ids(prog, base);
     // A whole-program chunk echoes each statement's value; an `eval` is one
@@ -6364,8 +6396,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "assign" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
             let v = a.req(1, "value")?;
+            // `envir = e` binds in *that* environment, not the caller's:
+            // `assign("v", 9, envir = e)` leaves `v` unbound where it was
+            // written, which is the whole reason for passing one.
+            let env = a.named("envir").and_then(|e| env_of(&e));
             with_host(|h| {
-                h.set_var(&n, v.clone());
+                match &env {
+                    Some(e) => h.bind(e, &n, v.clone()),
+                    None => h.set_var(&n, v.clone()),
+                }
                 h.visible = false;
             });
             Ok(v)
@@ -6594,9 +6633,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // which is R's rule too: `eval(1 + 2)` sees the number 3.
         "eval" | "evalq" => {
             let x = a.req(0, "expr")?;
-            match lang_of(&x) {
-                Some(e) => eval_expr(&e),
-                None => Ok(x),
+            let Some(e) = lang_of(&x) else { return Ok(x) };
+            // `envir = e` runs the expression *in* that environment; without
+            // one it runs where the caller stands.
+            match a.get(1, "envir").and_then(|v| env_of(&v)) {
+                Some(env) => in_env(env, || eval_expr(&e)),
+                None => eval_expr(&e),
             }
         }
         // `sys.call()` is the call that made the frame now running, verbatim.

@@ -13,14 +13,27 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Evaluation model
 
-- **Arguments are evaluated eagerly, not as promises**, so `substitute()`,
-  `quote()`, `match.call()`, `sys.call()`, and `deparse()` of an unevaluated
-  expression are absent from rlang's own evaluator. Non-standard-evaluation
-  *programs* (`dplyr::filter(df, x > 2)`, `data.table` `[`, `subset`) still run:
-  when rlang cannot evaluate a script, the whole thing is re-run in the embedded
-  GNU R (needs R installed), so the answer is correct even though rlang's JIT
-  didn't produce it. Set `RLANG_NO_CRAN=1` to force the native path only.
-  Defaults behave lazily — they compile into a body prologue
+- **Expressions are first-class**, so `quote()`, `sys.call()`, `match.call()`,
+  `sys.function()`, `eval()` and `deparse()` of an unevaluated expression all
+  work on rlang's own evaluator. `quote(x)` is compiled the way a formula is —
+  the argument is never compiled, its deparse rides across as a constant, and
+  the primitive parses it back — and the result is a real `LANGSXP`/`SYMSXP`
+  that prints as source, deparses, indexes (`quote(f(1))[[1]]`), decomposes with
+  `as.list`, and answers `class`/`typeof`/`mode`/`is.call`/`is.name`. `eval`
+  runs one in the caller's environment, so it reads and binds there.
+- **Arguments are evaluated eagerly, not as promises.** `substitute()` on an
+  argument, and any rule that depends on *when* an argument is forced, is out of
+  reach: `f <- function(a) a; f(1, x + y)` with `x` unbound reports
+  `object 'x' not found` where R reports `unused argument (x + y)`, because
+  rlang evaluates the argument before the matching that would have rejected it.
+  Where the distinction is observable through the context stack it is
+  reproduced: a call is opened before its arguments so a condition raised in one
+  names the enclosing call as R's forced promise does, and a `sys.call()` written
+  as an argument still reports the frame whose body wrote it. Non-standard-
+  evaluation *programs* (`dplyr::filter(df, x > 2)`, `data.table` `[`, `subset`)
+  run by re-running the whole script in the embedded GNU R (needs R installed)
+  when rlang cannot evaluate it. Set `RLANG_NO_CRAN=1` to force the native path
+  only. Defaults behave lazily — they compile into a body prologue
   (`if (missing(p)) p <- <default>`), so a default may refer to another argument.
 - **The condition system, including the call a condition carries.**
   `tryCatch` selects a handler by condition class (`error`, `warning`,
@@ -95,18 +108,19 @@ run that compared nothing — no cases generated, or an oracle that never answer
   than an environment. `format(restartObject)` therefore differs — though R's
   own output there embeds a heap address (`<environment: 0x…>`) that changes
   between two runs of R itself, so it is not a parity target for anyone.
-- **`local()` works; the rest of the environment surface does not.**
+- **`local()` works; part of the environment surface does not.**
   `local(expr)` compiles to `(function() expr)()`, which is R's own definition,
-  so it gets a fresh environment enclosing the caller's. `sys.function()`,
-  `parent.frame()` and `eval(expr, envir)` are still missing.
+  so it gets a fresh environment enclosing the caller's. `sys.function()` and
+  `eval(expr, envir)` work now; `parent.frame()` is missing.
 - **Formulas (`~`) parse and become real formula objects** — `lhs ~ rhs` is
   deparsed to R source and built in the CRAN bridge, so `lm(y ~ x, data = df)`,
   `aggregate(v ~ g, df, sum)`, and one-sided `~ x` work. A formula referencing a
   bare rlang variable (`lm(y ~ x)` with `x` defined only in rlang) can't see it —
   pass the data explicitly, or use literal vectors.
 - **No environments as first-class manipulation targets** beyond `new.env()`,
-  `environment()`, `local()`, `$`, and `[[` on an environment: `sys.function()`,
-  `parent.frame()`, `eval(expr, envir)` are missing.
+  `environment()`, `local()`, `assign`/`get`/`exists` with `envir`,
+  `eval(expr, envir)`, `$`, and `[[` on an environment. `parent.frame()` is
+  missing, and `ls(envir)` goes to the CRAN bridge.
 
 ## Types
 

@@ -1354,13 +1354,13 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         "eval",
-        "eval(expr)",
-        "Run an expression that was held rather than evaluated, in the environment the caller is standing in, so eval(quote(v + 1)) sees the caller's v and eval(quote(w <- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.",
+        "eval(expr, envir)",
+        "Run an expression that was held rather than evaluated. With envir it runs in that environment, reading and binding there; without one it runs where the caller stands, so eval(quote(v + 1)) sees the caller's v and eval(quote(w <- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.",
     ),
     (
         "evalq",
-        "evalq(expr)",
-        "Run an expression in the caller's environment, identical to eval here — rlang has no separate environment argument to quote against.",
+        "evalq(expr, envir)",
+        "Run an expression, identical to eval here: rlang's arguments are eager, so there is nothing left to quote against by the time either is called.",
     ),
 ];
 

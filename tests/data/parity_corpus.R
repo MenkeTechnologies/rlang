@@ -1397,3 +1397,18 @@ g <- function() {
     1
 }
 invisible(g())
+#==#
+e <- new.env()
+assign("v", 9, envir = e)
+print(exists("v"))
+print(eval(quote(v), e))
+assign("v", 1, envir = e)
+eval(quote(v <- v + 1), e)
+print(get("v", envir = e))
+print(eval(quote(1 + 1), e))
+x <- 1
+f <- function() {
+    x <- 2
+    eval(quote(x))
+}
+print(f())
