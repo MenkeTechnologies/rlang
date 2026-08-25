@@ -4808,6 +4808,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if is_text {
                 let mut ss: Vec<String> = strings.into_iter().flatten().collect();
                 ss.sort_by(|a, b| crate::collate::str_cmp(a, b));
+                // With nothing to compare, R answers `NA_character_` and says
+                // so — a different message from the numeric extremes, which
+                // have infinities to fall back on.
+                if ss.is_empty() {
+                    let via_range = name == "range";
+                    let at = |own: &str| match via_range {
+                        // `range.default` is R code: its warnings name the
+                        // `min(x, na.rm = na.rm)` / `max(…)` it calls.
+                        true => Some(format!("{own}(x, na.rm = na.rm)")),
+                        false => with_host(|h| h.current_call_source()),
+                    };
+                    let empty = "no non-missing arguments, returning NA";
+                    if name != "max" {
+                        signal_warning_in(empty, at("min"))?;
+                    }
+                    if name != "min" {
+                        signal_warning_in(empty, at("max"))?;
+                    }
+                    let n = if via_range { 2 } else { 1 };
+                    return Ok(mk_str(vec![None; n]));
+                }
                 return Ok(match name {
                     "min" => scalar_str(ss.first().cloned().unwrap_or_default()),
                     "max" => scalar_str(ss.last().cloned().unwrap_or_default()),
