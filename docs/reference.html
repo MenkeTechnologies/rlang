@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 259 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 279 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.1 &middot; 279 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.2 &middot; 299 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 259 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 279 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">24</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">40</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">60</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -384,9 +384,9 @@
       </article>
       <article class="doc-entry" id="doc-cat">
         <h3><a class="doc-anchor" href="#doc-cat">#</a> <code>cat</code></h3>
-        <pre><code class="lang-r r">cat(..., sep = " ")
+        <pre><code class="lang-r r">cat(..., sep = " ", file = "", append = FALSE)
 </code></pre>
-        <p>Write every argument's elements with no quotes and no trailing newline, joined by `sep`. The separator sits between arguments as well as between elements, so a leading zero-length argument still earns its successor one: cat(NULL, "x") writes " x". A separator containing a newline also ends the output with one. A list or a function argument is an error, as in R.</p>
+        <p>Write every argument's elements with no quotes and no trailing newline, joined by `sep`. The separator sits between arguments as well as between elements, so a leading zero-length argument still earns its successor one: cat(NULL, "x") writes " x". A separator containing a newline also ends the output with one. With a non-empty file the text goes there instead of to stdout, truncating unless append is TRUE. A list or a function argument is an error, as in R.</p>
       </article>
       <article class="doc-entry" id="doc-message">
         <h3><a class="doc-anchor" href="#doc-message">#</a> <code>message</code></h3>
@@ -1509,7 +1509,7 @@
     </section>
     <section class="tutorial-section" id="ch-environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">40 entries</p>
+      <p class="chapter-meta">60 entries</p>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1749,6 +1749,126 @@
         <pre><code class="lang-r r">.rlang_formula(src)
 </code></pre>
         <p>Internal, not user surface: what the compiler emits for `lhs ~ rhs`. It takes the deparsed R source and builds a real formula object in the embedded R, so lm, glm and aggregate receive one intact.</p>
+      </article>
+      <article class="doc-entry" id="doc-rlang-quote">
+        <h3><a class="doc-anchor" href="#doc-rlang-quote">#</a> <code>.rlang_quote</code></h3>
+        <pre><code class="lang-r r">.rlang_quote(src)
+</code></pre>
+        <p>Internal, not user surface: what the compiler emits for quote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote.</p>
+      </article>
+      <article class="doc-entry" id="doc-quote">
+        <h3><a class="doc-anchor" href="#doc-quote">#</a> <code>quote</code></h3>
+        <pre><code class="lang-r r">quote(expr)
+</code></pre>
+        <p>The expression itself, unevaluated. quote(1) is the number, quote(x) is a name, and a compound expression is a call — R's own three outcomes. The result prints as its source, deparses back to it, and takes apart with length and as.character.</p>
+      </article>
+      <article class="doc-entry" id="doc-bquote">
+        <h3><a class="doc-anchor" href="#doc-bquote">#</a> <code>bquote</code></h3>
+        <pre><code class="lang-r r">bquote(expr)
+</code></pre>
+        <p>The expression itself, unevaluated, like quote. R's `.()` substitution inside the expression is not performed.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-name">
+        <h3><a class="doc-anchor" href="#doc-as-name">#</a> <code>as.name</code></h3>
+        <pre><code class="lang-r r">as.name(x)
+</code></pre>
+        <p>The name (symbol) whose text is x — R's as.symbol. as.name("foo") prints as foo and has class "name".</p>
+      </article>
+      <article class="doc-entry" id="doc-as-symbol">
+        <h3><a class="doc-anchor" href="#doc-as-symbol">#</a> <code>as.symbol</code></h3>
+        <pre><code class="lang-r r">as.symbol(x)
+</code></pre>
+        <p>The name (symbol) whose text is x, identical to as.name.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-call">
+        <h3><a class="doc-anchor" href="#doc-is-call">#</a> <code>is.call</code></h3>
+        <pre><code class="lang-r r">is.call(x)
+</code></pre>
+        <p>Whether x is an unevaluated call — TRUE for quote(f(1)) and for quote(a + b), FALSE for a name or a constant.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-name">
+        <h3><a class="doc-anchor" href="#doc-is-name">#</a> <code>is.name</code></h3>
+        <pre><code class="lang-r r">is.name(x)
+</code></pre>
+        <p>Whether x is a name — TRUE for quote(x) and as.name("x"), FALSE for a call or a constant. R's is.symbol.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-symbol">
+        <h3><a class="doc-anchor" href="#doc-is-symbol">#</a> <code>is.symbol</code></h3>
+        <pre><code class="lang-r r">is.symbol(x)
+</code></pre>
+        <p>Whether x is a name, identical to is.name.</p>
+      </article>
+      <article class="doc-entry" id="doc-sys-call">
+        <h3><a class="doc-anchor" href="#doc-sys-call">#</a> <code>sys.call</code></h3>
+        <pre><code class="lang-r r">sys.call()
+</code></pre>
+        <p>The call that made the frame now running, as a language object. NULL at top level. A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.</p>
+      </article>
+      <article class="doc-entry" id="doc-match-call">
+        <h3><a class="doc-anchor" href="#doc-match-call">#</a> <code>match.call</code></h3>
+        <pre><code class="lang-r r">match.call()
+</code></pre>
+        <p>The current call with every argument that binds to a named formal carrying that formal's name, and the arguments in formal order. Arguments absorbed by ... keep their own tag and follow.</p>
+      </article>
+      <article class="doc-entry" id="doc-sys-function">
+        <h3><a class="doc-anchor" href="#doc-sys-function">#</a> <code>sys.function</code></h3>
+        <pre><code class="lang-r r">sys.function()
+</code></pre>
+        <p>The closure being executed — the function itself, not its call.</p>
+      </article>
+      <article class="doc-entry" id="doc-eval">
+        <h3><a class="doc-anchor" href="#doc-eval">#</a> <code>eval</code></h3>
+        <pre><code class="lang-r r">eval(expr, envir)
+</code></pre>
+        <p>Run an expression that was held rather than evaluated. With envir it runs in that environment, reading and binding there; without one it runs where the caller stands, so eval(quote(v + 1)) sees the caller's v and eval(quote(w &lt;- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.</p>
+      </article>
+      <article class="doc-entry" id="doc-rlang-substitute">
+        <h3><a class="doc-anchor" href="#doc-rlang-substitute">#</a> <code>.rlang_substitute</code></h3>
+        <pre><code class="lang-r r">.rlang_substitute(expr, env)
+</code></pre>
+        <p>Internal, not user surface: what the compiler emits for substitute(x). The first argument is never compiled; its deparse rides across as a string and this parses it back before substituting.</p>
+      </article>
+      <article class="doc-entry" id="doc-substitute">
+        <h3><a class="doc-anchor" href="#doc-substitute">#</a> <code>substitute</code></h3>
+        <pre><code class="lang-r r">substitute(expr, env)
+</code></pre>
+        <p>The expression with every symbol the current frame accounts for replaced by what it stands for: a formal the caller supplied stands for the expression they wrote, anything else bound in the frame stands for its value, and a symbol neither accounts for is left alone. `...` splices back into the arguments it stands for. At top level nothing is substituted, however much is bound. With env, that table is consulted instead of the frame.</p>
+      </article>
+      <article class="doc-entry" id="doc-parent-frame">
+        <h3><a class="doc-anchor" href="#doc-parent-frame">#</a> <code>parent.frame</code></h3>
+        <pre><code class="lang-r r">parent.frame(n = 1)
+</code></pre>
+        <p>The environment of the frame that called this one, so a function can read or write the caller's variables. A builtin pushes no frame, so what this finds is the calling closure. Past the outermost frame it answers the global environment, as R does.</p>
+      </article>
+      <article class="doc-entry" id="doc-ls">
+        <h3><a class="doc-anchor" href="#doc-ls">#</a> <code>ls</code></h3>
+        <pre><code class="lang-r r">ls(envir, all.names = FALSE)
+</code></pre>
+        <p>The names bound in an environment, sorted, defaulting to the current one. Names beginning with a dot are left out unless all.names is TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-objects">
+        <h3><a class="doc-anchor" href="#doc-objects">#</a> <code>objects</code></h3>
+        <pre><code class="lang-r r">objects(envir, all.names = FALSE)
+</code></pre>
+        <p>The names bound in an environment, identical to ls.</p>
+      </article>
+      <article class="doc-entry" id="doc-globalenv">
+        <h3><a class="doc-anchor" href="#doc-globalenv">#</a> <code>globalenv</code></h3>
+        <pre><code class="lang-r r">globalenv()
+</code></pre>
+        <p>The global environment — where a top-level assignment binds.</p>
+      </article>
+      <article class="doc-entry" id="doc-environmentname">
+        <h3><a class="doc-anchor" href="#doc-environmentname">#</a> <code>environmentName</code></h3>
+        <pre><code class="lang-r r">environmentName(env)
+</code></pre>
+        <p>"R_GlobalEnv" for the global environment and the empty string for any other, which is what R answers for an anonymous frame.</p>
+      </article>
+      <article class="doc-entry" id="doc-evalq">
+        <h3><a class="doc-anchor" href="#doc-evalq">#</a> <code>evalq</code></h3>
+        <pre><code class="lang-r r">evalq(expr, envir)
+</code></pre>
+        <p>Run an expression, identical to eval here: rlang's arguments are eager, so there is nothing left to quote against by the time either is called.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-operators">
