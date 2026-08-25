@@ -74,7 +74,10 @@ run that compared nothing — no cases generated, or an oracle that never answer
   14-column fold for a long one, the statement's held warnings after it under
   `In addition:`, and the `Execution halted` line R's front end closes with. A
   script that stops inside the CRAN bridge reports R's own `geterrmessage()`
-  verbatim rather than a message about the delegation.
+  verbatim rather than a message about the delegation — which is the whole
+  message but not the `Calls:` line, since `geterrmessage()` does not carry one.
+  So a script that both errors *and* falls back shows the error without its
+  chain; run with `RLANG_NO_CRAN=1` and rlang prints both from its own stack.
 
   **The condition object carries the call as well**, now that there is a type
   for one: `conditionCall(e)` hands back the language object, `print(cond)`
