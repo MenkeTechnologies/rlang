@@ -7,12 +7,12 @@
 //! scopes — never across a call back into R — so `lapply` can run a closure body
 //! on a nested VM while the outer builtin is still on the stack.
 
+use crate::ast::{Arg, Expr};
 use crate::host::NameMap;
 use crate::host::{
     call_value, fixed_decimals, ops, render_fixed, render_sci, sci_decimals, with_host,
     CombinatorKind, RData, RKind, Signal,
 };
-use crate::ast::{Arg, Expr};
 use fusevm::{Value, VM};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -602,12 +602,9 @@ pub(crate) fn lang_parts(e: &Expr) -> Vec<(Option<String>, Value)> {
         }
         Expr::While { cond, body } => vec![(None, sym("while")), part(cond), part(body)],
         Expr::Repeat(b) => vec![(None, sym("repeat")), part(b)],
-        Expr::For { var, seq, body } => vec![
-            (None, sym("for")),
-            (None, sym(var)),
-            part(seq),
-            part(body),
-        ],
+        Expr::For { var, seq, body } => {
+            vec![(None, sym("for")), (None, sym(var)), part(seq), part(body)]
+        }
         Expr::Assign {
             target,
             value,
@@ -629,9 +626,7 @@ pub(crate) fn lang_parts(e: &Expr) -> Vec<(Option<String>, Value)> {
                 let v = match &arg.value {
                     // `x$name` holds the name as a string in the tree; R keeps
                     // it as a symbol.
-                    Some(Expr::Str(n))
-                        if matches!(kind, IndexKind::Dollar | IndexKind::At) =>
-                    {
+                    Some(Expr::Str(n)) if matches!(kind, IndexKind::Dollar | IndexKind::At) => {
                         sym(n)
                     }
                     Some(x) => mk_lang(x.clone()),
@@ -3731,7 +3726,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // instead, truncating unless `append = TRUE`. Without this the text
             // went to stdout and the file was never created, so a later
             // `readLines` of it found nothing.
-            match a.named("file").and_then(|v| str1(&v)).filter(|p| !p.is_empty()) {
+            match a
+                .named("file")
+                .and_then(|v| str1(&v))
+                .filter(|p| !p.is_empty())
+            {
                 Some(path) => {
                     let append = a.named("append").and_then(|v| lgl1(&v)).unwrap_or(false);
                     write_text(&path, &text, append)?;
@@ -6760,7 +6759,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // action: with nothing waiting it just returns NULL — visibly, so a
             // bare call at top level echoes it.
             if let Signalled::Unwind = signal_to_handlers(&c, &classes)? {
-                raise_condition(msg, classes, element_field(&c, "call").and_then(|cl| lang_of(&cl)).map(|e| crate::deparse::deparse_lines(&e)));
+                raise_condition(
+                    msg,
+                    classes,
+                    element_field(&c, "call")
+                        .and_then(|cl| lang_of(&cl))
+                        .map(|e| crate::deparse::deparse_lines(&e)),
+                );
             }
             with_host(|h| h.visible = true);
             Ok(null())
@@ -6991,10 +6996,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .get(0, "envir")
                 .and_then(|v| env_of(&v))
                 .unwrap_or_else(|| with_host(|h| h.env()));
-            let all = a
-                .named("all.names")
-                .and_then(|v| lgl1(&v))
-                .unwrap_or(false);
+            let all = a.named("all.names").and_then(|v| lgl1(&v)).unwrap_or(false);
             let mut names: Vec<String> = env
                 .borrow()
                 .vars
