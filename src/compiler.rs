@@ -328,7 +328,11 @@ const R_PRIMITIVES: &[&str] = &[
 /// Whether calling `name` makes an R context — true for everything R implements
 /// as a closure, which is what [`ops::OPEN_CALL`] is emitted for.
 fn makes_context(name: &str) -> bool {
-    !R_PRIMITIVES.contains(&name)
+    // A `.rlang_*` shim is the compiler talking to its own runtime, not a call
+    // the script wrote, so it makes no R context: one on the stack would sit
+    // between a closure and its caller and make `substitute`/`sys.call` read
+    // the wrong frame's source.
+    !R_PRIMITIVES.contains(&name) && !name.starts_with(".rlang_")
 }
 
 /// The names in a whole-program top level that are safe to bind to native frame
@@ -764,6 +768,32 @@ impl Compiler {
                     _ => None,
                 };
                 let args: &[Arg] = thunked.as_deref().unwrap_or(args);
+                // R binds a CLOSURE's arguments as promises: the expression is
+                // evaluated on first read, in the caller's environment, and not
+                // at all if the formal is never read. `f <- function(x) 42;
+                // f(stop("boom"))` is 42 in R, and was an error here.
+                //
+                // The same predicate as the context above decides it, because
+                // it asks the same question — is this call a closure's? A name
+                // that turns out to be a primitive after all gets its arguments
+                // forced at `call_primitive`'s door, so the promise never
+                // reaches a builtin's hands.
+                let promised = match fun.as_ref() {
+                    // Slot mode is only ever on for a unit with no `function`
+                    // in it (see `slot_locals`), so there is no closure for a
+                    // promise to be bound in and nothing can observe the
+                    // difference — while a thunk compiled here WOULD read a
+                    // slot that only the enclosing frame has.
+                    _ if !self.locals.is_empty() => None,
+                    Expr::Ident(name) if !makes_context(name) => None,
+                    // The rewrite's own call, and the rest of the compiler's
+                    // internal shims, take what they are handed: promising a
+                    // `.rlang_promise` argument would re-enter this rewrite on
+                    // the thunk it just built, forever.
+                    Expr::Ident(name) if name.starts_with(".rlang_") => None,
+                    _ => promise_args(args),
+                };
+                let args: &[Arg] = promised.as_deref().unwrap_or(args);
                 // R's contexts carry the call that created them, and every
                 // condition raised inside one reports it (`In f(1) : …`), while
                 // `sys.call()` hands it back as data. The deparse is fixed at
@@ -1747,6 +1777,44 @@ fn quote_call(inner: &Expr) -> Expr {
             value: Some(Expr::Str(deparse_lines(inner))),
         }],
     }
+}
+
+/// Wrap each argument of a closure call in `.rlang_promise(function() <arg>)`,
+/// or `None` when the call has nothing to defer.
+///
+/// A `...` or an empty argument is left alone: the first expands at run time
+/// into arguments that were already promised at THEIR call, and the second is
+/// the missing marker, which is not an expression to defer. A literal is left
+/// alone too — evaluating it cannot fail, cannot have an effect, and wrapping
+/// it would cost a closure and a heap object per call for nothing.
+fn promise_args(args: &[Arg]) -> Option<Vec<Arg>> {
+    fn is_literal(e: &Expr) -> bool {
+        matches!(
+            e,
+            Expr::Num(_) | Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null
+        )
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut changed = false;
+    for a in args {
+        match &a.value {
+            Some(v) if !matches!(v, Expr::Dots) && !is_literal(v) => {
+                changed = true;
+                out.push(Arg {
+                    name: a.name.clone(),
+                    value: Some(Expr::Call {
+                        fun: Box::new(Expr::Ident(".rlang_promise".into())),
+                        args: vec![Arg {
+                            name: None,
+                            value: Some(thunk(v.clone())),
+                        }],
+                    }),
+                });
+            }
+            _ => out.push(a.clone()),
+        }
+    }
+    changed.then_some(out)
 }
 
 fn thunk_lazy_args(name: &str, args: &[Arg]) -> Option<Vec<Arg>> {

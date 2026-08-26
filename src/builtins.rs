@@ -307,6 +307,7 @@ fn env_of(v: &Value) -> Option<crate::host::Env> {
 fn in_env<T>(env: crate::host::Env, body: impl FnOnce() -> T) -> T {
     with_host(|h| {
         h.frames.push(crate::host::Frame {
+            promise: false,
             env,
             args: Vec::new(),
             fun_name: None,
@@ -355,7 +356,7 @@ fn eval_expr(e: &Expr) -> Result<Value, String> {
 /// this is an absence rather than an empty table.
 fn frame_substitutions() -> Option<Vec<(String, Expr)>> {
     let params = with_host(|h| h.current_formals())?;
-    let src = with_host(|h| h.enclosing_source())?;
+    let src = with_host(|h| h.enclosing_source_from(0))?;
     let mut exprs = crate::parser::parse(&src).ok()?;
     if exprs.len() != 1 {
         return None;
@@ -883,7 +884,13 @@ fn b_getvar(vm: &mut VM, _: u8) -> Value {
     // so `function(x = 3) x` printed nothing.
     with_host(|h| h.visible = true);
     match with_host(|h| h.lookup(&name)) {
-        Some(v) => v,
+        // A formal bound to an unforced argument is evaluated HERE, on the
+        // first read — R's promise, and the reason an argument a function
+        // never touches is never evaluated.
+        Some(v) => match crate::host::force_value(&v) {
+            Ok(forced) => forced,
+            Err(e) => abort(vm, e),
+        },
         None => match primitive_value(&name) {
             Some(v) => v,
             // A bare name that is a function in a loaded CRAN package (used as a
@@ -1091,29 +1098,38 @@ fn call_op(vm: &mut VM, opened: bool) -> Value {
     // R implements as a primitive and makes no context for — unless the name
     // has been rebound to a closure, which does. Either way the call is being
     // *entered* now: its arguments are evaluated.
-    with_host(|h| match opened {
-        true => {
-            if let Some(c) = h.calls.last_mut() {
-                c.entered = true;
+    // A `.rlang_*` shim is the compiler talking to its own runtime — `quote`'s
+    // source string, an argument's promise — and no call the script wrote. It
+    // gets no context, so it cannot sit between a closure and its caller and
+    // make `substitute`/`sys.call` read the wrong frame.
+    let shim = name.as_deref().is_some_and(|n| n.starts_with(".rlang_"));
+    if !shim {
+        with_host(|h| match opened {
+            true => {
+                if let Some(c) = h.calls.last_mut() {
+                    c.entered = true;
+                }
             }
-        }
-        false => h.calls.push(crate::host::CallCtx {
-            text: call,
-            closure,
-            entered: true,
-        }),
-    });
+            false => h.calls.push(crate::host::CallCtx {
+                text: call,
+                closure,
+                entered: true,
+            }),
+        });
+    }
     let out = call_value(&f, args, name);
-    with_host(|h| {
-        // A primitive that failed by returning `Err` has recorded no call, and
-        // the one R would name is this call — which comes off the stack on the
-        // next line, before `abort` below could read it.
-        if out.is_err() && h.error.is_none() {
-            let call = h.current_call_source();
-            h.set_error_call(call);
-        }
-        h.calls.pop();
-    });
+    if !shim {
+        with_host(|h| {
+            // A primitive that failed by returning `Err` has recorded no call,
+            // and the one R would name is this call — which comes off the stack
+            // on the next line, before `abort` below could read it.
+            if out.is_err() && h.error.is_none() {
+                let call = h.current_call_source();
+                h.set_error_call(call);
+            }
+            h.calls.pop();
+        });
+    }
     match out {
         Ok(v) => propagate(vm, v),
         Err(e) => abort(vm, e),
@@ -3375,6 +3391,20 @@ pub fn call_combinator(
 
 /// Call a primitive by name with evaluated arguments.
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
+    // A primitive forces its arguments, as R's do: only a closure binds them
+    // unforced. The compiler cannot always tell which a name will be, so an
+    // argument may arrive as a promise even here — this is where that is
+    // settled. Values that are not promises come straight back, so the common
+    // call pays one enum test per argument.
+    let args = if args.iter().any(|(_, v)| kind(v) == RKind::Promise) {
+        let mut forced = Vec::with_capacity(args.len());
+        for (n, v) in args {
+            forced.push((n, crate::host::force_value(&v)?));
+        }
+        forced
+    } else {
+        args
+    };
     if OPERATORS.contains(&name) {
         return call_operator(name, &args);
     }
@@ -3680,6 +3710,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             with_host(|h| h.visible = false);
             Ok(x)
+        }
+        // ── promises ─────────────────────────────────────────────────────
+        // `.rlang_promise(function() <arg>)` — what the compiler emits around
+        // every argument of a call that may reach a closure. The thunk closes
+        // over the caller's environment, so forcing it later evaluates the
+        // expression where it was written.
+        ".rlang_promise" => {
+            let thunk = a.req(0, "thunk")?;
+            Ok(with_host(|h| {
+                // The call this argument is FOR is already open, and any
+                // further open-not-entered ones above it are the same story a
+                // level in. None of them is where the expression was written,
+                // so the depth is the last ENTERED context: the frame whose
+                // body wrote the argument.
+                let ctx_depth = h.entered_ctx_depth();
+                h.alloc(RData::Promise {
+                    thunk,
+                    value: None,
+                    ctx_depth,
+                })
+            }))
         }
         // ── str() ────────────────────────────────────────────────────────
         "str" => {
@@ -10122,13 +10173,21 @@ fn r_try(a: &Args) -> Result<Value, String> {
 /// method is running. `UseMethod` records the remaining class vector on the
 /// method's frame; this walks the rest of it, ending at `<generic>.default`.
 fn next_method() -> Result<Value, String> {
+    // `innermost_call`, not `frames.last()`: an argument's promise is forced
+    // inside the callee, so the frame on top may be the promise's. R evaluates
+    // it in the method's own frame, which is what this looks past to —
+    // `as.character.money <- function(x, ...) paste0("$", NextMethod())`.
     let (dispatch, args) = with_host(|h| {
-        let f = h.frames.last();
+        let f = h.innermost_call();
         (
             f.and_then(|f| f.dispatch.clone()),
             f.map(|f| f.args.clone()).unwrap_or_default(),
         )
     });
+    // Dispatch reads the arguments as VALUES — it picks a method by their
+    // class — so any still-unforced promise among them is forced here, which
+    // is the read R's `NextMethod` performs too.
+    let args = crate::host::force_all(args)?;
     let (generic, rest) =
         dispatch.ok_or_else(|| "NextMethod called from outside a method".to_string())?;
     dispatch_from(&generic, &rest, args)
@@ -10164,7 +10223,11 @@ fn dispatch_from(
 /// argument of the *calling* function, falling back to `generic.default`.
 fn use_method(a: &Args) -> Result<Value, String> {
     let generic = str1(&a.req(0, "generic")?).unwrap_or_default();
-    let frame_args = with_host(|h| h.frames.last().map(|f| f.args.clone()).unwrap_or_default());
+    let frame_args = crate::host::force_all(with_host(|h| {
+        h.innermost_call()
+            .map(|f| f.args.clone())
+            .unwrap_or_default()
+    }))?;
     let obj = match a.get(1, "object") {
         Some(v) => v,
         None => frame_args

@@ -298,6 +298,25 @@ pub enum RData {
     },
     /// A primitive implemented in Rust, named for dispatch and printing.
     Builtin(String),
+    /// An unevaluated argument: R's promise. The `thunk` is a zero-argument
+    /// closure over the CALLER's environment holding the argument expression,
+    /// and `value` is what forcing it produced — filled in once, because R
+    /// evaluates a promise at most once however many times the formal is read.
+    ///
+    /// A promise is created only by [`crate::builtins::call_primitive`]'s
+    /// `.rlang_promise` (which the compiler emits around every argument of a
+    /// call that may reach a closure) and is forced wherever a binding is
+    /// READ — `force_value` is that door.
+    Promise {
+        thunk: Value,
+        value: Option<Value>,
+        /// How deep the call-context stack was where the argument was WRITTEN.
+        /// Forcing happens later and further in — inside the callee — but the
+        /// expression still belongs to the frame that wrote it, so the walkers
+        /// (`substitute`, `sys.call`, warning's `In <call> :`) are shown the
+        /// stack as it stood here. R gets this from the promise's own env.
+        ctx_depth: usize,
+    },
     /// An opaque handle to an R object living in the embedded GNU R (a raw
     /// vector, S4 object, data frame, environment — anything rlang has no type
     /// for). The `usize` is the preserved `SEXP` pointer; it flows back into R
@@ -334,6 +353,9 @@ pub enum RData {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RKind {
     Null,
+    /// An unforced promise. No R type answers to this — a promise that reaches
+    /// a value position is a bug in the forcing, not a value a script can see.
+    Promise,
     Lgl,
     Int,
     Dbl,
@@ -354,6 +376,7 @@ impl RKind {
     pub fn of(d: &RData) -> RKind {
         match d {
             RData::Null => RKind::Null,
+            RData::Promise { .. } => RKind::Promise,
             RData::Lgl(_) => RKind::Lgl,
             RData::Int(_) => RKind::Int,
             RData::Dbl(_) => RKind::Dbl,
@@ -399,6 +422,11 @@ pub fn type_rank(d: &RData) -> u8 {
 /// One entry on the R call stack.
 pub struct Frame {
     pub env: Env,
+    /// True for the frame a forced promise runs in. R evaluates a promise in
+    /// the caller's environment and makes NO call frame for it, so everything
+    /// that walks frames — `substitute`, `parent.frame`, `sys.call` — has to
+    /// look straight through this one.
+    pub promise: bool,
     /// The call's arguments, kept for `UseMethod` and `sys.call`-style needs.
     pub args: Vec<(Option<String>, Value)>,
     /// The name the function was called by, when known.
@@ -679,6 +707,7 @@ impl RHost {
             heap: Vec::new(),
             global: global.clone(),
             frames: vec![Frame {
+                promise: false,
                 env: global,
                 args: Vec::new(),
                 fun_name: None,
@@ -737,6 +766,9 @@ impl RHost {
                 }
             }
             RData::Combinator { inner, .. } => retain(&mut self.heap, inner),
+            // A promise holds its thunk for as long as it is unforced, which is
+            // the same durable reference a list holds over its elements.
+            RData::Promise { thunk, .. } => retain(&mut self.heap, thunk),
             _ => {}
         }
         for v in attrs.values() {
@@ -1232,6 +1264,10 @@ impl RHost {
             Some(RData::Sym(_)) => "name",
             // A foreign R object's real class is only known to R.
             Some(RData::RForeign(_)) => "R_object",
+            // R answers "promise" for the type of an unforced one, which only
+            // `pryr`-style introspection ever sees; every ordinary read forces
+            // first (`force_value`).
+            Some(RData::Promise { .. }) => "promise",
         }
         .to_string()]
     }
@@ -1257,6 +1293,7 @@ impl RHost {
             Some(RData::Environment(_)) => "environment",
             Some(RData::Lang(_)) => "language",
             Some(RData::Sym(_)) => "symbol",
+            Some(RData::Promise { .. }) => "promise",
         }
     }
 
@@ -1380,13 +1417,35 @@ impl RHost {
     /// `sys.call()` parses back into a language object. The same search
     /// `enclosing_call` runs for the diagnostics, and it skips one frame for
     /// the same reason: `sys.call()` is itself a call.
-    pub fn enclosing_source(&self) -> Option<String> {
+    /// How deep the context stack is counting only calls that have been
+    /// ENTERED — the open-but-not-entered ones on top are calls whose own
+    /// arguments are being evaluated right now.
+    pub fn entered_ctx_depth(&self) -> usize {
         self.calls
             .iter()
+            .rposition(|c| c.entered)
+            .map_or(0, |i| i + 1)
+    }
+
+    pub fn enclosing_source(&self) -> Option<String> {
+        self.enclosing_source_from(1)
+    }
+
+    /// The same search, skipping `skip` contexts first.
+    ///
+    /// `sys.call()` and friends skip one because they are themselves calls with
+    /// a context of their own. `substitute()` compiles to a `.rlang_*` shim,
+    /// which makes no context at all, so it skips none — the innermost entered
+    /// closure IS the frame whose formals it is asking about.
+    pub fn enclosing_source_from(&self, skip: usize) -> Option<String> {
+        self.calls
+            .iter()
+            .enumerate()
             .rev()
-            .skip(1)
-            .find(|c| c.closure && c.entered)
-            .map(|c| ctx_source(&c.text))
+            .filter(|(i, _)| !ctx_hidden(*i))
+            .skip(skip)
+            .find(|(_, c)| c.closure && c.entered)
+            .map(|(_, c)| ctx_source(&c.text))
     }
 
     fn enclosing_ctx(&self, skip: usize) -> Option<&CallCtx> {
@@ -1396,8 +1455,14 @@ impl RHost {
     /// The formals of the closure now executing, for the builtins that have to
     /// know what a call's arguments were matched *against*.
     pub fn current_formals(&self) -> Option<Vec<String>> {
-        let (id, _) = self.frames.last()?.fun.as_ref()?;
+        let (id, _) = self.innermost_call()?.fun.as_ref()?;
         Some(self.closures.get(*id)?.params.clone())
+    }
+
+    /// The innermost frame that is a CALL — the promise frames above it are
+    /// evaluation of the caller's own expressions, which R makes no frame for.
+    pub fn innermost_call(&self) -> Option<&Frame> {
+        self.frames.iter().rev().find(|f| !f.promise)
     }
 
     /// Bind `name` in the current environment.
@@ -2112,6 +2177,93 @@ fn warn_level() -> i64 {
     }
 }
 
+/// Force every promise in an argument list — what a callee that binds no
+/// formals (a primitive, a combinator, a foreign handle) needs before it can
+/// look at what it was passed.
+pub fn force_all(
+    args: Vec<(Option<String>, Value)>,
+) -> Result<Vec<(Option<String>, Value)>, String> {
+    if !args.iter().any(|(_, v)| {
+        with_host(|h| matches!(h.get(v).map(|o| &o.data), Some(RData::Promise { .. })))
+    }) {
+        return Ok(args);
+    }
+    let mut out = Vec::with_capacity(args.len());
+    for (n, v) in args {
+        out.push((n, force_value(&v)?));
+    }
+    Ok(out)
+}
+
+thread_local! {
+    /// Set for the duration of one `call_closure` entry, so the frame it makes
+    /// can mark itself a promise frame. A flag rather than a parameter because
+    /// the call goes through `call_value`, which every other caller shares.
+    static FORCING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `(from, to)` for each promise being forced: the stretch of the call
+    /// stack that stands between where its expression was written and where it
+    /// is being evaluated. Only the "whose expression is this?" walkers skip
+    /// it — see [`RHost::enclosing_source_from`].
+    static HIDDEN: std::cell::RefCell<Vec<(usize, usize)>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+/// Whether context index `i` is inside a promise's hidden stretch.
+fn ctx_hidden(i: usize) -> bool {
+    HIDDEN.with(|s| s.borrow().iter().any(|(lo, hi)| i >= *lo && i < *hi))
+}
+
+/// Force a promise: run the argument expression it holds, in the environment
+/// the caller wrote it in, and remember the answer.
+///
+/// R evaluates an argument at most once and only if it is read, which is what
+/// makes `f(stop("boom"))` legal for an `f` that never touches its formal.
+/// Every place that READS a binding goes through here; anything that is not a
+/// promise is handed straight back, so the call is free for the common case.
+pub fn force_value(v: &Value) -> Result<Value, String> {
+    // Two steps, deliberately: the memo is read (and the borrow dropped) before
+    // the thunk runs, because forcing re-enters the interpreter and a live host
+    // borrow across that is a panic.
+    let Some((thunk, memo, depth)) = with_host(|h| match h.get(v).map(|o| &o.data) {
+        Some(RData::Promise {
+            thunk,
+            value,
+            ctx_depth,
+        }) => Some((thunk.clone(), value.clone(), *ctx_depth)),
+        _ => None,
+    }) else {
+        return Ok(v.clone());
+    };
+    if let Some(done) = memo {
+        return Ok(done);
+    }
+    // The stack between where the argument was written and here is the
+    // machinery of getting the promise forced — the callee's own context, and
+    // whatever it called on the way. It is HIDDEN rather than removed: R keeps
+    // it, so a warning raised while forcing still reports the callee (`In
+    // print(as.integer("x")) : NAs introduced by coercion`), and only the
+    // walkers that ask "whose expression is this?" — `substitute`, `sys.call`
+    // — look past it to the frame that wrote the argument.
+    HIDDEN.with(|s| s.borrow_mut().push((depth, with_host(|h| h.calls.len()))));
+    FORCING.with(|f| f.set(true));
+    let out = call_value(&thunk, Vec::new(), None);
+    FORCING.with(|f| f.set(false));
+    HIDDEN.with(|s| {
+        s.borrow_mut().pop();
+    });
+    let out = out?;
+    with_host(|h| {
+        retain(&mut h.heap, &out);
+        if let Some(o) = h.get_mut(v) {
+            if let RData::Promise { value, .. } = &mut o.data {
+                *value = Some(out.clone());
+            }
+        }
+    });
+    Ok(out)
+}
+
 /// Call any callable value with an already-evaluated argument list.
 pub fn call_value(
     f: &Value,
@@ -2121,11 +2273,16 @@ pub fn call_value(
     match with_host(|h| h.data_of(f)) {
         RData::Builtin(name) => crate::builtins::call_primitive(&name, args),
         RData::Closure { id, env } => call_closure(id, env, args, fun_name),
-        RData::Combinator { kind, inner } => crate::builtins::call_combinator(kind, &inner, args),
+        // A combinator and a foreign handle are primitive-shaped: neither binds
+        // formals, so both take their arguments forced, as `call_primitive`
+        // does.
+        RData::Combinator { kind, inner } => {
+            crate::builtins::call_combinator(kind, &inner, force_all(args)?)
+        }
         // A foreign R function handle (R6 method, package closure) is invoked in
         // embedded R with marshalled arguments.
         #[cfg(not(target_arch = "wasm32"))]
-        RData::RForeign(ptr) => crate::rembed::call_handle(ptr, &args),
+        RData::RForeign(ptr) => crate::rembed::call_handle(ptr, &force_all(args)?),
         _ => Err("attempt to apply non-function".into()),
     }
 }
@@ -2172,6 +2329,7 @@ pub fn call_closure(
         let dispatch = h.pending_dispatch.take();
         h.frames.push(Frame {
             env: frame_env,
+            promise: FORCING.with(|f| f.replace(false)),
             args,
             fun_name,
             fun: Some((id, env)),
