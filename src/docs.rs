@@ -908,9 +908,39 @@ const STRINGS: &[Entry] = &[
         "A list with every match position for each element, each vector carrying its own `match.length`.",
     ),
     (
+        "regexec",
+        "regexec(pattern, text)",
+        "A list whose element per text is the first match's position followed by each capture group's, with the widths on `match.length`.",
+    ),
+    (
         "regmatches",
         "regmatches(x, m)",
         "The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter.",
+    ),
+    (
+        "str",
+        "str(object)",
+        "A one-line-per-level sketch of a value: its type, dimensions, first few elements and attributes.",
+    ),
+    (
+        "tempfile",
+        "tempfile(pattern = \"file\", tmpdir = tempdir(), fileext = \"\")",
+        "A path under the temporary directory that no file occupies yet — naming one does not create it.",
+    ),
+    (
+        "readLines",
+        "readLines(con)",
+        "The lines of a file as a character vector, without their newlines; a final line with no newline is still a line.",
+    ),
+    (
+        "file.exists",
+        "file.exists(...)",
+        "TRUE for each path that exists, vectorized over its argument.",
+    ),
+    (
+        "unlink",
+        "unlink(x, recursive = FALSE)",
+        "Remove the named files, answering 0 when there is nothing left to remove (a missing path included) and 1 on failure. Invisible.",
     ),
     (
         "trimws",

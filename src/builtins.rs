@@ -3066,6 +3066,11 @@ pub const PRIMITIVES: &[&str] = &[
     "structure",
     "print",
     "cat",
+    "str",
+    "tempfile",
+    "readLines",
+    "file.exists",
+    "unlink",
     "paste",
     "paste0",
     "format",
@@ -3212,6 +3217,7 @@ pub const PRIMITIVES: &[&str] = &[
     "grep",
     "regexpr",
     "gregexpr",
+    "regexec",
     "regmatches",
     "trimws",
     "startsWith",
@@ -3674,6 +3680,94 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             with_host(|h| h.visible = false);
             Ok(x)
+        }
+        // ── str() ────────────────────────────────────────────────────────
+        "str" => {
+            let x = a.req(0, "object")?;
+            for line in str_lines(&x, 0) {
+                crate::host::emit(&line);
+                crate::host::emit("\n");
+            }
+            with_host(|h| h.visible = false);
+            Ok(null())
+        }
+        // ── files ────────────────────────────────────────────────────────
+        // `cat(file =)` could already write one; these four are what a script
+        // needs to name, read back and remove it.
+        "tempfile" => {
+            // R composes `<tempdir>/<pattern><random><fileext>` and does NOT
+            // create the file — `file.exists()` on a fresh `tempfile()` is
+            // FALSE, which is what makes the create-then-check corpus honest.
+            let pattern = a
+                .named("pattern")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "file".into());
+            let ext = a
+                .named("fileext")
+                .and_then(|v| str1(&v))
+                .unwrap_or_default();
+            let dir = a
+                .named("tmpdir")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+            // R's is a random hex tag; the process id and a per-call counter
+            // give the same "no two calls collide" property without pulling in
+            // an RNG, and nothing observable depends on the digits.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let tag = format!(
+                "{:x}{:x}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            );
+            Ok(scalar_str(format!("{dir}/{pattern}{tag}{ext}")))
+        }
+        "readLines" => {
+            let path = str1(&a.req(0, "con")?).unwrap_or_default();
+            let text = std::fs::read_to_string(&path)
+                .map_err(|_| format!("cannot open file '{path}': No such file or directory"))?;
+            // `split('\n')` on a trailing newline leaves an empty last element
+            // that is not a line; a file NOT ending in one still yields its
+            // final partial line (R reads it and warns).
+            let mut lines: Vec<Option<String>> =
+                text.split('\n').map(|l| Some(l.to_string())).collect();
+            if text.ends_with('\n') {
+                lines.pop();
+            }
+            Ok(mk_str(lines))
+        }
+        "file.exists" => {
+            // Vectorized over the paths, like every other predicate here.
+            let xs = as_str(&a.req(0, "...")?);
+            Ok(mk_lgl(
+                xs.into_iter()
+                    .map(|p| Some(p.is_some_and(|p| std::path::Path::new(&p).exists())))
+                    .collect(),
+            ))
+        }
+        "unlink" => {
+            // R answers 0 for success AND for a path that was not there —
+            // "removing a non-existent file is not an error" — and 1 only when
+            // the removal itself failed. The answer is invisible.
+            let xs = as_str(&a.req(0, "x")?);
+            let mut code = 0;
+            for p in xs.into_iter().flatten() {
+                let path = std::path::Path::new(&p);
+                if !path.exists() {
+                    continue;
+                }
+                let removed = if path.is_dir() {
+                    let recursive = a.named("recursive").and_then(|v| lgl1(&v)).unwrap_or(false);
+                    recursive && std::fs::remove_dir_all(path).is_ok()
+                } else {
+                    std::fs::remove_file(path).is_ok()
+                };
+                if !removed {
+                    code = 1;
+                }
+            }
+            with_host(|h| h.visible = false);
+            Ok(scalar_int(code))
         }
         "cat" => {
             let sep = a
@@ -5726,6 +5820,61 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     })
                     .collect(),
             ))
+        }
+        "regexec" => {
+            // One list element per text element. Each is the FIRST match, given
+            // as the whole match's position followed by each capture group's,
+            // with the widths on `match.length` — the shape `regmatches` slices
+            // a match and its groups out of. No match is the single -1 pair.
+            let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
+            let re = cached_regex(&pat)
+                .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
+            let x = as_str(&a.req(1, "text")?);
+            let ascii = pat.is_ascii() && x.iter().flatten().all(|s| s.is_ascii());
+            let per: Vec<Value> = x
+                .iter()
+                .map(|s| {
+                    let (mut starts, mut lens) = (Vec::new(), Vec::new());
+                    match s.as_ref().and_then(|s| re.captures(s).map(|c| (s, c))) {
+                        Some((s, caps)) => {
+                            // Group 0 is the whole match, so one loop covers
+                            // both halves. A group that did not participate is
+                            // -1/-1, as R reports it.
+                            for i in 0..caps.len() {
+                                match caps.get(i) {
+                                    Some(m) => {
+                                        starts.push(Some(char_pos(s, m.start()) as i64 + 1));
+                                        lens.push(Some(
+                                            s[m.start()..m.end()].chars().count() as i64
+                                        ));
+                                    }
+                                    None => {
+                                        starts.push(Some(-1));
+                                        lens.push(Some(-1));
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            starts.push(Some(-1));
+                            lens.push(Some(-1));
+                        }
+                    }
+                    let v = mk_int(starts);
+                    let ml = mk_int(lens);
+                    with_host(|h| h.set_attr(&v, "match.length", ml));
+                    if ascii {
+                        let it = scalar_str("chars");
+                        let ub = scalar_lgl(true);
+                        with_host(|h| {
+                            h.set_attr(&v, "index.type", it);
+                            h.set_attr(&v, "useBytes", ub);
+                        });
+                    }
+                    v
+                })
+                .collect();
+            Ok(mk_list(per))
         }
         "regexpr" | "gregexpr" => {
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
@@ -8897,6 +9046,221 @@ fn insert_big_mark(s: &str, mark: &str) -> String {
 
 /// Character offset of byte position `byte` within `s` (R indexes by character,
 /// not byte).
+/// The one-line type abbreviation `str()` prints, per R's `str.default`.
+fn str_abbrev(k: RKind) -> &'static str {
+    match k {
+        RKind::Lgl => "logi",
+        RKind::Int => "int",
+        RKind::Dbl => "num",
+        RKind::Str => "chr",
+        _ => "???",
+    }
+}
+
+/// How many leading elements `str()` shows, at the default `vec.len = 4`.
+///
+/// R scales the setting per type (`str.default`): logical 1.5x, numeric 2.5x.
+/// Character is not a multiple at all — it fills the line, which is what
+/// [`str_chr_count`] answers.
+fn str_vec_len(k: RKind) -> usize {
+    match k {
+        RKind::Lgl => 6,
+        RKind::Int | RKind::Dbl => 10,
+        _ => 4,
+    }
+}
+
+/// The character rule, transcribed from `str.default`:
+/// `sum(cumsum(1 + nchar(encoded)) < width - (4 + 5*nest.lev + nchar(str1)))`,
+/// at the default width of 80. At least one element is always shown.
+fn str_chr_count(encoded: &[String], nest: usize, prefix: &str) -> usize {
+    let budget = 80i64 - (4 + 5 * nest as i64 + prefix.chars().count() as i64);
+    let mut used = 0i64;
+    let mut n = 0;
+    for e in encoded {
+        used += 1 + e.chars().count() as i64;
+        if used >= budget {
+            break;
+        }
+        n += 1;
+    }
+    n.max(1)
+}
+
+/// A number as `str()` writes it: three significant digits with trailing zeros
+/// dropped, which is R's `formatNum` (`format(digits = 3, drop0trailing =
+/// TRUE)`) element by element.
+fn str_num(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "Inf" } else { "-Inf" }.into();
+    }
+    let r = signif(x, 3);
+    if r != 0.0 && (r.abs() >= 1e5 || r.abs() < 1e-4) {
+        crate::host::render_sci(r, crate::host::sci_decimals(r))
+    } else {
+        format!("{r}")
+    }
+}
+
+/// The indent every line at `nest` carries: a space, then `" .."` per level.
+fn str_indent(nest: usize) -> String {
+    format!(" {}", " ..".repeat(nest))
+}
+
+/// The `[1:n]` an atomic vector is labelled with — `[1:2, 1:3]` for a matrix,
+/// `[1:2(1d)]` for a one-dimensional array (a `table`), and nothing at all for
+/// the plain scalar that carries no label.
+fn str_dims(x: &Value, n: usize, has_names: bool, classed: bool) -> String {
+    if let Some(d) = with_host(|h| h.attr(x, "dim")) {
+        let dims: Vec<i64> = as_int(&d).into_iter().flatten().collect();
+        if dims.len() == 1 {
+            return format!(" [1:{}(1d)]", dims[0]);
+        }
+        let inner: Vec<String> = dims.iter().map(|k| format!("1:{k}")).collect();
+        return format!(" [{}]", inner.join(", "));
+    }
+    if n == 1 && !has_names && !classed {
+        String::new()
+    } else {
+        format!(" [1:{n}]")
+    }
+}
+
+/// `str(x)` as the lines it prints, `nest` counting how deep in a list the
+/// value sits. One function for the whole shape, because an attribute line and
+/// a list element are both "the str of a value, one level further in".
+fn str_lines(x: &Value, nest: usize) -> Vec<String> {
+    let ind = str_indent(nest);
+    let k = kind(x);
+    let classes = class_of(x);
+    // A factor's class and levels ARE its line, so that case is read first.
+    if classes.iter().any(|c| c == "factor") {
+        let levels: Vec<String> = with_host(|h| h.attr(x, "levels"))
+            .map(|l| as_str(&l).into_iter().flatten().collect())
+            .unwrap_or_default();
+        let shown: Vec<String> = levels.iter().map(|l| format!("\"{l}\"")).collect();
+        let codes: Vec<String> = as_int(x)
+            .iter()
+            .map(|c| c.map_or("NA".into(), |i| i.to_string()))
+            .collect();
+        return vec![format!(
+            "{ind}Factor w/ {} level{} {}: {}",
+            levels.len(),
+            if levels.len() == 1 { "" } else { "s" },
+            shown.join(","),
+            codes.join(" ")
+        )];
+    }
+    if k == RKind::Null {
+        return vec![format!("{ind}NULL")];
+    }
+    if k == RKind::List {
+        let items = elements(x);
+        let names = names_of(x);
+        let mut out = vec![format!("{}List of {}", ind.trim_end(), items.len())];
+        for (i, it) in items.iter().enumerate() {
+            let name = names.get(i).cloned().flatten().unwrap_or_default();
+            let sub = str_lines(it, nest + 1);
+            let head = sub.first().cloned().unwrap_or_default();
+            let child_ind = str_indent(nest + 1);
+            // The child's own leading space is what separates `$ name:` from a
+            // vector's type and joins it to a nested `List of n`, so neither
+            // case needs special-casing here.
+            let body = head
+                .strip_prefix(&child_ind[..])
+                .unwrap_or(&head)
+                .to_string();
+            let sep = if body.starts_with("List of") { "" } else { " " };
+            // The `$` sits at the LIST's indent, not the child's: a nested list
+            // draws its own elements one level further in, and that level comes
+            // from the child's own nest when it renders them.
+            out.push(format!("{ind}$ {name}:{sep}{body}"));
+            out.extend(sub.into_iter().skip(1));
+        }
+        return out;
+    }
+    if !matches!(k, RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str) {
+        return vec![format!(
+            "{ind}{}",
+            classes.first().cloned().unwrap_or_default()
+        )];
+    }
+    let n = len(x);
+    let named = with_host(|h| h.attr(x, "names")).is_some();
+    // The implicit class every vector has is not printed; a written one is, in
+    // quotes, ahead of the type.
+    let explicit = with_host(|h| h.attr(x, "class")).map(|c| {
+        as_str(&c)
+            .into_iter()
+            .flatten()
+            .map(|s| format!("'{s}' "))
+            .collect::<String>()
+    });
+    let prefix = format!(
+        "{ind}{}{}{}",
+        if named { "Named " } else { "" },
+        explicit.clone().unwrap_or_default(),
+        str_abbrev(k)
+    );
+    let dims = str_dims(x, n, named, explicit.is_some());
+    let encoded: Vec<String> = match k {
+        RKind::Str => as_str(x)
+            .into_iter()
+            .map(|s| s.map_or("NA".into(), |s| format!("\"{s}\"")))
+            .collect(),
+        RKind::Lgl => as_lgl(x)
+            .into_iter()
+            .map(|b| {
+                b.map_or("NA".into(), |b| {
+                    if b {
+                        "TRUE".to_string()
+                    } else {
+                        "FALSE".to_string()
+                    }
+                })
+            })
+            .collect(),
+        RKind::Int => as_int(x)
+            .into_iter()
+            .map(|i| i.map_or("NA".into(), |i| i.to_string()))
+            .collect(),
+        _ => as_dbl(x)
+            .into_iter()
+            .map(|d| d.map_or("NA".into(), str_num))
+            .collect(),
+    };
+    let show = match k {
+        RKind::Str => str_chr_count(&encoded, nest, &format!("{prefix}{dims}")),
+        _ => str_vec_len(k),
+    }
+    .min(n);
+    let tail = if n > show { " ..." } else { "" };
+    let mut out = vec![format!(
+        "{prefix}{dims} {}{tail}",
+        encoded[..show].join(" ")
+    )];
+    // `give.attr = TRUE`: what was folded into the line above (class, dim,
+    // levels) is not repeated; these two print as their own str, one level in.
+    for key in ["names", "dimnames"] {
+        if let Some(v) = with_host(|h| h.attr(x, key)) {
+            let sub = str_lines(&v, nest + 1);
+            let head = sub.first().cloned().unwrap_or_default();
+            let child_ind = str_indent(nest + 1);
+            let body = head
+                .strip_prefix(&child_ind[..])
+                .unwrap_or(&head)
+                .to_string();
+            let sep = if body.starts_with("List of") { "" } else { " " };
+            out.push(format!("{ind}- attr(*, \"{key}\")={sep}{body}"));
+            out.extend(sub.into_iter().skip(1));
+        }
+    }
+    out
+}
+
 fn char_pos(s: &str, byte: usize) -> usize {
     s[..byte].chars().count()
 }
