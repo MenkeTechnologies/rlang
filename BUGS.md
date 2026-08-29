@@ -66,7 +66,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   which appears in the parity corpus or in 8000 fuzz cases. Defaults already
   behave lazily by another route — they compile into a body prologue
   (`if (missing(p)) p <- <default>`), so a default may refer to another
-  argument.
+  argument. The prologue runs at body *entry* rather than at first use, which
+  is where that route stops short of a promise: `f <- function(a, b = a * 2) {
+  a <- 10; b }` gives 2 where R gives 20, because R forces `b` after the body
+  has rebound `a`. A default reading a name the body then rebinds is the only
+  shape that separates the two.
 
   Where the distinction is observable through the context stack it *is*
   reproduced: a call is opened before its arguments so a condition raised in one
@@ -76,6 +80,14 @@ run that compared nothing — no cases generated, or an oracle that never answer
   run by re-running the whole script in the embedded GNU R (needs R installed)
   when rlang cannot evaluate it. Set `RLANG_NO_CRAN=1` to force the native path
   only.
+- **No `match.arg()`.** It raises `could not find function`. Called with one
+  argument it reads the *choices* out of the formal's default expression —
+  `formals(sys.function(sys.parent()))[[as.character(substitute(arg))]]` — and
+  rlang has no `formals()`: a default is compiled into the body prologue rather
+  than kept as a readable expression, so there is nothing to look up. It needs
+  the same defaults-as-data the promise entry above describes.
+  `nargs()` and `missing()`, the neighbouring pieces of argument
+  introspection, both work — `missing()` for a formal with a default included.
 - **The condition system, including the call a condition carries.**
   `tryCatch` selects a handler by condition class (`error`, `warning`,
   `message`, `condition`), `finally` runs either way, and `try` returns a
@@ -109,6 +121,17 @@ run that compared nothing — no cases generated, or an oracle that never answer
   *Where* the batch prints is R's as well: an uncaught warning is queued under
   the default `options(warn = 0)` and the whole batch is written once the
   top-level statement finishes, after that statement's own stdout.
+
+  **An arithmetic or comparison operator is the exception: its warning reports
+  no call where R names one.** `1:5 + 1:2` warns `In 1:5 + 1:2 : longer object
+  length …` in R and bare in rlang, and so does `2147483647L + 1L`. The message,
+  the queueing and the batch position are right; only the `In <call> :` line is
+  absent. `+ - * /` lower to native fusevm ops that carry no call text, and
+  opening a context on every one would cost the hot path the design exists to
+  keep native — so the no-call shape R itself uses is reported rather than the
+  enclosing call, which would name the wrong one. Closing it without that cost
+  means a side table from code position to deparsed text, read only when a
+  warning actually fires; the eager form is what is ruled out, not the idea.
 
   **An error reports its call too**, off the same context stack:
   `Error in f() : boom`, a bare `Error: boom` for a `stop()` at top level, R's
@@ -224,8 +247,10 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
   `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
   implemented.
-- **Integer overflow wraps to a double** rather than producing `NA` with a
-  warning, because arithmetic is computed in `f64` and narrowed back.
+- **Integer overflow produces `NA` with a warning**, as R does, and the result
+  keeps class `"integer"` — `2147483647L + 1L`, `* 2L` and `-2147483647L - 2L`
+  all give `NA`. Only the warning's call differs, under the operator entry
+  above: R names `In 2147483647L + 1L :`, rlang reports no call.
 - **`%%`/`%/%`, `var`, and `round` differ from R by ULPs at the edge of f64
   precision.** R accumulates them in C `long double`; Rust has no equivalent, so
   a modulus of a value past `2^53` (where R warns of "complete loss of

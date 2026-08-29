@@ -1169,7 +1169,12 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "missing",
         "missing(x)",
-        "TRUE when the name is not bound in the current call frame. The argument is evaluated first, so missing(v) on an unsupplied parameter raises \"object 'v' not found\"; the quoted form missing(\"v\") is the portable spelling and works in both engines.",
+        "TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. R accepts the quoted spelling missing(\"v\") as well, and so does this.",
+    ),
+    (
+        "nargs",
+        "nargs()",
+        "How many arguments the caller passed to the function this is called from, counting each element of ... separately and counting nothing for a formal left to its default. Zero at top level.",
     ),
     (
         "return",

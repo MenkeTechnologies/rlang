@@ -442,6 +442,13 @@ pub struct Frame {
     /// Thunks registered by `on.exit`, run when this frame is left — whether it
     /// returns normally or unwinds with an error.
     pub on_exit: Vec<Value>,
+    /// Formals the caller omitted and the default-argument prologue filled in.
+    /// R's `missing()` asks whether the *caller* supplied an argument, which a
+    /// default answers no to even though it leaves the name bound — so the
+    /// binding alone cannot tell the two apart and the prologue records it.
+    /// Written only by [`ops::MISSING`], which the prologue runs exactly once
+    /// per defaulted formal, so tracking this costs nothing at any other call.
+    pub defaulted: Vec<String>,
 }
 
 /// One `tryCatch` or `withCallingHandlers` frame, innermost last.
@@ -714,6 +721,7 @@ impl RHost {
                 fun: None,
                 dispatch: None,
                 on_exit: Vec::new(),
+                defaulted: Vec::new(),
             }],
             closures: Vec::new(),
             error: None,
@@ -2335,6 +2343,7 @@ pub fn call_closure(
             fun: Some((id, env)),
             dispatch,
             on_exit: Vec::new(),
+            defaulted: Vec::new(),
         })
     });
     let out = run_closure_chunk(id);

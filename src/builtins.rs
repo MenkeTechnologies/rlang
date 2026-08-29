@@ -314,6 +314,7 @@ fn in_env<T>(env: crate::host::Env, body: impl FnOnce() -> T) -> T {
             fun: None,
             dispatch: None,
             on_exit: Vec::new(),
+            defaulted: Vec::new(),
         })
     });
     let out = body();
@@ -1245,6 +1246,17 @@ fn b_dots(_: &mut VM, _: u8) -> Value {
 fn b_missing(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
     let bound = with_host(|h| h.env().borrow().vars.contains_key(&name));
+    // Only the default-argument prologue emits this op, and only for a formal
+    // that has a default — so an unbound name here is one the caller omitted
+    // and the default is about to fill in. Recording it is what lets `missing`
+    // still answer TRUE afterwards, once the binding exists.
+    if !bound {
+        with_host(|h| {
+            if let Some(f) = h.frames.last_mut() {
+                f.defaulted.push(name.clone());
+            }
+        });
+    }
     Value::Bool(!bound)
 }
 
@@ -3283,6 +3295,7 @@ pub const PRIMITIVES: &[&str] = &[
     "environment",
     "new.env",
     "missing",
+    "nargs",
     "return",
     "UseMethod",
     "NextMethod",
@@ -6956,9 +6969,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "missing" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
-            Ok(scalar_lgl(!with_host(|h| {
-                h.env().borrow().vars.contains_key(&n)
+            // TRUE when the caller supplied nothing for the formal. An omitted
+            // one with no default is simply unbound; one with a default is
+            // bound by the prologue, which records the name for exactly this.
+            Ok(scalar_lgl(with_host(|h| {
+                !h.env().borrow().vars.contains_key(&n)
+                    || h.frames.last().is_some_and(|f| f.defaulted.iter().any(|d| *d == n))
             })))
+        }
+        "nargs" => {
+            // The count of arguments the CALLER supplied, which is what the
+            // frame keeps: `match_args` binds formals, but `Frame::args` is the
+            // call's own list, `...` expanded, before any default filled in.
+            // A primitive makes no context, so the frame here is the closure's.
+            Ok(scalar_int(with_host(|h| {
+                h.frames.last().map_or(0, |f| f.args.len())
+            }) as i64))
         }
         "return" => {
             let v = a.get(0, "value").unwrap_or_else(null);

@@ -1515,3 +1515,112 @@ unlink(f)
 print(file.exists(f))
 cat("a", "b", sep = "-")
 cat("\n")
+#==#
+# Recycling: the shorter operand repeats to the longer length, and the rule is
+# per-element rather than per-vector, so a logical index recycles the same way.
+print(c(1, 2, 3, 4) + c(10, 20))
+print(c(1, 2, 3) * c(1, 2, 3, 4, 5, 6))
+print(1:6 + 1:3)
+print(c(TRUE, FALSE, TRUE, FALSE) & c(TRUE, TRUE))
+print(paste(c("a", "b", "c"), 1:3, sep = "-"))
+print(c(1, 2, 3, 4, 5)[c(TRUE, FALSE)])
+#==#
+# NA is typed. The bare NA is logical, and each vector's NA takes the type of
+# the vector it lands in — which is what keeps class() stable under coercion.
+print(class(NA))
+print(class(NA_integer_))
+print(class(NA_character_))
+print(class(NA_real_))
+print(c(1, NA, 3))
+print(class(c(1L, NA)))
+print(NA > 1)
+print(NA & FALSE)
+print(NA | TRUE)
+print(sum(c(1, NA, 3)))
+print(sum(c(1, NA, 3), na.rm = TRUE))
+print(is.na(c(1, NA, NaN)))
+print(is.nan(c(1, NA, NaN)))
+print(NA_character_)
+print(c("a", NA))
+#==#
+# Integer arithmetic: overflow yields NA rather than wrapping, integer division
+# floors toward negative infinity, and %% takes the sign of the right operand.
+print(.Machine$integer.max)
+print(5L %/% 2L)
+print(-5L %/% 2L)
+print(5 %% -2)
+print(-5 %% 2)
+print(class(5L / 2L))
+print(class(5L %/% 2L))
+print(1:3 * 2L)
+print(class(1:3 * 2L))
+#==#
+# missing() asks whether the CALLER supplied an argument, not whether the name
+# is bound: a formal with a default is bound before the body runs and is still
+# missing. R accepts the symbol and the quoted spelling alike.
+f <- function(a, b) missing(b)
+print(f(1))
+print(f(1, 2))
+g <- function(a, b = 5) missing(b)
+print(g(1))
+print(g(1, 2))
+print((function(a, b) missing("b"))(1))
+h <- function(a, b) if (missing(b)) "no b" else paste("b =", b)
+print(h(1))
+print(h(1, 2))
+k <- function(a = 1, b = 2, c = 3) c(missing(a), missing(b), missing(c))
+print(k())
+print(k(b = 9))
+fwd <- function(...) f(...)
+print(fwd(1))
+print(fwd(1, 2))
+outer <- function(x, y) {
+  inner <- function(p, q) missing(q)
+  c(missing(y), inner(1))
+}
+print(outer(1))
+#==#
+# Matrix subscripting drops to a vector unless drop = FALSE keeps the dimension.
+m <- matrix(1:6, nrow = 2)
+print(m)
+print(dim(m))
+print(m[1, ])
+print(m[, 1])
+print(m[1, , drop = FALSE])
+print(dim(m[1, , drop = FALSE]))
+print(t(m))
+print(m[m > 3])
+#==#
+# identical() is exact where == is not: it separates integer from double and
+# sees names. Sorting carries names along and order() returns positions.
+print(identical(1L, 1))
+print(identical(1, 1))
+print(identical(c(a = 1), c(1)))
+print(identical(list(1, 2), list(1, 2)))
+print(identical(NULL, NULL))
+print(identical("a", "a"))
+print(all.equal(1, 1 + 1e-10))
+print(isTRUE(all.equal(1, 1.1)))
+x <- c(b = 2, a = 1, c = 3)
+print(sort(x))
+print(order(x))
+print(rev(x))
+print(names(sort(x)))
+print(rank(c(10, 20, 10, 30)))
+#==#
+# nargs() counts what the caller passed, not what the formals are: a default
+# fills in without counting, and ... contributes one per element.
+f <- function(x, ...) nargs()
+print(f(1))
+print(f(1, 2, 3))
+g <- function(a, b, c) nargs()
+print(g(1, 2))
+print(g(1, 2, 3))
+print(g())
+h <- function(a = 1) nargs()
+print(h())
+print(h(9))
+print((function(a, b) nargs())(b = 2))
+d <- function(...) nargs()
+print(d())
+print(d(1, 2, 3, 4))

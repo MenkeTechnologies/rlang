@@ -734,6 +734,27 @@ impl Compiler {
                             return self.expr(b, &quote_call(&inner));
                         }
                     }
+                    // `missing(x)` asks about the *name*, so its argument must
+                    // not be evaluated — an omitted formal with no default is
+                    // unbound, and compiling `x` would raise "object not found"
+                    // rather than answer. R accepts the quoted spelling too, so
+                    // lowering the symbol to it keeps one implementation.
+                    if name == "missing" && args.len() == 1 {
+                        if let Some(Expr::Ident(sym)) = args[0].value.clone() {
+                            let mut call = args.to_vec();
+                            call[0] = Arg {
+                                name: None,
+                                value: Some(Expr::Str(sym)),
+                            };
+                            return self.expr(
+                                b,
+                                &Expr::Call {
+                                    fun: Box::new(Expr::Ident("missing".into())),
+                                    args: call,
+                                },
+                            );
+                        }
+                    }
                     // `substitute(x)` reads the *expression* a caller passed,
                     // so like `quote` its argument is carried across as source
                     // rather than compiled. A second argument is the lookup
