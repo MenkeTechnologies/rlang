@@ -76,3 +76,26 @@ fn what_is_invisible_stays_invisible() {
     assert_eq!(out("g <- function(x) { x; 5 }\ng(invisible(1))"), "[1] 5\n");
     assert_eq!(out("h <- function(x) 99\nh(invisible(1))"), "[1] 99\n");
 }
+
+/// `force` and `withVisible` are the two names whose whole contract is the
+/// visibility flag, and neither had a native arm: both fell through to the
+/// embedded GNU R, which receives arguments rlang has ALREADY evaluated and so
+/// cannot be told what the flag was. `force(invisible(1))` printed where R is
+/// silent, and `withVisible` answered `TRUE` for every argument. Expectations
+/// read off the reference `Rscript` (R 4.6.1).
+#[test]
+fn force_and_with_visible_report_the_arguments_flag() {
+    assert_eq!(out("force(invisible(1))"), "");
+    assert_eq!(out("force(1)"), "[1] 1\n");
+    assert_eq!(
+        out("withVisible(1)"),
+        "$value\n[1] 1\n\n$visible\n[1] TRUE\n\n"
+    );
+    assert_eq!(
+        out("withVisible(invisible(2))"),
+        "$value\n[1] 2\n\n$visible\n[1] FALSE\n\n"
+    );
+    // The list `withVisible` builds is itself visible, whatever it reports.
+    assert_eq!(out("withVisible(invisible(2))$visible"), "[1] FALSE\n");
+    assert_eq!(out("withVisible(invisible(2))$value"), "[1] 2\n");
+}

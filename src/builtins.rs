@@ -3098,6 +3098,8 @@ pub const PRIMITIVES: &[&str] = &[
     "stop",
     "invisible",
     "identity",
+    "force",
+    "withVisible",
     "seq",
     "seq.int",
     "rep_len",
@@ -3390,21 +3392,24 @@ pub fn call_combinator(
 }
 
 /// Call a primitive by name with evaluated arguments.
-/// The functions that return their argument with its VISIBILITY intact, so a
-/// reset would defeat them. `call_op` skips its own entry reset for the
-/// `suppress*` three; the other two are here because R implements them as
-/// closures whose body is a bare symbol (`identity <- function(x) x`,
+/// The functions whose result depends on the VISIBILITY their argument left, so
+/// a reset would defeat them. `call_op` skips its own entry reset for the
+/// `suppress*` three. `identity` and `force` are here because R implements them
+/// as closures whose body is a bare symbol (`identity <- function(x) x`,
 /// `force <- function(x) x`), and a closure's value carries the visibility its
 /// last evaluated expression left — which for a bare symbol is the promise's.
-/// Measured: `identity(invisible(1))` and `force(invisible(1))` print nothing,
-/// while `c(invisible(1))`, `unname(invisible(c(a=1)))` and `(invisible(1))`
-/// all print.
+/// `withVisible` is here because reporting that flag is its whole job.
+/// Measured against R 4.6.1: `identity(invisible(1))` and `force(invisible(1))`
+/// print nothing and `withVisible(invisible(2))$visible` is `FALSE`, while
+/// `c(invisible(1))`, `unname(invisible(c(a=1)))` and `(invisible(1))` all
+/// print.
 const VISIBILITY_TRANSPARENT: &[&str] = &[
     "suppressMessages",
     "suppressWarnings",
     "suppressPackageStartupMessages",
     "identity",
     "force",
+    "withVisible",
 ];
 
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
@@ -4049,7 +4054,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             with_host(|h| h.visible = false);
             Ok(v)
         }
-        "identity" => a.req(0, "x"),
+        // `identity` and `force` are both `function(x) x` in R, so each returns
+        // its argument with the visibility that argument left behind — which is
+        // what listing them in `VISIBILITY_TRANSPARENT` preserves. Without an
+        // arm of its own `force` fell through to `cran_call`, and the embedded
+        // R has no way to receive rlang's visibility flag: the argument was
+        // already evaluated on this side, so `force(invisible(1))` printed.
+        "identity" | "force" => a.req(0, "x"),
+        // R's `withVisible` is `function(x) .Internal(withVisible(x))`, and the
+        // internal reads `R_Visible` *after* `x` is evaluated. rlang evaluates
+        // arguments eagerly, so that flag is already in `h.visible` when this
+        // arm runs — provided nothing reset it in between, which is why the
+        // name is in `VISIBILITY_TRANSPARENT`. Delegating instead lost the
+        // flag the same way `force` did, and every call reported `TRUE`.
+        // The call's own result is visible: `withVisible(invisible(1))` prints.
+        "withVisible" => {
+            let x = a.req(0, "x")?;
+            let seen = with_host(|h| h.visible);
+            let out = mk_list(vec![x, scalar_lgl(seen)]);
+            set_names(&out, vec![Some("value".into()), Some("visible".into())]);
+            with_host(|h| h.visible = true);
+            Ok(out)
+        }
         // `paste`, `toString` and `as.character` all coerce doubles at a fixed
         // 15 significant digits, NOT at `getOption("digits")` — which is why
         // `paste(pi)` stays "3.14159265358979" even under `options(digits = 3)`,

@@ -304,6 +304,16 @@ const OUTPUT: &[Entry] = &[
         "Return the argument unchanged — useful as a default FUN in the apply family.",
     ),
     (
+        "force",
+        "force(x)",
+        "Return the argument, having evaluated it. Written for its effect inside a closure factory, where it forces a promise that would otherwise be evaluated after the loop variable had moved on. Like identity it passes the argument's visibility through, so force(invisible(1)) prints nothing.",
+    ),
+    (
+        "withVisible",
+        "withVisible(x)",
+        "Evaluate x and report whether its value would auto-print, as a list with elements `value` and `visible`. withVisible(invisible(1))$visible is FALSE; the list itself prints.",
+    ),
+    (
         "paste",
         "paste(..., sep = \" \", collapse = NULL)",
         "Join the arguments elementwise with recycling to the longest, separated by `sep`. Every argument contributes a field, so a zero-length one contributes an empty string and paste(\"a\", NULL, \"b\") is \"a  b\". A non-NULL `collapse` then joins the result into a single string, and collapsing nothing gives \"\". NA elements render as \"NA\".",

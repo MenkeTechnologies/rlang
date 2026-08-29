@@ -14,17 +14,25 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Evaluation model
 
-- **`force` and `withVisible` still lose their argument's visibility.**
-  `force(invisible(1))` prints where R prints nothing, and
-  `withVisible(invisible(1))$visible` is `TRUE` where R says `FALSE`. Both are
-  the ENTRY reset in `call_op`, not the argument-forcing one that
-  `inherits(invisible(1), …)` hit: both names are in `compiler::R_PRIMITIVES`,
-  so their arguments are evaluated eagerly and the entry reset lands after.
-  `force` is R's `function(x) x` and is genuinely visibility-transparent;
-  `withVisible` exists to REPORT the flag and is not implemented natively here
-  at all (it delegates to embedded R). Fixing them means widening `call_op`'s
-  transparent set and giving `withVisible` a native implementation that reads
-  the pre-call flag.
+- **`force` and `withVisible` lose their argument's visibility** — fixed. The
+  diagnosis recorded here was wrong: neither name is in `compiler::R_PRIMITIVES`
+  (R implements both as closures, so neither belongs there), and `call_op`'s
+  entry reset was not the cause. Neither had an arm in `call_primitive` at all,
+  so both fell through `other => cran_call(…)` to the embedded GNU R — which
+  receives arguments rlang has ALREADY evaluated and therefore cannot be told
+  what the flag was. `force(invisible(1))` printed `[1] 1` where R is silent,
+  and `withVisible` answered `TRUE` for every argument. Both now have native
+  arms: `identity | force` returns the argument (R's `function(x) x`), and
+  `withVisible` reads `h.visible` and builds `list(value=, visible=)` the way
+  `.Internal(withVisible)` reads `R_Visible`. Both names joined
+  `VISIBILITY_TRANSPARENT` so the post-forcing restore leaves the flag alone.
+  Regression: `tests/visibility.rs::force_and_with_visible_report_the_arguments_flag`,
+  six assertions read off R 4.6.1.
+  Residue (pre-existing, unchanged by the fix): printing the function itself
+  still deparses as `function (...) .Primitive("force")`, where R shows the
+  closure body `function (x)` / `x` with its bytecode and namespace lines.
+  Every name in the primitive table deparses that way; matching R here means a
+  base-R prelude rlang does not have.
 - **Expressions are first-class**, so `quote()`, `sys.call()`, `match.call()`,
   `sys.function()`, `eval()` and `deparse()` of an unevaluated expression all
   work on rlang's own evaluator. `quote(x)` is compiled the way a formula is —
