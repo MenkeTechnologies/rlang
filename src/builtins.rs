@@ -6974,7 +6974,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // bound by the prologue, which records the name for exactly this.
             Ok(scalar_lgl(with_host(|h| {
                 !h.env().borrow().vars.contains_key(&n)
-                    || h.frames.last().is_some_and(|f| f.defaulted.iter().any(|d| *d == n))
+                    || h.frames.last().is_some_and(|f| f.defaulted.contains(&n))
             })))
         }
         "nargs" => {
@@ -6982,9 +6982,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // frame keeps: `match_args` binds formals, but `Frame::args` is the
             // call's own list, `...` expanded, before any default filled in.
             // A primitive makes no context, so the frame here is the closure's.
-            Ok(scalar_int(with_host(|h| {
-                h.frames.last().map_or(0, |f| f.args.len())
-            }) as i64))
+            Ok(scalar_int(
+                with_host(|h| h.frames.last().map_or(0, |f| f.args.len())) as i64,
+            ))
         }
         "return" => {
             let v = a.get(0, "value").unwrap_or_else(null);
