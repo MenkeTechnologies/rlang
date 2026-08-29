@@ -3390,6 +3390,23 @@ pub fn call_combinator(
 }
 
 /// Call a primitive by name with evaluated arguments.
+/// The functions that return their argument with its VISIBILITY intact, so a
+/// reset would defeat them. `call_op` skips its own entry reset for the
+/// `suppress*` three; the other two are here because R implements them as
+/// closures whose body is a bare symbol (`identity <- function(x) x`,
+/// `force <- function(x) x`), and a closure's value carries the visibility its
+/// last evaluated expression left — which for a bare symbol is the promise's.
+/// Measured: `identity(invisible(1))` and `force(invisible(1))` print nothing,
+/// while `c(invisible(1))`, `unname(invisible(c(a=1)))` and `(invisible(1))`
+/// all print.
+const VISIBILITY_TRANSPARENT: &[&str] = &[
+    "suppressMessages",
+    "suppressWarnings",
+    "suppressPackageStartupMessages",
+    "identity",
+    "force",
+];
+
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
     // A primitive forces its arguments, as R's do: only a closure binds them
     // unforced. The compiler cannot always tell which a name will be, so an
@@ -3400,6 +3417,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         let mut forced = Vec::with_capacity(args.len());
         for (n, v) in args {
             forced.push((n, crate::host::force_value(&v)?));
+        }
+        // Forcing ran R code, and that code may have cleared the visibility
+        // flag — `inherits(invisible(1), "numeric")` forces an `invisible` call
+        // here. R's order is: evaluate the arguments, THEN the primitive runs
+        // and decides its own visibility, so the flag is restored between the
+        // two. Without this the argument's invisibility became the CALL's, and
+        // the value was computed and then never auto-printed.
+        //
+        // `call_op` sets the same flag on entry; that reset lands before this
+        // forcing, which is why only a name reached through the closure-context
+        // path (one outside `compiler::R_PRIMITIVES`, whose arguments arrive as
+        // promises) was ever affected. The `suppress*` wrappers are
+        // visibility-transparent by design and are exempt here for the same
+        // reason `call_op` exempts them.
+        if !VISIBILITY_TRANSPARENT.contains(&name) {
+            with_host(|h| h.visible = true);
         }
         forced
     } else {

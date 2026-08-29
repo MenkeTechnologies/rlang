@@ -14,44 +14,17 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Evaluation model
 
-- **An argument that turns itself invisible makes the whole call invisible.**
-  `inherits(invisible(1), "numeric")` prints nothing where R prints `[1] TRUE`,
-  so the value is computed correctly and then never auto-printed. R sets
-  `R_Visible = TRUE` on entry to a call and lets only the CALLEE's own return
-  clear it; here an argument clears it and nothing sets it back.
-
-  The split is exact, and it is not about the function's meaning: it is whether
-  the name is in `compiler::R_PRIMITIVES`. A name in that list makes no R
-  context, so its arguments are evaluated EAGERLY, before `call_op` resets the
-  flag — and the reset stands. A name outside it is called the way R calls a
-  closure, its arguments become promises, and forcing one during the call runs
-  `invisible()` AFTER that reset. Measured:
-
-  ```text
-  leaks (not in R_PRIMITIVES)   ok (in R_PRIMITIVES)
-  inherits(invisible(1), …)     length(invisible(1))
-  nchar(invisible("ab"))        class(invisible(1))
-  paste(invisible("a"))         sum(invisible(1))
-  toupper(invisible("a"))       sqrt(invisible(4))
-  rev(invisible(c(1,2)))        as.character(invisible(1))
-  substr(invisible("abc"),1,2)  is.na(invisible(1))
-  ```
-
-  Only an argument that clears the flag WHILE BEING FORCED does it, which is why
-  `x <- invisible(1); inherits(x, "numeric")` is right — the promise is already
-  forced — and why `inherits(suppressWarnings(1), "numeric")` is right too.
-
-  Found by `parity-fuzz` (seed 31646, mode `conditions`) as
-  `inherits(try(stop("foo"), silent = TRUE), "try-error")`: `try` returns its
-  error object invisibly, so the enclosing `inherits` inherited that.
-
-  Not fixed, because the fix is a visibility MODEL and not a patch: seventeen
-  sites clear the flag today (assignment, `invisible`, `library`, …), and a
-  blanket reset after the callee returns would have to exempt every one of them
-  and still let a closure whose body ends in `invisible(x)` propagate outward.
-  R's own rule — set on entry, cleared only by the callee's own return — is what
-  this needs to grow, and half of it is worse than none.
-
+- **`force` and `withVisible` still lose their argument's visibility.**
+  `force(invisible(1))` prints where R prints nothing, and
+  `withVisible(invisible(1))$visible` is `TRUE` where R says `FALSE`. Both are
+  the ENTRY reset in `call_op`, not the argument-forcing one that
+  `inherits(invisible(1), …)` hit: both names are in `compiler::R_PRIMITIVES`,
+  so their arguments are evaluated eagerly and the entry reset lands after.
+  `force` is R's `function(x) x` and is genuinely visibility-transparent;
+  `withVisible` exists to REPORT the flag and is not implemented natively here
+  at all (it delegates to embedded R). Fixing them means widening `call_op`'s
+  transparent set and giving `withVisible` a native implementation that reads
+  the pre-call flag.
 - **Expressions are first-class**, so `quote()`, `sys.call()`, `match.call()`,
   `sys.function()`, `eval()` and `deparse()` of an unevaluated expression all
   work on rlang's own evaluator. `quote(x)` is compiled the way a formula is —
