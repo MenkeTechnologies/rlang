@@ -1623,6 +1623,32 @@ impl Compiler {
                 }
                 self.assign_stack(b, obj, sup)
             }
+            // `f(x, …)[i] <- v` — the replacement function reached through
+            // another target, so its own new value is already on the stack. R
+            // unrolls it the same way it unrolls the outermost case:
+            // `names(x)[1] <- z` is `x <- \`names<-\`(x, \`[<-\`(names(x), 1, z))`,
+            // and the inner `[<-` is what the `Index` arm above just emitted.
+            //
+            // `REPLACE` wants `[name, obj, args, value]` and the value is at the
+            // BOTTOM here rather than pushed last, so each operand is swapped
+            // under it as it goes on. `Rot` cannot do it: it reaches three deep
+            // and this is four.
+            Expr::Call { fun, args } => {
+                let Expr::Ident(fname) = fun.as_ref() else {
+                    return Err("invalid function in complex assignment".into());
+                };
+                let Some(inner) = args.first().and_then(|a| a.value.clone()) else {
+                    return Err(format!("invalid target for {fname}<-"));
+                };
+                self.kstr(b, fname);
+                b.emit(Op::Swap, 0);
+                self.expr(b, &inner)?;
+                b.emit(Op::Swap, 0);
+                self.args(b, &args[1..])?;
+                b.emit(Op::Swap, 0);
+                b.emit(Op::CallBuiltin(ops::REPLACE, 4), 0);
+                self.assign_stack(b, &inner, sup)
+            }
             other => Err(format!("invalid nested assignment target: {other:?}")),
         }
     }
