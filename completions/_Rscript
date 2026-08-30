@@ -16,6 +16,8 @@ _Rscript() {
     '--dump-tokens[print the lexer token stream]'
     '--dump-ast[print the parsed AST]'
     '--disasm[disassemble the lowered fusevm bytecode]'
+    '--dump-bytecode[alias of --disasm]'
+    '--tiers[run it, then report which fusevm tiers took its chunks]'
     '-h[show help]'
     '--help[show help]'
     '-V[show version]'
