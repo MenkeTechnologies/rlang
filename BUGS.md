@@ -196,6 +196,13 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Types
 
+- **`dim<-` does not check that the new dimensions fit the object.**
+  `m <- matrix(1:4, 2); dim(m)[1] <- 4` sets `dim` to `c(4, 2)`, leaving a
+  four-element vector that claims eight cells, where the reference raises
+  `dims [product 8] do not match the length of object [4]`. The indexed
+  spelling is only how it was found — every `dim<-` accepts a mismatch.
+
+
 - **An rlang closure does not cross the bridge as an R function.** `setRefClass`
   works — fields, methods and `<<-` into a field all behave — but R's own
   machinery calls `formals()` and `body()` on the methods it was handed, and
@@ -259,6 +266,15 @@ run that compared nothing — no cases generated, or an oracle that never answer
   place. The common cases — including `round(0.15, 1)`, `round(2.675, 2)` — match.
 
 ## Printing and formatting
+
+- **A value that went through a replacement function loses the name `table()`
+  labels it with.** After `names(v) <- …`, `attr(v, "k") <- …` or
+  `levels(f) <- …`, `table(v)` prints its counts without the leading line naming
+  the variable, where the reference prints `v`. An untouched variable is
+  labelled correctly, so what is lost is carried on the value rather than read
+  off the call. Every replacement function does it, including ones that long
+  predate the indexed form, so it is not specific to `f(x)[i] <- v`.
+
 
 - **Numeric literals with a decimal exponent past about ±100 parse to a
   different double than R's**, one ULP away. R's own `R_strtod` scales the
