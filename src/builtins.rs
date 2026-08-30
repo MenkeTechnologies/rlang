@@ -2942,7 +2942,13 @@ fn replacement(
             Ok(take_positions(x, &pos))
         }
         "levels" => {
-            with_host(|h| h.set_attr(&out, "levels", mk_str(as_str(value))));
+            // Built BEFORE the borrow: `as_str` and `mk_str` each take the host
+            // themselves, and calling them inside `with_host` re-entered a live
+            // `borrow_mut` — `levels(f) <- …` panicked with "RefCell already
+            // borrowed" rather than answering. Every other arm here already
+            // computes its value first; this one did not.
+            let lv = mk_str(as_str(value));
+            with_host(|h| h.set_attr(&out, "levels", lv));
             Ok(out)
         }
         "dimnames" => {
