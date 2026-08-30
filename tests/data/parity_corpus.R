@@ -1624,3 +1624,41 @@ print((function(a, b) nargs())(b = 2))
 d <- function(...) nargs()
 print(d())
 print(d(1, 2, 3, 4))
+#==#
+# A replacement function whose result is itself indexed. R unrolls
+# `names(x)[1] <- "z"` into `x <- \`names<-\`(x, \`[<-\`(names(x), 1, "z"))`, so
+# the inner assignment builds the new attribute and the outer one puts it back.
+x <- c(a = 1, b = 2)
+names(x)[1] <- "z"
+print(x)
+y <- c(a = 1, b = 2, c = 3)
+names(y)[2:3] <- c("y", "w")
+print(y)
+print(names(y))
+# The `[[` form of the same thing.
+z <- c(a = 1, b = 2)
+names(z)[[1]] <- "q"
+print(names(z))
+# It works through other replacement functions too.
+v <- 1:3
+attr(v, "k") <- c(1, 2)
+attr(v, "k")[1] <- 9
+print(attr(v, "k"))
+l <- list(a = 1, b = 2)
+names(l)[1] <- "z"
+print(names(l))
+f <- factor(c("a", "b"))
+levels(f)[1] <- "z"
+print(levels(f))
+# The plain, un-indexed forms still assign the whole thing.
+w <- c(a = 1, b = 2)
+names(w) <- c("p", "q")
+print(w)
+names(w) <- NULL
+print(w)
+# And a plain `levels<-` replaces every level, which is what the indexed form
+# above is built on.
+g <- factor(c("a", "b", "a"))
+levels(g) <- c("x", "y")
+print(g)
+print(as.integer(g))
