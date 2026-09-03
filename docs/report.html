@@ -101,7 +101,7 @@
                                                  │
                                 RHost heap (vectors, attributes, environments, closures)</pre>
         <div class="feature-grid">
-          <div class="feature-card"><h4>Shared engine</h4><p>On native targets fusevm 0.15.0 is pulled from crates.io with the <code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code>, and <code>ffi</code> features; the wasm build uses the bare interpreter. JIT and VM improvements land once and benefit zshrs, stryke, awkrs, elisp, rubylang, and rlang together.</p></div>
+          <div class="feature-card"><h4>Shared engine</h4><p>On native targets fusevm 0.26.0 is pulled from crates.io with the <code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code>, and <code>ffi</code> features; the wasm build uses the bare interpreter. JIT and VM improvements land once and benefit zshrs, stryke, awkrs, elisp, rubylang, and rlang together.</p></div>
           <div class="feature-card"><h4>Native control flow</h4><p><code>if</code>, <code>for</code>, <code>while</code>, <code>repeat</code>, <code>&amp;&amp;</code> and <code>||</code> emit real <code>Jump</code> / <code>JumpIfFalse</code> / <code>JumpIfTrue</code> ops over native <code>Int</code> counters (<code>src/compiler.rs</code>), so the tracing JIT sees ordinary loops instead of a builtin call per iteration.</p></div>
           <div class="feature-card"><h4>Persistent native code</h4><p><code>jit-disk-cache</code> persists compiled machine code across runs, so warm starts skip recompilation. <code>aot</code> backs <code>Rscript --build</code> (bytecode into the on-disk cache) and <code>Rscript --aot</code>, which links the emitted object against the rlang runtime staticlib into a standalone native <code>.fvm</code> executable.</p></div>
           <div class="feature-card"><h4>Inline-Rust FFI</h4><p><code>.rust(code)</code> compiles a self-contained Rust block to a cached cdylib via fusevm's <code>ffi</code> feature; R's own <code>.Call(name, …)</code> verb invokes its exports, marshalling length-1 vectors to <code>i64</code>/<code>f64</code>/string and back (<code>src/ffi.rs</code>).</p></div>
@@ -207,7 +207,7 @@
         <table class="file-table">
           <thead><tr><th>Crate</th><th>Role</th></tr></thead>
           <tbody>
-            <tr><td>fusevm</td><td>Language-agnostic bytecode VM + three-tier Cranelift JIT, version 0.15.0 (<code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code>, <code>ffi</code>)</td></tr>
+            <tr><td>fusevm</td><td>Language-agnostic bytecode VM + three-tier Cranelift JIT, version 0.26.0 (<code>jit</code>, <code>jit-disk-cache</code>, <code>aot</code>, <code>ffi</code>)</td></tr>
             <tr><td>clap</td><td>CLI argument parsing (<code>derive</code>, <code>cargo</code>)</td></tr>
             <tr><td>indexmap</td><td>Ordered <code>names</code> and attribute maps — <code>attributes(x)</code> exposes their order</td></tr>
             <tr><td>rkyv / bincode / serde</td><td>Zero-copy outer shard + serde inner <code>Chunk</code> blobs for the bytecode cache</td></tr>
