@@ -9208,29 +9208,25 @@ fn sprintf(a: &Args) -> Result<Value, String> {
             let field = match conv {
                 'd' | 'i' => match as_int(&arg).get(k).and_then(|e| *e) {
                     Some(v) => num_field(v < 0, v.unsigned_abs().to_string(), width, &flags),
-                    None => pad("NA", width, ""),
+                    // R rewrites the conversion to `%s` and prints "NA" through
+                    // it, so the width and the `-` / `0` flags still apply.
+                    None => pad("NA", width, &flags),
                 },
-                'f' | 'e' | 'E' | 'g' | 'G' => match as_dbl(&arg).get(k).and_then(|e| *e) {
+                // `%a` is C's hexadecimal floating point, as the platform libc
+                // R links against writes it.
+                'f' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => match as_dbl(&arg).get(k).and_then(|e| *e) {
+                    Some(v) if !v.is_finite() => pad(&non_finite_text(Some(v), &flags), width, &flags),
+                    Some(v) if matches!(conv, 'a' | 'A') => hex_field(v, precision, width, &flags, conv == 'A'),
                     Some(v) => {
                         let p = precision.unwrap_or(6);
-                        // R spells the non-finite doubles itself rather than
-                        // deferring to C's lowercase `inf`/`nan`, and still runs
-                        // them through the numeric field, so `%010.2f` of `Inf`
-                        // is `0000000Inf`.
-                        let mag = if v.is_nan() {
-                            "NaN".to_string()
-                        } else if v.is_infinite() {
-                            "Inf".to_string()
-                        } else {
-                            match conv {
-                                'f' => format!("{:.p$}", v.abs()),
-                                'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
-                                _ => fmt_g(v.abs(), p, conv == 'G'),
-                            }
+                        let mag = match conv {
+                            'f' => format!("{:.p$}", v.abs()),
+                            'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
+                            _ => fmt_g(v.abs(), p, conv == 'G'),
                         };
                         num_field(v < 0.0, mag, width, &flags)
                     }
-                    None => pad("NA", width, ""),
+                    None => pad(&non_finite_text(None, &flags), width, &flags),
                 },
                 'x' | 'X' | 'o' => {
                     let v = as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0);
@@ -9878,6 +9874,123 @@ fn num_field(neg: bool, mag: String, width: Option<usize>, flags: &str) -> Strin
         }
         _ => format!("{sign}{mag}"),
     }
+}
+
+/// The text R's `sprintf` prints for a double it cannot format: it rewrites
+/// the conversion to `%s` (dropping the precision) and passes its own
+/// spelling, so the `-` / `0` flags and the width still act on it, the `0`
+/// flag padding in front of any sign (`%010f` of `-Inf` is `000000-Inf`). A
+/// `+` flag signs only `Inf`; a space flag prefixes `NA`, `NaN` and `Inf`.
+fn non_finite_text(v: Option<f64>, flags: &str) -> String {
+    let space = flags.contains(' ');
+    let text = match v {
+        None => "NA",
+        Some(x) if x.is_nan() => "NaN",
+        Some(x) if x < 0.0 => return "-Inf".into(),
+        Some(_) if flags.contains('+') => return "+Inf".into(),
+        Some(_) => "Inf",
+    };
+    if space {
+        format!(" {text}")
+    } else {
+        text.into()
+    }
+}
+
+/// A `%a` field: sign, then the `0x` prefix, then — under the `0` flag — the
+/// zero padding, which C puts between the prefix and the digits
+/// (`%010a` of 1 is `0x00001p+0`).
+fn hex_field(v: f64, precision: Option<usize>, width: Option<usize>, flags: &str, upper: bool) -> String {
+    let sign = if v.is_sign_negative() {
+        "-"
+    } else if flags.contains('+') {
+        "+"
+    } else if flags.contains(' ') {
+        " "
+    } else {
+        ""
+    };
+    let prefix = if upper { "0X" } else { "0x" };
+    let body = hex_float(v.abs(), precision, upper, flags.contains('#'));
+    let core = sign.len() + prefix.len() + body.len();
+    match width {
+        Some(w) if w > core => {
+            let fill = w - core;
+            if flags.contains('-') {
+                format!("{sign}{prefix}{body}{}", " ".repeat(fill))
+            } else if flags.contains('0') {
+                format!("{sign}{prefix}{}{body}", "0".repeat(fill))
+            } else {
+                format!("{}{sign}{prefix}{body}", " ".repeat(fill))
+            }
+        }
+        _ => format!("{sign}{prefix}{body}"),
+    }
+}
+
+/// The digits of a finite, non-negative double under `%a`, after the `0x`:
+/// `1.8p+1`. A subnormal is normalised to a leading `1` and a zero is `0p+0`,
+/// as Darwin's libc writes them. With a precision the fraction is cut to that
+/// many hex digits and rounded up only when the first dropped digit exceeds 8
+/// — Darwin's rule, measured against the reference R (`%.0a` of 1.5 and of
+/// 1.51 are both `0x1p+0`, of 1.75 `0x2p+0`); a carry out of the fraction
+/// raises the leading digit to `2` rather than renormalising.
+fn hex_float(v: f64, precision: Option<usize>, upper: bool, alt: bool) -> String {
+    let bits = v.to_bits();
+    let (biased, raw) = ((bits >> 52) as i64, bits & ((1u64 << 52) - 1));
+    let (mut lead, frac, exp) = if v == 0.0 {
+        (0u64, 0u64, 0i64)
+    } else if biased == 0 {
+        let hb = 63 - raw.leading_zeros() as i64;
+        (1, (raw - (1u64 << hb)) << (52 - hb), hb - 1074)
+    } else {
+        (1, raw, biased - 1023)
+    };
+    let all: Vec<u8> = (0..13).map(|i| ((frac >> (48 - 4 * i)) & 0xF) as u8).collect();
+    let mut digits: Vec<u8> = match precision {
+        None => {
+            let keep = all.iter().rposition(|&d| d != 0).map_or(0, |p| p + 1);
+            all[..keep].to_vec()
+        }
+        Some(p) if p >= 13 => {
+            let mut d = all.clone();
+            d.resize(p, 0);
+            d
+        }
+        Some(p) => {
+            let mut d = all[..p].to_vec();
+            if all[p] > 8 {
+                let mut i = p;
+                loop {
+                    if i == 0 {
+                        lead += 1;
+                        break;
+                    }
+                    i -= 1;
+                    if d[i] == 0xF {
+                        d[i] = 0;
+                    } else {
+                        d[i] += 1;
+                        break;
+                    }
+                }
+            }
+            d
+        }
+    };
+    let hex = |d: u8| {
+        let c = char::from_digit(d as u32, 16).unwrap_or('0');
+        if upper { c.to_ascii_uppercase() } else { c }
+    };
+    let mut s = String::new();
+    s.push(hex(lead as u8));
+    if !digits.is_empty() || alt {
+        s.push('.');
+    }
+    s.extend(digits.drain(..).map(hex));
+    s.push(if upper { 'P' } else { 'p' });
+    s.push_str(&format!("{exp:+}"));
+    s
 }
 
 /// C's `%e`: a mantissa with `p` fractional digits and an exponent that always

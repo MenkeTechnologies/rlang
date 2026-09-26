@@ -598,3 +598,17 @@ fn try_folds_a_long_message_as_its_r_code_does() {
         "[1] \"Error in f() : short\\n\""
     );
 }
+
+#[test]
+fn sprintf_hex_floats_and_unformattable_doubles() {
+    assert_eq!(
+        r("sprintf('%a', c(1, -2.5, 0.1, 5e-324))"),
+        "[1] \"0x1p+0\"               \"-0x1.4p+1\"            \"0x1.999999999999ap-4\"\n[4] \"0x1p-1074\""
+    );
+    // Darwin rounds a cut fraction up only past a first dropped digit of 8.
+    assert_eq!(r("sprintf('%.0a', c(1.5, 1.51, 1.75))"), "[1] \"0x1p+0\" \"0x1p+0\" \"0x2p+0\"");
+    assert_eq!(r("sprintf('%010a|%-8a|', 1, 0.5)"), "[1] \"0x00001p+0|0x1p-1  |\"");
+    // A non-finite or NA value goes through `%s`, so the flags still apply.
+    assert_eq!(r("sprintf('%010f', -Inf)"), "[1] \"000000-Inf\"");
+    assert_eq!(r("sprintf('% f|%-6d|%06d', NA, NA_integer_, NA_integer_)"), "[1] \" NA|NA    |0000NA\"");
+}
