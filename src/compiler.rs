@@ -412,7 +412,12 @@ fn scan_slots(
         }
         Expr::Call { fun, args } => {
             if let Expr::Ident(name) = fun.as_ref() {
-                if DYNAMIC_ENV_FNS.contains(&name.as_str()) {
+                // A lazy special form (`try`, `suppressWarnings`, …) has its
+                // body lowered into a `function()` thunk, and a thunk reads
+                // its free names through the environment — so it is as unsafe
+                // as a `function` written in the source. Without this,
+                // `m <- …; r <- try(nrow(m))` read `m` as NULL.
+                if DYNAMIC_ENV_FNS.contains(&name.as_str()) || thunk_lazy_args(name, args).is_some() {
                     *safe = false;
                     return;
                 }

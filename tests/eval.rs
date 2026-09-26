@@ -558,3 +558,13 @@ fn reading_one_element_does_not_disturb_the_vector_it_came_from() {
     assert_eq!(r("x <- c(a = 1, b = 2); names(x[2])"), "[1] \"b\"");
     assert_eq!(r("x <- 1:5; x[c(TRUE, FALSE)]"), "[1] 1 3 5");
 }
+
+#[test]
+fn a_lazy_form_at_top_level_reads_the_top_level_bindings() {
+    // `try` / `suppressWarnings` lower their body into a thunk, which reads its
+    // free names through the environment. A top level that bound `m` to a
+    // native slot left the thunk reading NULL: `r` was NULL, not 3.
+    assert_eq!(r("m <- matrix(1:6, 3); r <- try(nrow(m)); r"), "[1] 3");
+    assert_eq!(r("m <- matrix(1:6, 3); r <- suppressWarnings(nrow(m)); r"), "[1] 3");
+    assert_eq!(r("x <- 5; r <- try(x + 1); r"), "[1] 6");
+}
