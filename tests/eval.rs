@@ -568,3 +568,19 @@ fn a_lazy_form_at_top_level_reads_the_top_level_bindings() {
     assert_eq!(r("m <- matrix(1:6, 3); r <- suppressWarnings(nrow(m)); r"), "[1] 3");
     assert_eq!(r("x <- 5; r <- try(x + 1); r"), "[1] 6");
 }
+
+#[test]
+fn use_method_dispatches_on_the_implicit_class() {
+    // R_data_class2: a number without a class attribute dispatches on
+    // c("integer", "numeric") / c("double", "numeric"), and a matrix on
+    // c("matrix", "array", <type>, "numeric"), so `f.numeric` is found.
+    let def = "f <- function(x) UseMethod('f'); f.numeric <- function(x) 'num'; ";
+    assert_eq!(r(&format!("{def}f(1:3)")), "[1] \"num\"");
+    assert_eq!(r(&format!("{def}f(2.5)")), "[1] \"num\"");
+    assert_eq!(r(&format!("{def}f(matrix(1:4, 2))")), "[1] \"num\"");
+    // …and the error names the whole dispatch class, as R's usemethod does.
+    assert_eq!(
+        r("g <- function(x) UseMethod('g'); r <- try(g(matrix(1:4, 2)), silent = TRUE); r[1]"),
+        "[1] \"Error in UseMethod(\\\"g\\\") : \\n  no applicable method for 'g' applied to an object of class \\\"c('matrix', 'array', 'integer', 'numeric')\\\"\\n\""
+    );
+}

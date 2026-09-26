@@ -10648,6 +10648,32 @@ fn dispatch_from(
     call_primitive(generic, args)
 }
 
+/// The class vector S3 dispatch walks: R's `R_data_class2`. An explicit
+/// `class` attribute is used as is; otherwise the implicit class, which unlike
+/// `class()` spells out the type under a matrix or array and pairs a number
+/// with `"numeric"` — `1:3` dispatches on `c("integer", "numeric")`, `2.5` on
+/// `c("double", "numeric")`, a matrix of integers on
+/// `c("matrix", "array", "integer", "numeric")` — so a `f.numeric` method is
+/// found for either kind of number.
+fn dispatch_class(v: &Value) -> Vec<String> {
+    if with_host(|h| h.attr(v, "class")).is_some_and(|c| len(&c) > 0) {
+        return class_of(v);
+    }
+    let mut out: Vec<String> = match with_host(|h| h.attr(v, "dim")).map(|d| len(&d)) {
+        Some(2) => vec!["matrix".into(), "array".into()],
+        Some(n) if n > 0 => vec!["array".into()],
+        _ => Vec::new(),
+    };
+    match with_host(|h| h.type_of(v)) {
+        "integer" => out.extend(["integer".into(), "numeric".into()]),
+        "double" => out.extend(["double".into(), "numeric".into()]),
+        "closure" | "builtin" | "special" => out.push("function".into()),
+        "language" | "symbol" | "promise" | "externalptr" => out.extend(class_of(v)),
+        t => out.push(t.into()),
+    }
+    out
+}
+
 /// `UseMethod("generic")` — S3 dispatch on the class vector of the first
 /// argument of the *calling* function, falling back to `generic.default`.
 fn use_method(a: &Args) -> Result<Value, String> {
@@ -10664,15 +10690,21 @@ fn use_method(a: &Args) -> Result<Value, String> {
             .map(|(_, v)| v.clone())
             .ok_or_else(|| format!("UseMethod(\"{generic}\") applied to an object-less call"))?,
     };
-    let mut classes = class_of(&obj);
+    let implicit = dispatch_class(&obj);
+    let mut classes = implicit.clone();
     classes.push("default".to_string());
     if !classes
         .iter()
         .any(|c| with_host(|h| h.lookup_function(&format!("{generic}.{c}")).is_some()))
     {
+        // R's `usemethod` names the whole dispatch class, one element bare
+        // and several as a `c('a', 'b')` literal.
+        let shown = match implicit.as_slice() {
+            [one] => one.clone(),
+            many => format!("c('{}')", many.join("', '")),
+        };
         return Err(format!(
-            "no applicable method for '{generic}' applied to an object of class \"{}\"",
-            class_of(&obj).first().cloned().unwrap_or_default()
+            "no applicable method for '{generic}' applied to an object of class \"{shown}\""
         ));
     }
     let out = dispatch_from(&generic, &classes, frame_args)?;
