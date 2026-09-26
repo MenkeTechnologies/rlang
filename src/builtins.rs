@@ -3465,6 +3465,7 @@ pub const PRIMITIVES: &[&str] = &[
     "toString",
     "deparse",
     "dput",
+    "noquote",
     "rownames",
     "colnames",
     "dimnames",
@@ -3788,6 +3789,21 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let cls = class_of(&x);
             Ok(scalar_lgl(what.iter().any(|w| cls.contains(w))))
         }
+        // `noquote(obj)`: the object with `noquote` added to its class, once.
+        "noquote" => {
+            let x = a.req(0, "obj")?;
+            let mut classes: Vec<String> = with_host(|h| h.attr(&x, "class"))
+                .map(|c| as_str(&c).into_iter().flatten().collect())
+                .unwrap_or_default();
+            if classes.iter().any(|c| c == "noquote") {
+                return Ok(x);
+            }
+            classes.push("noquote".into());
+            let out = copy_of(&x);
+            let cls = mk_str(classes.into_iter().map(Some).collect());
+            with_host(|h| h.set_attr(&out, "class", cls));
+            Ok(out)
+        }
         "unclass" => {
             let out = copy_of(&a.req(0, "x")?);
             let nl = null();
@@ -3888,7 +3904,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("digits")
                 .and_then(|v| num1(&v))
                 .map(|d| crate::host::set_print_digits(d as usize));
-            print_value(&x);
+            match a.named("quote").and_then(|v| lgl1(&v)) {
+                Some(false) => with_print_quote(false, || print_value(&x)),
+                _ => print_value(&x),
+            }
             if let Some(prev) = restore {
                 crate::host::set_print_digits(prev);
             }
@@ -10659,6 +10678,19 @@ pub fn print_value(v: &Value) {
 /// Render a value into the lines `print` would emit, including the trailing
 /// `attr(,"name")` blocks R appends for every non-structural attribute.
 pub fn format_value(v: &Value) -> Vec<String> {
+    // `print.noquote`: the object without its `noquote` class, unquoted.
+    let classes = class_of(v);
+    if classes.iter().any(|c| c == "noquote") {
+        let plain = copy_of(v);
+        let rest: Vec<Option<String>> = classes
+            .into_iter()
+            .filter(|c| c != "noquote")
+            .map(Some)
+            .collect();
+        let cls = if rest.is_empty() { null() } else { mk_str(rest) };
+        with_host(|h| h.set_attr(&plain, "class", cls));
+        return with_print_quote(false, || format_value(&plain));
+    }
     let mut out = format_value_body(v);
     out.extend(format_extra_attrs(v));
     out
@@ -10849,13 +10881,31 @@ fn format_function(v: &Value) -> Vec<String> {
     }
 }
 
-/// One element as `print` shows it: strings quoted, NA unquoted.
+thread_local! {
+    /// `print`'s `quote`: off for `print(x, quote = FALSE)` and a `noquote`
+    /// object, for the duration of that one print.
+    static PRINT_QUOTE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Run `f` with `print`'s `quote` set to `quote`, restoring it afterwards.
+fn with_print_quote<T>(quote: bool, f: impl FnOnce() -> T) -> T {
+    let prev = PRINT_QUOTE.with(|q| q.replace(quote));
+    let out = f();
+    PRINT_QUOTE.with(|q| q.set(prev));
+    out
+}
+
+/// One element as `print` shows it: strings quoted, NA unquoted. Under
+/// `quote = FALSE` a string is written bare (still escaped) and a missing one
+/// as `<NA>`, so it cannot be mistaken for the string "NA".
 fn print_element(v: &Value, i: usize) -> String {
     match data(v) {
-        RData::Str(xs) => match &xs[i] {
+        RData::Str(xs) => match (&xs[i], PRINT_QUOTE.with(|q| q.get())) {
             // `print` shows the escaped source form (`cat` shows the raw text).
-            Some(s) => format!("\"{}\"", escape_string(s)),
-            None => "NA".into(),
+            (Some(s), true) => format!("\"{}\"", escape_string(s)),
+            (Some(s), false) => escape_chars(s, false),
+            (None, true) => "NA".into(),
+            (None, false) => "<NA>".into(),
         },
         RData::Lgl(xs) => match xs[i] {
             Some(true) => "TRUE".into(),
@@ -10877,11 +10927,16 @@ fn print_element(v: &Value, i: usize) -> String {
 /// Escape a string the way R's `print` renders it: backslash, quote, and the
 /// control characters become their source escapes.
 fn escape_string(s: &str) -> String {
+    escape_chars(s, true)
+}
+
+/// [`escape_string`], leaving a `"` alone when the string is printed unquoted.
+fn escape_chars(s: &str, quote: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
+            '"' if quote => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),

@@ -265,8 +265,8 @@ const OUTPUT: &[Entry] = &[
     ),
     (
         "print",
-        "print(x, digits)",
-        "Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call. A user-defined print.<class> method takes over first, for both print(x) and top-level autoprint. A closure prints its deparsed source; a class with no method is followed by its attr(,\"class\") block.",
+        "print(x, digits, quote = TRUE)",
+        "Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call, and `quote = FALSE` prints strings bare with a missing one as <NA>. A user-defined print.<class> method takes over first, for both print(x) and top-level autoprint. A closure prints its deparsed source; a class with no method is followed by its attr(,\"class\") block.",
     ),
     (
         "cat",
@@ -337,6 +337,11 @@ const OUTPUT: &[Entry] = &[
         "dput",
         "dput(x)",
         "Writes the deparse of `x` to stdout, one line per line, and returns `x` invisibly.",
+    ),
+    (
+        "noquote",
+        "noquote(obj)",
+        "Marks `obj` with the `noquote` class, so it prints as `print(x, quote = FALSE)` would: strings bare and a missing string as `<NA>`.",
     ),
     (
         "format",

@@ -2126,3 +2126,29 @@ attr(,"class")
 [1] "unary -"
 [1] "binary -"
 [1] 6
+#==#
+[1] a    bb   <NA>
+  x   y 
+  a bbb 
+[1] a    bb   <NA>
+     [,1] [,2]
+[1,] a    c   
+[2,] bb   d   
+ [1] a b c d e f g h i j k l m n o p q r s t u v w x y z
+[1] say "hi" plain   
+ a  b 
+ x yy 
+[1] "noquote"
+[1] "noquote"
+     [,1] [,2]
+[1,] p    r   
+[2,] <NA> s   
+   a    b 
+ "x" "yy" 
+[1] TRUE   NA
+[[1]]
+[1] a
+
+[[2]]
+[1] 1
+

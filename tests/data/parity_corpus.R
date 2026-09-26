@@ -1838,3 +1838,20 @@ v <- structure(1, class = "vec")
 print(-v)
 print(v - 1)
 print(sum(structure(1:3, class = "plain")))
+#==#
+# print(quote = FALSE) and noquote(): strings bare but still escaped, a missing
+# string as <NA>, the layout otherwise unchanged.
+print(noquote(c("a","bb",NA)))
+print(c(x="a",y="bbb"), quote=FALSE)
+print(c("a","bb",NA), quote=FALSE)
+print(matrix(c("a","bb","c","d"),2), quote=FALSE)
+print(letters, quote=FALSE)
+print(c('say "hi"', "plain"), quote = FALSE)
+x <- noquote(c(a = "x", b = "yy"))
+x
+print(class(x))
+print(class(noquote(noquote("a"))))
+print(noquote(matrix(c("p", NA, "r", "s"), 2)))
+print(unclass(x))
+print(c(TRUE, NA), quote = FALSE)
+print(list("a", 1), quote = FALSE)

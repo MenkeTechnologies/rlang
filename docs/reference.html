@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 289 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 290 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.6 &middot; 309 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.6 &middot; 310 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,13 +130,13 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 289 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 290 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
-        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">23</span></li>
+        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">24</span></li>
         <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
         <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
@@ -363,7 +363,7 @@
     </section>
     <section class="tutorial-section" id="ch-output-and-the-inlineminusrust-ffi">
       <h2>Output and the inline-Rust FFI</h2>
-      <p class="chapter-meta">23 entries</p>
+      <p class="chapter-meta">24 entries</p>
       <article class="doc-entry" id="doc-rust">
         <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>.rust</code></h3>
         <pre><code class="lang-r r">.rust(code)
@@ -378,9 +378,9 @@
       </article>
       <article class="doc-entry" id="doc-print">
         <h3><a class="doc-anchor" href="#doc-print">#</a> <code>print</code></h3>
-        <pre><code class="lang-r r">print(x, digits)
+        <pre><code class="lang-r r">print(x, digits, quote = TRUE)
 </code></pre>
-        <p>Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call. A user-defined print.&lt;class&gt; method takes over first, for both print(x) and top-level autoprint. A closure prints its deparsed source; a class with no method is followed by its attr(,"class") block.</p>
+        <p>Print x in R's default layout and return it invisibly. `digits` overrides the significant-digit setting for this one call, and `quote = FALSE` prints strings bare with a missing one as &lt;NA&gt;. A user-defined print.&lt;class&gt; method takes over first, for both print(x) and top-level autoprint. A closure prints its deparsed source; a class with no method is followed by its attr(,"class") block.</p>
       </article>
       <article class="doc-entry" id="doc-cat">
         <h3><a class="doc-anchor" href="#doc-cat">#</a> <code>cat</code></h3>
@@ -465,6 +465,12 @@
         <pre><code class="lang-r r">dput(x)
 </code></pre>
         <p>Writes the deparse of `x` to stdout, one line per line, and returns `x` invisibly.</p>
+      </article>
+      <article class="doc-entry" id="doc-noquote">
+        <h3><a class="doc-anchor" href="#doc-noquote">#</a> <code>noquote</code></h3>
+        <pre><code class="lang-r r">noquote(obj)
+</code></pre>
+        <p>Marks `obj` with the `noquote` class, so it prints as `print(x, quote = FALSE)` would: strings bare and a missing string as `&lt;NA&gt;`.</p>
       </article>
       <article class="doc-entry" id="doc-format">
         <h3><a class="doc-anchor" href="#doc-format">#</a> <code>format</code></h3>
