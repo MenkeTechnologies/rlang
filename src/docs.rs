@@ -371,7 +371,7 @@ const OUTPUT: &[Entry] = &[
     (
         "sprintf",
         "sprintf(fmt, ...)",
-        "C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. A `*` takes the width (or precision) from the preceding argument.",
+        "C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %a %A %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. NA, NaN and Inf are printed through %s as R does, so the width and the - and 0 flags still apply to them. A `*` takes the width (or precision) from the preceding argument.",
     ),
 ];
 
@@ -1096,7 +1096,7 @@ const MATRICES: &[Entry] = &[
     (
         "%*%",
         "x %*% y",
-        "The matrix product, column-major. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.",
+        "The matrix product, column-major, summed in the order the reference R's BLAS sums, so results agree with R to the last bit; NA propagates. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.",
     ),
     (
         "crossprod",
@@ -1136,7 +1136,7 @@ const MATRICES: &[Entry] = &[
     (
         "outer",
         "outer(X, Y, FUN = \"*\")",
-        "The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator.",
+        "The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator; the default \"*\" is the matrix product R computes, so it is always double.",
     ),
     (
         "%o%",

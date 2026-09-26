@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 290 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 295 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.7 &middot; 310 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.7 &middot; 315 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 290 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 295 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -144,7 +144,7 @@
         <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">28</span></li>
         <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">30</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
-        <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
+        <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">22</span></li>
         <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">61</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
@@ -506,7 +506,7 @@
         <h3><a class="doc-anchor" href="#doc-sprintf">#</a> <code>sprintf</code></h3>
         <pre><code class="lang-r r">sprintf(fmt, ...)
 </code></pre>
-        <p>C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. A `*` takes the width (or precision) from the preceding argument.</p>
+        <p>C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %a %A %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. NA, NaN and Inf are printed through %s as R does, so the width and the - and 0 flags still apply to them. A `*` takes the width (or precision) from the preceding argument.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-sequences">
@@ -1463,7 +1463,7 @@
     </section>
     <section class="tutorial-section" id="ch-matrices-and-arrays">
       <h2>Matrices and arrays</h2>
-      <p class="chapter-meta">17 entries</p>
+      <p class="chapter-meta">22 entries</p>
       <article class="doc-entry" id="doc-matrix">
         <h3><a class="doc-anchor" href="#doc-matrix">#</a> <code>matrix</code></h3>
         <pre><code class="lang-r r">matrix(data = NA, nrow, ncol, dimnames = NULL, byrow = FALSE)
@@ -1504,7 +1504,7 @@
         <h3><a class="doc-anchor" href="#doc-pctstarpct">#</a> <code>%*%</code></h3>
         <pre><code class="lang-r r">x %*% y
 </code></pre>
-        <p>The matrix product, column-major. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.</p>
+        <p>The matrix product, column-major, summed in the order the reference R's BLAS sums, so results agree with R to the last bit; NA propagates. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.</p>
       </article>
       <article class="doc-entry" id="doc-crossprod">
         <h3><a class="doc-anchor" href="#doc-crossprod">#</a> <code>crossprod</code></h3>
@@ -1518,11 +1518,41 @@
 </code></pre>
         <p>x %*% t(y), computed through the same matrix product; y defaults to x.</p>
       </article>
+      <article class="doc-entry" id="doc-solve">
+        <h3><a class="doc-anchor" href="#doc-solve">#</a> <code>solve</code></h3>
+        <pre><code class="lang-r r">solve(a, b, tol = .Machine$double.eps)
+</code></pre>
+        <p>Solve a %*% x = b by LU with partial pivoting — the inverse when b is missing — as solve.default reaches LAPACK's dgesv. An exactly zero pivot and a reciprocal condition number below tol raise R's own errors; rownames of the result are colnames(a).</p>
+      </article>
+      <article class="doc-entry" id="doc-det">
+        <h3><a class="doc-anchor" href="#doc-det">#</a> <code>det</code></h3>
+        <pre><code class="lang-r r">det(x)
+</code></pre>
+        <p>The determinant of a square numeric matrix, as R's sign * exp(log-modulus) from the same LU factorisation.</p>
+      </article>
+      <article class="doc-entry" id="doc-determinant">
+        <h3><a class="doc-anchor" href="#doc-determinant">#</a> <code>determinant</code></h3>
+        <pre><code class="lang-r r">determinant(x, logarithm = TRUE)
+</code></pre>
+        <p>The modulus (as its log by default, carrying a logarithm attribute) and sign of the determinant, returned as a list of class "det".</p>
+      </article>
+      <article class="doc-entry" id="doc-arrayind">
+        <h3><a class="doc-anchor" href="#doc-arrayind">#</a> <code>arrayInd</code></h3>
+        <pre><code class="lang-r r">arrayInd(ind, .dim, .dimnames = NULL, useNames = FALSE)
+</code></pre>
+        <p>Linear indices as an integer matrix of per-dimension subscripts; useNames labels the rows from the first margin's names and the columns row/col or dim1, dim2, ….</p>
+      </article>
+      <article class="doc-entry" id="doc-slice-index">
+        <h3><a class="doc-anchor" href="#doc-slice-index">#</a> <code>slice.index</code></h3>
+        <pre><code class="lang-r r">slice.index(x, MARGIN)
+</code></pre>
+        <p>An integer array shaped like x holding each cell's index along MARGIN (a combined index for several margins).</p>
+      </article>
       <article class="doc-entry" id="doc-outer">
         <h3><a class="doc-anchor" href="#doc-outer">#</a> <code>outer</code></h3>
         <pre><code class="lang-r r">outer(X, Y, FUN = "*")
 </code></pre>
-        <p>The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator.</p>
+        <p>The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator; the default "*" is the matrix product R computes, so it is always double.</p>
       </article>
       <article class="doc-entry" id="doc-pctopct">
         <h3><a class="doc-anchor" href="#doc-pctopct">#</a> <code>%o%</code></h3>

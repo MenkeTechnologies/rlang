@@ -350,9 +350,11 @@ Arguments and defaults are promises, forced at first use in the environment
 that wrote them, and `substitute()` / `quote()` / `match.call()` /
 `sys.call()` / `eval(expr, envir)` work on rlang's own evaluator; S3 dispatch
 covers `UseMethod`/`NextMethod` and the `Ops`/`Math`/`Summary` group generics.
-Data frames, complex numbers, `Date`, and part of the linear-algebra surface
-(`solve`, `det`, `eigen`) are not native — they reach the embedded GNU R when
-one is installed. Factors (ordered included, surviving
+Data frames, complex numbers, `Date` and `eigen` are not native — they reach
+the embedded GNU R when one is installed. `solve`, `det` and `determinant` are:
+LAPACK's LU and condition estimate are ported and the BLAS calls follow the
+reference R's kernels, so their results — and those of `%*%` — agree with R to
+the last bit. Factors (ordered included, surviving
 subsetting and reordering, comparing by label), `table`, `%*%`, `outer`,
 `crossprod`, `cbind`/`rbind` with R's deparsed seam labels, and `apply` over
 matrix margins (carrying the margin's `dimnames`) all work; the condition

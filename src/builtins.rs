@@ -9392,7 +9392,7 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
 }
 
 /// `sprintf(fmt, ...)` — vectorized over the arguments, with R's `%d %i %s %f
-/// %e %g %x %%` plus width/precision/flags.
+/// %e %g %a %x %%` plus width/precision/flags.
 fn sprintf(a: &Args) -> Result<Value, String> {
     let fmts = as_str(&a.req(0, "fmt")?);
     let rest = a.rest(1);

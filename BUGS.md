@@ -178,11 +178,12 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Types
 
-- **`dim<-` does not check that the new dimensions fit the object.**
-  `m <- matrix(1:4, 2); dim(m)[1] <- 4` sets `dim` to `c(4, 2)`, leaving a
-  four-element vector that claims eight cells, where the reference raises
-  `dims [product 8] do not match the length of object [4]`. The indexed
-  spelling is only how it was found — every `dim<-` accepts a mismatch.
+- **`dim<-` checks the new dimensions** — fixed. It is R's `dimgets` now: an
+  empty, missing or negative extent, or a product that is not the object's
+  length, raises R's error, and the error names the assignment
+  (`Error in dim(m)[1] <- 4 :`), which every failing replacement function now
+  does. Setting `dim` drops the names and old dimnames, and `NULL` drops both.
+  Regression: `tests/linalg.rs::dim_assignment_checks_the_length`.
 
 
 - **An rlang closure does not cross the bridge as an R function.** `setRefClass`
@@ -216,8 +217,8 @@ run that compared nothing — no cases generated, or an oracle that never answer
   message body and the returned `NA`s match.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
-  a margin onto its result) work; the array-specific helpers (`slice.index`,
-  `arrayInd`) do not.
+  a margin onto its result) work, and so do the array-specific helpers
+  `slice.index` and `arrayInd`.
 - **`dimnames` work at any rank**: `matrix(dimnames=)` and `array(dimnames=)`,
   `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
   the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix and
@@ -232,10 +233,18 @@ run that compared nothing — no cases generated, or an oracle that never answer
   the compiler passes the deparsed argument text alongside them. It cannot do
   that through `...` — `rbind(...)` inside a function gets no deparsed labels,
   because the forwarded arguments only exist at run time.
-- **Partial linear algebra.** `%*%`, `t`, `diag`, `apply` over margins,
+- **Linear algebra without `eigen`.** `%*%`, `t`, `diag`, `apply` over margins,
   `rowSums`/`colSums`/`rowMeans`/`colMeans`, `outer`/`%o%`, `crossprod`/
-  `tcrossprod`, and `cbind`/`rbind` work; `solve`, `det`, and `eigen` are not
-  implemented.
+  `tcrossprod`, `cbind`/`rbind`, and `solve`/`det`/`determinant` work;
+  `eigen`, `qr`, `chol` and `svd` are not native. `solve` and `det` port
+  LAPACK 3.12's `dgetrf`/`dgetrf2`/`dgetrs`/`dgecon` (`src/linalg.rs`), and
+  the BLAS calls those make — and `%*%` itself — follow the reference R's
+  OpenBLAS kernels, so results match R to the last bit (diffed with
+  `sprintf("%a")` for n = 2…130, `tests/linalg.rs`). Two limits: the bit
+  pattern is the reference build's (R 4.6.1 over OpenBLAS 0.3.34 on arm64),
+  and another BLAS sums in another order; and `dlatrs`'s careful rescaling
+  path is not ported, so the reciprocal condition number of a matrix with
+  entries near the overflow or underflow threshold can differ from R's.
 - **Integer overflow produces `NA` with a warning**, as R does, and the result
   keeps class `"integer"` — `2147483647L + 1L`, `* 2L` and `-2147483647L - 2L`
   all give `NA`. Only the warning's call differs, under the operator entry

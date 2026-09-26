@@ -250,7 +250,7 @@ print(inherits(sq, "square"))         # [1] TRUE</pre>
 
       <section class="tutorial-section">
         <h2>Operators, pipes, and the primitive library</h2>
-        <p>The full precedence ladder from <code>?Syntax</code>, <code>%%</code>/<code>%/%</code> taking the sign of the divisor, <code>%in%</code>, user-defined <code>%op%</code>, and the native pipe <code>|&gt;</code>. 290 primitives are registered in <code>builtins::PRIMITIVES</code> — the apply family, string and regex functions, numeric summaries, sequence and set functions, and matrix helpers.</p>
+        <p>The full precedence ladder from <code>?Syntax</code>, <code>%%</code>/<code>%/%</code> taking the sign of the divisor, <code>%in%</code>, user-defined <code>%op%</code>, and the native pipe <code>|&gt;</code>. 295 primitives are registered in <code>builtins::PRIMITIVES</code> — the apply family, string and regex functions, numeric summaries, sequence and set functions, and matrix helpers.</p>
 <pre>print(-5 %% 3)                        # [1] 1
 print(7 %/% 2)                        # [1] 3
 print(1:3 %in% c(2, 3, 9))            # [1] FALSE  TRUE  TRUE
@@ -320,7 +320,7 @@ print(substr("bytecode", 1, 4))                 # [1] "byte"</pre>
             <tr><td>AOP call intercepts</td><td><span class="status-pill status-progress">Partial</span></td><td>Glob-matched before/after/around registry is live and tested; the dispatcher does not consult it yet (<code>src/intercepts.rs</code>).</td></tr>
             <tr><td>Promises / non-standard evaluation</td><td><span class="status-pill status-implemented">Implemented</span></td><td>Arguments and defaults are promises; <code>substitute()</code>, <code>quote()</code>, <code>match.call()</code> and <code>eval(expr, envir)</code> run natively. Formulas and NSE programs (<code>dplyr</code>) go through the embedded GNU R.</td></tr>
             <tr><td>Condition system (<code>tryCatch</code>, restarts)</td><td><span class="status-pill status-done">Done</span></td><td><code>tryCatch</code>/<code>try</code>/<code>on.exit</code>/<code>finally</code> with handlers selected by condition class, plus restarts: <code>withRestarts</code>/<code>invokeRestart</code>/<code>computeRestarts</code> and the built-in <code>muffleWarning</code>/<code>muffleMessage</code>, so <code>withCallingHandlers</code> resumes at the signalling point. A warning, an error, and the condition object itself all carry the call they were raised in, under R's own context rules.</td></tr>
-            <tr><td>Data frames, complex numbers, <code>solve</code>/<code>det</code>/<code>eigen</code></td><td><span class="status-pill status-planned">Planned</span></td><td>No native <code>data.frame</code>, complex numbers, or <code>solve</code>/<code>det</code>/<code>eigen</code> (each delegated to the embedded GNU R). Factors (ordered included), <code>apply</code> over margins, <code>%*%</code>, <code>outer</code> and <code>cbind</code>/<code>rbind</code> do work.</td></tr>
+            <tr><td>Data frames, complex numbers, <code>eigen</code></td><td><span class="status-pill status-planned">Planned</span></td><td>No native <code>data.frame</code>, complex numbers, or <code>eigen</code> (each delegated to the embedded GNU R). Factors (ordered included), <code>apply</code> over margins, <code>%*%</code>, <code>outer</code>, <code>cbind</code>/<code>rbind</code>, and <code>solve</code>/<code>det</code>/<code>determinant</code> (bit-identical to R) do work.</td></tr>
           </tbody>
         </table>
       </section>
