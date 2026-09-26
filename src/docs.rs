@@ -1109,6 +1109,31 @@ const MATRICES: &[Entry] = &[
         "x %*% t(y), computed through the same matrix product; y defaults to x.",
     ),
     (
+        "solve",
+        "solve(a, b, tol = .Machine$double.eps)",
+        "Solve a %*% x = b by LU with partial pivoting — the inverse when b is missing — as solve.default reaches LAPACK's dgesv. An exactly zero pivot and a reciprocal condition number below tol raise R's own errors; rownames of the result are colnames(a).",
+    ),
+    (
+        "det",
+        "det(x)",
+        "The determinant of a square numeric matrix, as R's sign * exp(log-modulus) from the same LU factorisation.",
+    ),
+    (
+        "determinant",
+        "determinant(x, logarithm = TRUE)",
+        "The modulus (as its log by default, carrying a logarithm attribute) and sign of the determinant, returned as a list of class \"det\".",
+    ),
+    (
+        "arrayInd",
+        "arrayInd(ind, .dim, .dimnames = NULL, useNames = FALSE)",
+        "Linear indices as an integer matrix of per-dimension subscripts; useNames labels the rows from the first margin's names and the columns row/col or dim1, dim2, ….",
+    ),
+    (
+        "slice.index",
+        "slice.index(x, MARGIN)",
+        "An integer array shaped like x holding each cell's index along MARGIN (a combined index for several margins).",
+    ),
+    (
         "outer",
         "outer(X, Y, FUN = \"*\")",
         "The outer product: X and Y are tiled to nx*ny and FUN is called once on the pair, so the result keeps FUN's own type — strings from paste0, logicals from ==. FUN may be a function or the name of an operator.",

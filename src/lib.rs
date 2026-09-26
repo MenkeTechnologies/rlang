@@ -20,6 +20,7 @@ pub mod ffi;
 pub mod host;
 pub mod intercepts;
 pub mod lexer;
+pub mod linalg;
 pub mod parser;
 pub mod strwidth;
 

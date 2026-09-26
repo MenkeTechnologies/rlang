@@ -3441,6 +3441,8 @@ pub const PRIMITIVES: &[&str] = &[
     "matrix",
     "array",
     "aperm",
+    "arrayInd",
+    "slice.index",
     "dim",
     "nrow",
     "ncol",
@@ -3456,6 +3458,9 @@ pub const PRIMITIVES: &[&str] = &[
     "outer",
     "crossprod",
     "tcrossprod",
+    "solve",
+    "det",
+    "determinant",
     "cbind",
     "rbind",
     "head",
@@ -6821,6 +6826,91 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
+        // R's `arrayInd(ind, .dim, .dimnames, useNames)`: each linear index as
+        // a row of per-dimension subscripts, an integer matrix; `NA` stays
+        // `NA` across the row. With `useNames`, the rows are labelled from the
+        // first margin's names and the columns `row`/`col` (rank 2) or
+        // `dim1`… — or the dimnames' own names when it has any.
+        "arrayInd" => {
+            let ind = as_dbl(&a.req(0, "ind")?);
+            let dims: Vec<i64> = as_int(&a.req(1, ".dim")?).into_iter().map(|d| d.unwrap_or(0)).collect();
+            let dimnames = a.get(2, ".dimnames").filter(|v| !is_null(v));
+            let use_names = a.get(3, "useNames").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let (m, rank) = (ind.len(), dims.len());
+            let mut cells = vec![None; m * rank];
+            for (r, i) in ind.iter().enumerate() {
+                let Some(i) = i else { continue };
+                let mut rest = (*i as i64) - 1;
+                for (c, d) in dims.iter().enumerate() {
+                    cells[c * m + r] = Some(rest.rem_euclid((*d).max(1)) + 1);
+                    rest = rest.div_euclid((*d).max(1));
+                }
+            }
+            let out = mk_int(cells);
+            let dim = mk_int(vec![Some(m as i64), Some(rank as i64)]);
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            if use_names {
+                let parts = dimnames.as_ref().map(elements).unwrap_or_default();
+                let rows = match parts.first().filter(|v| !is_null(v)) {
+                    Some(first) => {
+                        let labels = as_str(first);
+                        let pick = as_int(&out)[..m]
+                            .iter()
+                            .map(|k| k.and_then(|k| labels.get(k as usize - 1).cloned().flatten()))
+                            .collect();
+                        mk_str(pick)
+                    }
+                    None => null(),
+                };
+                let own: Vec<Option<String>> = dimnames.as_ref().map(names_of).unwrap_or_default();
+                let cols: Vec<Option<String>> = if own.iter().any(|n| n.as_deref().is_some_and(|s| !s.is_empty())) {
+                    own
+                } else if rank == 2 {
+                    vec![Some("row".into()), Some("col".into())]
+                } else {
+                    (1..=rank).map(|k| Some(format!("dim{k}"))).collect()
+                };
+                let dn = mk_list(vec![rows, mk_str(cols)]);
+                with_host(|h| h.set_attr(&out, "dimnames", dn));
+            }
+            Ok(out)
+        }
+        // R's `slice.index(x, MARGIN)`: an integer array shaped like `x` whose
+        // cells hold their index along `MARGIN` — for several margins, the
+        // combined index, the first varying fastest.
+        "slice.index" => {
+            let x = a.req(0, "x")?;
+            let d: Vec<usize> = match with_host(|h| h.attr(&x, "dim")) {
+                Some(dv) => as_int(&dv).into_iter().map(|e| e.unwrap_or(0) as usize).collect(),
+                None => vec![len(&x)],
+            };
+            let n = d.len();
+            let margin: Vec<Option<i64>> = as_int(&a.req(1, "MARGIN")?);
+            if margin.is_empty() || margin.iter().any(|m| m.is_none_or(|m| m < 1 || m as usize > n)) {
+                return Err("incorrect value for 'MARGIN'".into());
+            }
+            let margin: Vec<usize> = margin.into_iter().flatten().map(|m| m as usize - 1).collect();
+            let total: usize = d.iter().product();
+            let mut cells = Vec::with_capacity(total);
+            for p in 0..total {
+                let mut sub = Vec::with_capacity(n);
+                let mut rest = p;
+                for dk in &d {
+                    sub.push(rest % dk);
+                    rest /= dk;
+                }
+                let (mut y, mut stride) = (1i64, 1i64);
+                for &m in &margin {
+                    y += stride * sub[m] as i64;
+                    stride *= d[m] as i64;
+                }
+                cells.push(Some(y));
+            }
+            let out = mk_int(cells);
+            let dim = mk_int(d.iter().map(|&k| Some(k as i64)).collect());
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            Ok(out)
+        }
         "aperm" => {
             // Permute an array's dimensions (default: reverse — a transpose).
             let x = a.req(0, "a")?;
@@ -7097,12 +7187,38 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // crossprod(x, y) = t(x) %*% y ; tcrossprod(x, y) = x %*% t(y).
             let x = a.req(0, "x")?;
             let y = a.get(1, "y").unwrap_or_else(|| x.clone());
-            let out = if name == "crossprod" {
+            let out = if name == "crossprod" && a.get(1, "y").is_some() {
+                crossprod(&x, &y)
+            } else if name == "crossprod" {
                 mat_mul(&transpose(&x), &y)
             } else {
-                mat_mul(&x, &transpose(&y))
+                tcrossprod(&x, &y)
             };
             Ok(out)
+        }
+        // `solve` is generic in R; `solve.default` does the work, and its
+        // errors name that call.
+        "solve" => in_method("solve.default", || solve_default(&a)),
+        "determinant" => {
+            let x = a.req(0, "x")?;
+            let log = a.get(1, "logarithm").and_then(|v| lgl1(&v)).unwrap_or(true);
+            determinant_generic(&x, log, "determinant.matrix", None)
+        }
+        // `det` is R's `function(x, ...) { z <- determinant(x, logarithm =
+        // TRUE, ...); c(z$sign * exp(z$modulus)) }`: the contexts it opens
+        // are the ones that closure's own call to the generic makes.
+        "det" => {
+            let x = a.req(0, "x")?;
+            let generic = "determinant(x, logarithm = TRUE, ...)";
+            push_context(generic);
+            let z = determinant_generic(&x, true, "determinant.matrix(x, logarithm = TRUE, ...)", Some(generic));
+            with_host(|h| h.calls.pop());
+            let (modulus, sign) = z.map(|z| {
+                let e = elements(&z);
+                let d = |v: &Value| as_dbl(v)[0].unwrap_or_else(crate::linalg::na_real);
+                (d(&e[0]), d(&e[1]))
+            })?;
+            Ok(from_lapack(vec![sign * modulus.exp()]))
         }
         "outer" | "%o%" => {
             let xv = a.req(0, "X")?;
@@ -7120,7 +7236,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 Some(f) if with_host(|h| h.is_function(f)) => {
                     call_value(f, vec![(None, xe), (None, ye)], None)?
                 }
-                // A bare operator name (the default is "*").
+                // R's `outer` computes the default `"*"` as
+                // `tcrossprod(as.vector(X), as.vector(Y))`, a matrix product:
+                // the result is double whatever the inputs, and each cell is
+                // one fused `x * y + 0` (so a zero product is `+0`).
+                None => outer_product(&xv, &yv),
+                Some(op) if str1(op).as_deref() == Some("*") => outer_product(&xv, &yv),
+                // Another operator name.
                 other => {
                     let op = other.as_ref().and_then(str1);
                     binop(op.as_deref().unwrap_or("*"), &xe, &ye)?
@@ -8676,25 +8798,110 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
     let has_dim = |v: &Value| with_host(|h| h.attr(v, "dim")).is_some();
     let (ar, ac) = if has_dim(x) { mat_dim(x) } else { (1, len(x)) };
     let (br, bc) = if has_dim(y) { mat_dim(y) } else { (len(y), 1) };
-    let a = as_dbl(x);
-    let b = as_dbl(y);
+    // An `NA` rides as R's NaN payload so it propagates the way it does in R
+    // instead of counting as zero.
+    let na = crate::linalg::na_real;
+    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
     if ac != br {
         return mk_dbl(vec![None]);
     }
-    let mut out = vec![Some(0.0); ar * bc];
+    // R's `matprod`: with a NaN or infinity anywhere it runs its own loop, and
+    // otherwise hands a one-row product to `dgemv('T')`, whose kernel sums a
+    // dot product in eight lanes. Every other shape — `dgemm`, `dgemv('N')`
+    // and the plain loop alike — accumulates each element in one fused chain.
+    let finite = a.iter().chain(&b).all(|v| v.is_finite());
+    let mut out = vec![0.0; ar * bc];
     for i in 0..ar {
         for j in 0..bc {
-            let mut acc = 0.0;
-            for k in 0..ac {
-                let av = a.get(k * ar + i).and_then(|e| *e).unwrap_or(0.0);
-                let bv = b.get(j * br + k).and_then(|e| *e).unwrap_or(0.0);
-                acc += av * bv;
-            }
-            out[j * ar + i] = Some(acc);
+            let terms = (0..ac).map(|k| (a[k * ar + i], b[j * br + k]));
+            out[j * ar + i] = if finite && ar == 1 && bc > 1 {
+                crate::linalg::gemv_t_dot(terms)
+            } else {
+                terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
+            };
         }
     }
-    let res = mk_dbl(out);
+    let res = mk_dbl(
+        out.into_iter()
+            .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
+            .collect(),
+    );
     let dim = mk_int(vec![Some(ar as i64), Some(bc as i64)]);
+    with_host(|h| h.set_attr(&res, "dim", dim));
+    res
+}
+
+/// `tcrossprod(x, y)` = `x %*% t(y)`, a vector counting as one column: each
+/// element is a row of `x` against a row of `y`, summed in one fused chain as
+/// `dgemm('N', 'T')`, `dgemv('N')` and R's own loop all do.
+fn tcrossprod(x: &Value, y: &Value) -> Value {
+    let (xr, xc) = mat_dim(x);
+    let (yr, yc) = mat_dim(y);
+    if xc != yc {
+        return mk_dbl(vec![None]);
+    }
+    let na = crate::linalg::na_real;
+    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let mut out = vec![0.0; xr * yr];
+    for i in 0..xr {
+        for j in 0..yr {
+            out[j * xr + i] = (0..xc).fold(0.0, |acc, k| a[k * xr + i].mul_add(b[k * yr + j], acc));
+        }
+    }
+    let res = mk_dbl(out.into_iter().map(|v| (!crate::linalg::is_na_real(v)).then_some(v)).collect());
+    let dim = mk_int(vec![Some(xr as i64), Some(yr as i64)]);
+    with_host(|h| h.set_attr(&res, "dim", dim));
+    res
+}
+
+/// The cells of `outer(X, Y)` under the default `"*"`: `tcrossprod` of the
+/// two as plain vectors, column-major `X[i] * Y[j]`, always double.
+fn outer_product(x: &Value, y: &Value) -> Value {
+    let na = crate::linalg::na_real;
+    let xs: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let ys: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let cells = ys
+        .iter()
+        .flat_map(|v| xs.iter().map(move |u| u.mul_add(*v, 0.0)))
+        .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
+        .collect();
+    mk_dbl(cells)
+}
+
+/// `crossprod(x, y)` = `t(x) %*% y`, computed as R's `crossprod` does: every
+/// element is a dot product of a column of `x` with a column of `y`, and when
+/// either side has a single column (and nothing is NaN or infinite) R hands it
+/// to `dgemv('T')`, whose eight-lane sum differs from the fused chain `dgemm`
+/// and R's own loop use.
+fn crossprod(x: &Value, y: &Value) -> Value {
+    let (xr, xc) = mat_dim(x);
+    let (yr, yc) = mat_dim(y);
+    if xr != yr {
+        return mk_dbl(vec![None]);
+    }
+    let na = crate::linalg::na_real;
+    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let gemv = (xc == 1 || yc == 1) && a.iter().chain(&b).all(|v| v.is_finite());
+    let mut out = vec![0.0; xc * yc];
+    for i in 0..xc {
+        for j in 0..yc {
+            let terms = (0..xr).map(|k| (a[i * xr + k], b[j * yr + k]));
+            out[j * xc + i] = if gemv {
+                crate::linalg::gemv_t_dot(terms)
+            } else {
+                terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
+            };
+        }
+    }
+    let res = mk_dbl(
+        out.into_iter()
+            .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
+            .collect(),
+    );
+    let dim = mk_int(vec![Some(xc as i64), Some(yc as i64)]);
     with_host(|h| h.set_attr(&res, "dim", dim));
     res
 }
@@ -10816,6 +11023,178 @@ fn dispatch_from(
     // re-entering S3 dispatch on the same object and looping forever.
     with_host(|h| h.suppress_s3 = true);
     call_primitive(generic, args)
+}
+
+/// A numeric matrix's `(nrow, ncol, values)` for LAPACK, `NA` carried as R's
+/// own NaN payload; `None` when `x` is not a matrix of numbers (logicals
+/// count, as `coerceVector` takes them).
+fn numeric_matrix(x: &Value) -> Option<(usize, usize, Vec<f64>)> {
+    let d = with_host(|h| h.attr(x, "dim")).map(|d| as_int(&d))?;
+    let [Some(nr), Some(nc)] = d.as_slice() else {
+        return None;
+    };
+    if !matches!(kind(x), RKind::Int | RKind::Dbl | RKind::Lgl) {
+        return None;
+    }
+    let vals = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(crate::linalg::na_real)).collect();
+    Some((*nr as usize, *nc as usize, vals))
+}
+
+/// A LAPACK result back as R doubles: R's `NA` payload becomes `NA` again,
+/// any other NaN stays `NaN`.
+fn from_lapack(xs: Vec<f64>) -> Value {
+    mk_dbl(
+        xs.into_iter()
+            .map(|x| (!crate::linalg::is_na_real(x)).then_some(x))
+            .collect(),
+    )
+}
+
+/// One margin of a `dimnames` attribute (0 = rows, 1 = columns), or `NULL`.
+fn dimnames_part(x: &Value, margin: usize) -> Value {
+    with_host(|h| h.attr(x, "dimnames"))
+        .and_then(|dn| elements(&dn).get(margin).cloned())
+        .unwrap_or_else(null)
+}
+
+/// `solve.default(a, b, tol)`: `as.matrix(a)`, an identity right-hand side
+/// labelled with `rownames(a)` when `b` is missing, then `La_solve`.
+fn solve_default(a: &Args) -> Result<Value, String> {
+    let mut m = a.req(0, "a")?;
+    if with_host(|h| h.attr(&m, "dim")).is_none() {
+        // `as.matrix` of a vector: one column, its names as the rownames.
+        let nm = with_host(|h| h.attr(&m, "names"));
+        m = copy_of(&m);
+        let dim = mk_int(vec![Some(len(&m) as i64), Some(1)]);
+        let no_names = null();
+        with_host(|h| {
+            h.set_attr(&m, "names", no_names);
+            h.set_attr(&m, "dim", dim);
+        });
+        if let Some(nm) = nm {
+            let dn = mk_list(vec![nm, null()]);
+            with_host(|h| h.set_attr(&m, "dimnames", dn));
+        }
+    }
+    let (n, nc, avals) = numeric_matrix(&m).ok_or("'a' must be a numeric matrix")?;
+    if n == 0 {
+        return Err("'a' is 0-diml".into());
+    }
+    if nc != n {
+        return Err(format!("'a' ({n} x {nc}) must be square"));
+    }
+    let a_cols = dimnames_part(&m, 1);
+    let tol = a.get(2, "tol").and_then(|v| num1(&v)).unwrap_or(f64::EPSILON);
+    let (mut bvals, nrhs, b_cols, is_matrix) = match a.get(1, "b") {
+        None => {
+            let mut id = vec![0.0; n * n];
+            for i in 0..n {
+                id[i * n + i] = 1.0;
+            }
+            (id, n, dimnames_part(&m, 0), true)
+        }
+        Some(b) => match numeric_matrix(&b) {
+            Some((br, bc, vals)) => {
+                if bc == 0 {
+                    return Err("no right-hand side in 'b'".into());
+                }
+                if br != n {
+                    return Err(format!("'b' ({br} x {bc}) must be compatible with 'a' ({n} x {n})"));
+                }
+                (vals, bc, dimnames_part(&b, 1), true)
+            }
+            None => {
+                if with_host(|h| h.attr(&b, "dim")).is_some() || !matches!(kind(&b), RKind::Int | RKind::Dbl | RKind::Lgl) {
+                    return Err("'b' must be a numeric matrix or vector".into());
+                }
+                if len(&b) != n {
+                    return Err(format!("'b' ({} x 1) must be compatible with 'a' ({n} x {n})", len(&b)));
+                }
+                let vals = as_dbl(&b).into_iter().map(|e| e.unwrap_or_else(crate::linalg::na_real)).collect();
+                (vals, 1, null(), false)
+            }
+        },
+    };
+    crate::linalg::solve(&avals, n, &mut bvals, nrhs, tol).map_err(|e| match e {
+        crate::linalg::SolveError::Singular(i) => {
+            format!("Lapack routine dgesv: system is exactly singular: U[{i},{i}] = 0")
+        }
+        crate::linalg::SolveError::IllConditioned(r) => format!(
+            "system is computationally singular: reciprocal condition number = {}",
+            fmt_g(r, 6, false)
+        ),
+    })?;
+    let out = from_lapack(bvals);
+    if is_matrix {
+        let dim = mk_int(vec![Some(n as i64), Some(nrhs as i64)]);
+        with_host(|h| h.set_attr(&out, "dim", dim));
+        // rownames(ans) = colnames(a), colnames(ans) = colnames(b); set only
+        // when one of them exists.
+        if !is_null(&a_cols) || !is_null(&b_cols) {
+            let dn = mk_list(vec![a_cols, b_cols]);
+            with_host(|h| h.set_attr(&out, "dimnames", dn));
+        }
+    } else if !is_null(&a_cols) {
+        with_host(|h| h.set_attr(&out, "names", a_cols));
+    }
+    Ok(out)
+}
+
+/// `determinant(x, logarithm)`: dispatch to `determinant.matrix` for a matrix
+/// (the only method base R has for a real one), else `UseMethod`'s error.
+/// `method_call` is the context the method runs under; `generic_call`, when
+/// the generic was reached from `det`, is the call already open for it.
+fn determinant_generic(x: &Value, log: bool, method_call: &str, generic_call: Option<&str>) -> Result<Value, String> {
+    let class = dispatch_class(x);
+    if !class.iter().any(|c| c == "matrix") {
+        let shown = match class.as_slice() {
+            [one] => one.clone(),
+            many => format!("c('{}')", many.join("', '")),
+        };
+        with_host(|h| h.set_error_call(Some("UseMethod(\"determinant\")".into())));
+        return Err(format!(
+            "no applicable method for 'determinant' applied to an object of class \"{shown}\""
+        ));
+    }
+    let body = || -> Result<Value, String> {
+        let (nr, nc) = mat_dim(x);
+        if nr != nc {
+            return Err("'x' must be a square matrix".into());
+        }
+        let (modulus, sign) = if nr == 0 {
+            (if log { 0.0 } else { 1.0 }, 1)
+        } else {
+            let (_, _, vals) = numeric_matrix(x).ok_or("'a' must be a numeric matrix")?;
+            crate::linalg::determinant(&vals, nr, log)
+        };
+        let m = from_lapack(vec![modulus]);
+        let l = scalar_lgl(log);
+        with_host(|h| h.set_attr(&m, "logarithm", l));
+        let out = mk_list(vec![m, scalar_int(sign as i64)]);
+        let names = mk_str(vec![Some("modulus".into()), Some("sign".into())]);
+        let class = mk_str(vec![Some("det".into())]);
+        with_host(|h| {
+            h.set_attr(&out, "names", names);
+            h.set_attr(&out, "class", class);
+        });
+        Ok(out)
+    };
+    match generic_call {
+        // Reached from `det`: the method's context is fixed text.
+        Some(_) => {
+            push_context(method_call);
+            let out = body();
+            with_host(|h| {
+                if out.is_err() && h.error.is_none() {
+                    let c = h.current_call_source();
+                    h.set_error_call(c);
+                }
+                h.calls.pop();
+            });
+            out
+        }
+        None => in_method("determinant.matrix", body),
+    }
 }
 
 /// The class vector S3 dispatch walks: R's `R_data_class2`. An explicit
