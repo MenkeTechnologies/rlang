@@ -43,6 +43,10 @@ struct Compiler {
     /// Slots proven to hold an unboxed native numeric scalar (see
     /// [`native_num_slots`]) — usable as a native `for (i in 1:n)` bound.
     native_nums: std::collections::HashSet<String>,
+    /// The deparsed text of the complex assignment being lowered — the call
+    /// R names when a replacement function in it fails (`dim(y) <- c(4, 2)`),
+    /// since a primitive `f<-` makes no context of its own.
+    assign_text: String,
     /// Set while lowering an expression whose value is the value of a whole
     /// statement. Only there does visibility matter, and only a bare numeric
     /// literal needs help with it — see [`Compiler::expr`].
@@ -1523,7 +1527,15 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(op, 2), 0);
             }
             _ => {
-                self.rebuild(b, target, value, sup)?;
+                let whole = Expr::Assign {
+                    target: Box::new(target.clone()),
+                    value: Box::new(value.clone()),
+                    super_assign: sup,
+                };
+                let outer = std::mem::replace(&mut self.assign_text, crate::deparse::deparse_first_line(&whole));
+                let out = self.rebuild(b, target, value, sup);
+                self.assign_text = outer;
+                out?;
             }
         }
         Ok(())
@@ -1576,7 +1588,9 @@ impl Compiler {
                 self.expr(b, &inner)?;
                 self.args(b, &args[1..])?;
                 self.expr(b, value)?;
-                b.emit(Op::CallBuiltin(ops::REPLACE, 4), 0);
+                let text = self.assign_text.clone();
+                self.kstr(b, &text);
+                b.emit(Op::CallBuiltin(ops::REPLACE, 5), 0);
                 self.assign_stack(b, &inner, sup)
             }
             other => Err(format!("invalid assignment target: {other:?}")),
@@ -1663,7 +1677,9 @@ impl Compiler {
                 b.emit(Op::Swap, 0);
                 self.args(b, &args[1..])?;
                 b.emit(Op::Swap, 0);
-                b.emit(Op::CallBuiltin(ops::REPLACE, 4), 0);
+                let text = self.assign_text.clone();
+                self.kstr(b, &text);
+                b.emit(Op::CallBuiltin(ops::REPLACE, 5), 0);
                 self.assign_stack(b, &inner, sup)
             }
             other => Err(format!("invalid nested assignment target: {other:?}")),
@@ -2000,7 +2016,7 @@ mod tests {
         let ops = ops_of("names(x) <- c(\"a\")");
         assert!(ops
             .iter()
-            .any(|o| matches!(o, Op::CallBuiltin(id, 4) if *id == ops::REPLACE)));
+            .any(|o| matches!(o, Op::CallBuiltin(id, 5) if *id == ops::REPLACE)));
     }
 
     #[test]

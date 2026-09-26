@@ -3019,7 +3019,13 @@ fn splice<T: Clone>(dst: &mut Vec<Option<T>>, positions: &[usize], src: &[Option
 }
 
 /// `f(x, extra) <- value` — the replacement functions.
+///
+/// The last operand is the whole assignment's source, which is the call R
+/// reports when the replacement fails: `f<-` is a primitive and makes no
+/// context, so the error names `dim(y) <- c(4, 2)` rather than an enclosing
+/// function.
 fn b_replace(vm: &mut VM, _: u8) -> Value {
+    let text = name_of(&vm.pop());
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
@@ -3027,7 +3033,16 @@ fn b_replace(vm: &mut VM, _: u8) -> Value {
     let extra = args_of(&argv);
     match replacement(&fname, &x, &extra, &value) {
         Ok(v) => v,
-        Err(e) => abort(vm, e),
+        Err(e) => {
+            if !text.is_empty() {
+                with_host(|h| {
+                    if h.error.is_none() {
+                        h.set_error_call(Some(text));
+                    }
+                });
+            }
+            abort(vm, e)
+        }
     }
 }
 
@@ -3052,9 +3067,43 @@ fn replacement(
             with_host(|h| h.set_attr(&out, "class", value.clone()));
             Ok(out)
         }
+        // R's `do_dimgets` / `dimgets`: `NULL` drops the dimensions and their
+        // labels; anything else must be non-empty, non-missing, non-negative
+        // and multiply out to the object's length, and setting it drops the
+        // names and the old dimnames.
         "dim" => {
-            let d = mk_int(as_int(value));
-            with_host(|h| h.set_attr(&out, "dim", d));
+            let none = null();
+            if is_null(value) {
+                with_host(|h| {
+                    h.set_attr(&out, "dim", none.clone());
+                    h.set_attr(&out, "dimnames", none);
+                });
+                return Ok(out);
+            }
+            let dims = as_int(value);
+            if dims.is_empty() {
+                return Err("length-0 dimension vector is invalid".into());
+            }
+            let mut total: i64 = 1;
+            for d in &dims {
+                match d {
+                    None => return Err("the dims contain missing values".into()),
+                    Some(d) if *d < 0 => return Err("the dims contain negative values".into()),
+                    Some(d) => total = total.saturating_mul(*d),
+                }
+            }
+            let n = len(x) as i64;
+            if total != n {
+                return Err(format!(
+                    "dims [product {total}] do not match the length of object [{n}]"
+                ));
+            }
+            let d = mk_int(dims);
+            with_host(|h| {
+                h.set_attr(&out, "names", none.clone());
+                h.set_attr(&out, "dimnames", none);
+                h.set_attr(&out, "dim", d);
+            });
             Ok(out)
         }
         "attr" => {
