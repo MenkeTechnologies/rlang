@@ -6886,7 +6886,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             let n = d.len();
             let margin: Vec<Option<i64>> = as_int(&a.req(1, "MARGIN")?);
-            if margin.is_empty() || margin.iter().any(|m| m.is_none_or(|m| m < 1 || m as usize > n)) {
+            if margin.is_empty() || margin.iter().any(|m| !matches!(m, Some(m) if *m >= 1 && *m as usize <= n)) {
                 return Err("incorrect value for 'MARGIN'".into());
             }
             let margin: Vec<usize> = margin.into_iter().flatten().map(|m| m as usize - 1).collect();
