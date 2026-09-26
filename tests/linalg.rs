@@ -50,7 +50,9 @@ fn solve_inverts_and_solves_with_rs_bits() {
     // … and past LAPACK's 64-column block, where dgetrf stops being one
     // recursive dgetrf2 and updates the trailing matrix panel by panel.
     assert_eq!(
-        merged(&format!("{BIG}; cat(sprintf('%a', solve(a(70))[c(1, 2450, 4900)]))")),
+        merged(&format!(
+            "{BIG}; cat(sprintf('%a', solve(a(70))[c(1, 2450, 4900)]))"
+        )),
         "-0x1.fd19cb405f807p-9 -0x1.e855f8eb9fb05p-13 -0x1.fc64e80b95492p-10"
     );
 }
@@ -92,12 +94,18 @@ fn solve_raises_rs_errors_from_solve_default() {
 
 #[test]
 fn det_and_determinant() {
-    assert_eq!(merged("print(det(matrix(c(1,2,3,4,5,6,7,8,10),3)))"), "[1] -3\n");
+    assert_eq!(
+        merged("print(det(matrix(c(1,2,3,4,5,6,7,8,10),3)))"),
+        "[1] -3\n"
+    );
     assert_eq!(
         merged("print(determinant(matrix(1:4,2)))"),
         "$modulus\n[1] 0.6931472\nattr(,\"logarithm\")\n[1] TRUE\n\n$sign\n[1] -1\n\nattr(,\"class\")\n[1] \"det\"\n"
     );
-    assert_eq!(merged("print(det(matrix(c(NA,1,2,3),2))); print(det(matrix(0,0,0)))"), "[1] NA\n[1] 1\n");
+    assert_eq!(
+        merged("print(det(matrix(c(NA,1,2,3),2))); print(det(matrix(0,0,0)))"),
+        "[1] NA\n[1] 1\n"
+    );
     assert_eq!(
         merged("det(matrix(1:6,2))"),
         "Error in determinant.matrix(x, logarithm = TRUE, ...) : \n  'x' must be a square matrix\n\
@@ -116,19 +124,36 @@ fn matrix_products_sum_as_rs_blas_does() {
     // lanes; crossprod with a one-column side goes the same way.
     let setup = "v <- ((seq_len(9) * 29) %% 31 - 15) / 3; i <- seq_len(81); a <- matrix(((i * i * 31 + i * 17) %% 1009 - 504) / 7, 9)";
     let want = "-0x1.02e79e79e79e8p+9 -0x1.e0c30c30c30bfp+5 0x1.9186186186188p+5";
-    assert_eq!(merged(&format!("{setup}; cat(sprintf('%a', v %*% a)[1:3])")), want);
-    assert_eq!(merged(&format!("{setup}; cat(sprintf('%a', crossprod(a, v))[1:3])")), want);
+    assert_eq!(
+        merged(&format!("{setup}; cat(sprintf('%a', v %*% a)[1:3])")),
+        want
+    );
+    assert_eq!(
+        merged(&format!(
+            "{setup}; cat(sprintf('%a', crossprod(a, v))[1:3])"
+        )),
+        want
+    );
     // An NA is propagated, not read as zero.
-    assert_eq!(merged("print(matrix(c(NA,1,2,3),2) %*% c(1,1))"), "     [,1]\n[1,]   NA\n[2,]    4\n");
+    assert_eq!(
+        merged("print(matrix(c(NA,1,2,3),2) %*% c(1,1))"),
+        "     [,1]\n[1,]   NA\n[2,]    4\n"
+    );
     // outer's default "*" is a matrix product: double, whatever the inputs.
     assert_eq!(merged("print(typeof(outer(1:3, 1:2)))"), "[1] \"double\"\n");
     // A vector is one column to tcrossprod.
-    assert_eq!(merged("print(tcrossprod(1:2))"), "     [,1] [,2]\n[1,]    1    2\n[2,]    2    4\n");
+    assert_eq!(
+        merged("print(tcrossprod(1:2))"),
+        "     [,1] [,2]\n[1,]    1    2\n[2,]    2    4\n"
+    );
 }
 
 #[test]
 fn array_index_helpers() {
-    assert_eq!(merged("print(arrayInd(5, c(2,3)))"), "     [,1] [,2]\n[1,]    1    3\n");
+    assert_eq!(
+        merged("print(arrayInd(5, c(2,3)))"),
+        "     [,1] [,2]\n[1,]    1    3\n"
+    );
     assert_eq!(
         merged("print(arrayInd(c(2,5), c(2,3), list(c('a','b'), NULL), useNames=TRUE))"),
         "  row col\nb   2   1\na   1   3\n"

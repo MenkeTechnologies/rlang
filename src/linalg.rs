@@ -143,8 +143,11 @@ pub fn gemv_t_dot(terms: impl Iterator<Item = (f64, f64)>) -> f64 {
     for (k, &(x, y)) in terms[..body].iter().enumerate() {
         lane[k % 8] = x.mul_add(y, lane[k % 8]);
     }
-    let sum = ((lane[0] + lane[1]) + (lane[2] + lane[3])) + ((lane[4] + lane[5]) + (lane[6] + lane[7]));
-    terms[body..].iter().fold(sum, |acc, &(x, y)| x.mul_add(y, acc))
+    let sum =
+        ((lane[0] + lane[1]) + (lane[2] + lane[3])) + ((lane[4] + lane[5]) + (lane[6] + lane[7]));
+    terms[body..]
+        .iter()
+        .fold(sum, |acc, &(x, y)| x.mul_add(y, acc))
 }
 
 /// The row blocks a triangular-solve kernel visits, as `(first row, rows)`:
@@ -190,7 +193,10 @@ fn trsm(tm: &[f64], t: At, m: usize, b: &mut [f64], bt: At, n: usize, tri: Tri) 
             // below it for an upper one.
             let done = if lower { 0..r0 } else { r0 + sz..m };
             for row in rows.clone() {
-                let terms: Vec<(f64, f64)> = done.clone().map(|k| (tm[t.ix(row, k)], b[bt.ix(k, j)])).collect();
+                let terms: Vec<(f64, f64)> = done
+                    .clone()
+                    .map(|k| (tm[t.ix(row, k)], b[bt.ix(k, j)]))
+                    .collect();
                 let ix = bt.ix(row, j);
                 b[ix] = gemm_acc(b[ix], terms.into_iter());
             }
@@ -222,7 +228,15 @@ fn trsm(tm: &[f64], t: At, m: usize, b: &mut [f64], bt: At, n: usize, tri: Tri) 
 fn trsm_in_place(a: &mut [f64], t: At, m: usize, bt: At, n: usize) {
     let tri: Vec<f64> = (0..m * m).map(|x| a[t.ix(x % m, x / m)]).collect();
     let mut rhs: Vec<f64> = (0..m * n).map(|x| a[bt.ix(x % m, x / m)]).collect();
-    trsm(&tri, At { off: 0, lda: m }, m, &mut rhs, At { off: 0, lda: m }, n, Tri::LowerUnit);
+    trsm(
+        &tri,
+        At { off: 0, lda: m },
+        m,
+        &mut rhs,
+        At { off: 0, lda: m },
+        n,
+        Tri::LowerUnit,
+    );
     for (x, v) in rhs.into_iter().enumerate() {
         a[bt.ix(x % m, x / m)] = v;
     }
@@ -284,7 +298,15 @@ fn dgetrf2(a: &mut [f64], at: At, m: usize, n: usize, ipiv: &mut [usize]) -> usi
     // A12 := L11⁻¹ A12 (dtrsm Left Lower NoTrans Unit), then
     // A22 := A22 - A21 A12 (dgemm, alpha = -1, beta = 1).
     trsm_in_place(a, at, n1, at.sub(0, n1), n2);
-    gemm_sub(a, at.sub(n1, n1), m - n1, n2, at.sub(n1, 0), at.sub(0, n1), n1);
+    gemm_sub(
+        a,
+        at.sub(n1, n1),
+        m - n1,
+        n2,
+        at.sub(n1, 0),
+        at.sub(0, n1),
+        n1,
+    );
     let k = m.min(n);
     let iinfo = dgetrf2(a, at.sub(n1, n1), m - n1, n2, &mut ipiv[n1..]);
     if info == 0 && iinfo > 0 {
@@ -327,7 +349,15 @@ pub fn lu(a: &mut [f64], n: usize) -> (Vec<usize>, usize) {
             let rest = n - j - jb;
             dlaswp(a, at.sub(0, j + jb), rest, j, j + jb, &ipiv);
             trsm_in_place(a, at.sub(j, j), jb, at.sub(j, j + jb), rest);
-            gemm_sub(a, at.sub(j + jb, j + jb), rest, rest, at.sub(j + jb, j), at.sub(j, j + jb), jb);
+            gemm_sub(
+                a,
+                at.sub(j + jb, j + jb),
+                rest,
+                rest,
+                at.sub(j + jb, j),
+                at.sub(j, j + jb),
+                jb,
+            );
         }
     }
     (ipiv, info)
@@ -471,7 +501,10 @@ impl Lacn2 {
                 self.v.copy_from_slice(x);
                 let estold = self.est;
                 self.est = dasum(&self.v);
-                let repeated = x.iter().zip(&self.isgn).all(|(e, s)| sign1(*e) as i32 == *s);
+                let repeated = x
+                    .iter()
+                    .zip(&self.isgn)
+                    .all(|(e, s)| sign1(*e) as i32 == *s);
                 if repeated || self.est <= estold {
                     return self.alternating(x);
                 }

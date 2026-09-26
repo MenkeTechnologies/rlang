@@ -6833,7 +6833,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `dim1`… — or the dimnames' own names when it has any.
         "arrayInd" => {
             let ind = as_dbl(&a.req(0, "ind")?);
-            let dims: Vec<i64> = as_int(&a.req(1, ".dim")?).into_iter().map(|d| d.unwrap_or(0)).collect();
+            let dims: Vec<i64> = as_int(&a.req(1, ".dim")?)
+                .into_iter()
+                .map(|d| d.unwrap_or(0))
+                .collect();
             let dimnames = a.get(2, ".dimnames").filter(|v| !is_null(v));
             let use_names = a.get(3, "useNames").and_then(|v| lgl1(&v)).unwrap_or(false);
             let (m, rank) = (ind.len(), dims.len());
@@ -6863,7 +6866,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     None => null(),
                 };
                 let own: Vec<Option<String>> = dimnames.as_ref().map(names_of).unwrap_or_default();
-                let cols: Vec<Option<String>> = if own.iter().any(|n| n.as_deref().is_some_and(|s| !s.is_empty())) {
+                let cols: Vec<Option<String>> = if own
+                    .iter()
+                    .any(|n| n.as_deref().is_some_and(|s| !s.is_empty()))
+                {
                     own
                 } else if rank == 2 {
                     vec![Some("row".into()), Some("col".into())]
@@ -6881,15 +6887,26 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "slice.index" => {
             let x = a.req(0, "x")?;
             let d: Vec<usize> = match with_host(|h| h.attr(&x, "dim")) {
-                Some(dv) => as_int(&dv).into_iter().map(|e| e.unwrap_or(0) as usize).collect(),
+                Some(dv) => as_int(&dv)
+                    .into_iter()
+                    .map(|e| e.unwrap_or(0) as usize)
+                    .collect(),
                 None => vec![len(&x)],
             };
             let n = d.len();
             let margin: Vec<Option<i64>> = as_int(&a.req(1, "MARGIN")?);
-            if margin.is_empty() || margin.iter().any(|m| !matches!(m, Some(m) if *m >= 1 && *m as usize <= n)) {
+            if margin.is_empty()
+                || margin
+                    .iter()
+                    .any(|m| !matches!(m, Some(m) if *m >= 1 && *m as usize <= n))
+            {
                 return Err("incorrect value for 'MARGIN'".into());
             }
-            let margin: Vec<usize> = margin.into_iter().flatten().map(|m| m as usize - 1).collect();
+            let margin: Vec<usize> = margin
+                .into_iter()
+                .flatten()
+                .map(|m| m as usize - 1)
+                .collect();
             let total: usize = d.iter().product();
             let mut cells = Vec::with_capacity(total);
             for p in 0..total {
@@ -7211,7 +7228,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "x")?;
             let generic = "determinant(x, logarithm = TRUE, ...)";
             push_context(generic);
-            let z = determinant_generic(&x, true, "determinant.matrix(x, logarithm = TRUE, ...)", Some(generic));
+            let z = determinant_generic(
+                &x,
+                true,
+                "determinant.matrix(x, logarithm = TRUE, ...)",
+                Some(generic),
+            );
             with_host(|h| h.calls.pop());
             let (modulus, sign) = z.map(|z| {
                 let e = elements(&z);
@@ -8801,8 +8823,14 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
     // An `NA` rides as R's NaN payload so it propagates the way it does in R
     // instead of counting as zero.
     let na = crate::linalg::na_real;
-    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
-    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let a: Vec<f64> = as_dbl(x)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
+    let b: Vec<f64> = as_dbl(y)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
     if ac != br {
         return mk_dbl(vec![None]);
     }
@@ -8842,15 +8870,25 @@ fn tcrossprod(x: &Value, y: &Value) -> Value {
         return mk_dbl(vec![None]);
     }
     let na = crate::linalg::na_real;
-    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
-    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let a: Vec<f64> = as_dbl(x)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
+    let b: Vec<f64> = as_dbl(y)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
     let mut out = vec![0.0; xr * yr];
     for i in 0..xr {
         for j in 0..yr {
             out[j * xr + i] = (0..xc).fold(0.0, |acc, k| a[k * xr + i].mul_add(b[k * yr + j], acc));
         }
     }
-    let res = mk_dbl(out.into_iter().map(|v| (!crate::linalg::is_na_real(v)).then_some(v)).collect());
+    let res = mk_dbl(
+        out.into_iter()
+            .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
+            .collect(),
+    );
     let dim = mk_int(vec![Some(xr as i64), Some(yr as i64)]);
     with_host(|h| h.set_attr(&res, "dim", dim));
     res
@@ -8860,8 +8898,14 @@ fn tcrossprod(x: &Value, y: &Value) -> Value {
 /// two as plain vectors, column-major `X[i] * Y[j]`, always double.
 fn outer_product(x: &Value, y: &Value) -> Value {
     let na = crate::linalg::na_real;
-    let xs: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
-    let ys: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let xs: Vec<f64> = as_dbl(x)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
+    let ys: Vec<f64> = as_dbl(y)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
     let cells = ys
         .iter()
         .flat_map(|v| xs.iter().map(move |u| u.mul_add(*v, 0.0)))
@@ -8882,8 +8926,14 @@ fn crossprod(x: &Value, y: &Value) -> Value {
         return mk_dbl(vec![None]);
     }
     let na = crate::linalg::na_real;
-    let a: Vec<f64> = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(na)).collect();
-    let b: Vec<f64> = as_dbl(y).into_iter().map(|e| e.unwrap_or_else(na)).collect();
+    let a: Vec<f64> = as_dbl(x)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
+    let b: Vec<f64> = as_dbl(y)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(na))
+        .collect();
     let gemv = (xc == 1 || yc == 1) && a.iter().chain(&b).all(|v| v.is_finite());
     let mut out = vec![0.0; xc * yc];
     for i in 0..xc {
@@ -9470,20 +9520,26 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 },
                 // `%a` is C's hexadecimal floating point, as the platform libc
                 // R links against writes it.
-                'f' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => match as_dbl(&arg).get(k).and_then(|e| *e) {
-                    Some(v) if !v.is_finite() => pad(&non_finite_text(Some(v), &flags), width, &flags),
-                    Some(v) if matches!(conv, 'a' | 'A') => hex_field(v, precision, width, &flags, conv == 'A'),
-                    Some(v) => {
-                        let p = precision.unwrap_or(6);
-                        let mag = match conv {
-                            'f' => format!("{:.p$}", v.abs()),
-                            'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
-                            _ => fmt_g(v.abs(), p, conv == 'G'),
-                        };
-                        num_field(v < 0.0, mag, width, &flags)
+                'f' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => {
+                    match as_dbl(&arg).get(k).and_then(|e| *e) {
+                        Some(v) if !v.is_finite() => {
+                            pad(&non_finite_text(Some(v), &flags), width, &flags)
+                        }
+                        Some(v) if matches!(conv, 'a' | 'A') => {
+                            hex_field(v, precision, width, &flags, conv == 'A')
+                        }
+                        Some(v) => {
+                            let p = precision.unwrap_or(6);
+                            let mag = match conv {
+                                'f' => format!("{:.p$}", v.abs()),
+                                'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
+                                _ => fmt_g(v.abs(), p, conv == 'G'),
+                            };
+                            num_field(v < 0.0, mag, width, &flags)
+                        }
+                        None => pad(&non_finite_text(None, &flags), width, &flags),
                     }
-                    None => pad(&non_finite_text(None, &flags), width, &flags),
-                },
+                }
                 'x' | 'X' | 'o' => {
                     let v = as_int(&arg).get(k).and_then(|e| *e).unwrap_or(0);
                     let mag = match conv {
@@ -10156,7 +10212,13 @@ fn non_finite_text(v: Option<f64>, flags: &str) -> String {
 /// A `%a` field: sign, then the `0x` prefix, then — under the `0` flag — the
 /// zero padding, which C puts between the prefix and the digits
 /// (`%010a` of 1 is `0x00001p+0`).
-fn hex_field(v: f64, precision: Option<usize>, width: Option<usize>, flags: &str, upper: bool) -> String {
+fn hex_field(
+    v: f64,
+    precision: Option<usize>,
+    width: Option<usize>,
+    flags: &str,
+    upper: bool,
+) -> String {
     let sign = if v.is_sign_negative() {
         "-"
     } else if flags.contains('+') {
@@ -10202,7 +10264,9 @@ fn hex_float(v: f64, precision: Option<usize>, upper: bool, alt: bool) -> String
     } else {
         (1, raw, biased - 1023)
     };
-    let all: Vec<u8> = (0..13).map(|i| ((frac >> (48 - 4 * i)) & 0xF) as u8).collect();
+    let all: Vec<u8> = (0..13)
+        .map(|i| ((frac >> (48 - 4 * i)) & 0xF) as u8)
+        .collect();
     let mut digits: Vec<u8> = match precision {
         None => {
             let keep = all.iter().rposition(|&d| d != 0).map_or(0, |p| p + 1);
@@ -10236,7 +10300,11 @@ fn hex_float(v: f64, precision: Option<usize>, upper: bool, alt: bool) -> String
     };
     let hex = |d: u8| {
         let c = char::from_digit(d as u32, 16).unwrap_or('0');
-        if upper { c.to_ascii_uppercase() } else { c }
+        if upper {
+            c.to_ascii_uppercase()
+        } else {
+            c
+        }
     };
     let mut s = String::new();
     s.push(hex(lead as u8));
@@ -10942,7 +11010,9 @@ fn r_try(a: &Args) -> Result<Value, String> {
             let text = match raised_call.as_deref().and_then(|c| c.lines().next()) {
                 Some(c) => {
                     let first = msg.split('\n').next().unwrap_or("");
-                    let w = 14 + crate::strwidth::display_width(c) + crate::strwidth::display_width(first);
+                    let w = 14
+                        + crate::strwidth::display_width(c)
+                        + crate::strwidth::display_width(first);
                     let sep = if w > 75 { "\n  " } else { "" };
                     format!("Error in {c} : {sep}{msg}\n")
                 }
@@ -11036,7 +11106,10 @@ fn numeric_matrix(x: &Value) -> Option<(usize, usize, Vec<f64>)> {
     if !matches!(kind(x), RKind::Int | RKind::Dbl | RKind::Lgl) {
         return None;
     }
-    let vals = as_dbl(x).into_iter().map(|e| e.unwrap_or_else(crate::linalg::na_real)).collect();
+    let vals = as_dbl(x)
+        .into_iter()
+        .map(|e| e.unwrap_or_else(crate::linalg::na_real))
+        .collect();
     Some((*nr as usize, *nc as usize, vals))
 }
 
@@ -11084,7 +11157,10 @@ fn solve_default(a: &Args) -> Result<Value, String> {
         return Err(format!("'a' ({n} x {nc}) must be square"));
     }
     let a_cols = dimnames_part(&m, 1);
-    let tol = a.get(2, "tol").and_then(|v| num1(&v)).unwrap_or(f64::EPSILON);
+    let tol = a
+        .get(2, "tol")
+        .and_then(|v| num1(&v))
+        .unwrap_or(f64::EPSILON);
     let (mut bvals, nrhs, b_cols, is_matrix) = match a.get(1, "b") {
         None => {
             let mut id = vec![0.0; n * n];
@@ -11099,18 +11175,28 @@ fn solve_default(a: &Args) -> Result<Value, String> {
                     return Err("no right-hand side in 'b'".into());
                 }
                 if br != n {
-                    return Err(format!("'b' ({br} x {bc}) must be compatible with 'a' ({n} x {n})"));
+                    return Err(format!(
+                        "'b' ({br} x {bc}) must be compatible with 'a' ({n} x {n})"
+                    ));
                 }
                 (vals, bc, dimnames_part(&b, 1), true)
             }
             None => {
-                if with_host(|h| h.attr(&b, "dim")).is_some() || !matches!(kind(&b), RKind::Int | RKind::Dbl | RKind::Lgl) {
+                if with_host(|h| h.attr(&b, "dim")).is_some()
+                    || !matches!(kind(&b), RKind::Int | RKind::Dbl | RKind::Lgl)
+                {
                     return Err("'b' must be a numeric matrix or vector".into());
                 }
                 if len(&b) != n {
-                    return Err(format!("'b' ({} x 1) must be compatible with 'a' ({n} x {n})", len(&b)));
+                    return Err(format!(
+                        "'b' ({} x 1) must be compatible with 'a' ({n} x {n})",
+                        len(&b)
+                    ));
                 }
-                let vals = as_dbl(&b).into_iter().map(|e| e.unwrap_or_else(crate::linalg::na_real)).collect();
+                let vals = as_dbl(&b)
+                    .into_iter()
+                    .map(|e| e.unwrap_or_else(crate::linalg::na_real))
+                    .collect();
                 (vals, 1, null(), false)
             }
         },
@@ -11144,7 +11230,12 @@ fn solve_default(a: &Args) -> Result<Value, String> {
 /// (the only method base R has for a real one), else `UseMethod`'s error.
 /// `method_call` is the context the method runs under; `generic_call`, when
 /// the generic was reached from `det`, is the call already open for it.
-fn determinant_generic(x: &Value, log: bool, method_call: &str, generic_call: Option<&str>) -> Result<Value, String> {
+fn determinant_generic(
+    x: &Value,
+    log: bool,
+    method_call: &str,
+    generic_call: Option<&str>,
+) -> Result<Value, String> {
     let class = dispatch_class(x);
     if !class.iter().any(|c| c == "matrix") {
         let shown = match class.as_slice() {

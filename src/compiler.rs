@@ -421,7 +421,8 @@ fn scan_slots(
                 // its free names through the environment — so it is as unsafe
                 // as a `function` written in the source. Without this,
                 // `m <- …; r <- try(nrow(m))` read `m` as NULL.
-                if DYNAMIC_ENV_FNS.contains(&name.as_str()) || thunk_lazy_args(name, args).is_some() {
+                if DYNAMIC_ENV_FNS.contains(&name.as_str()) || thunk_lazy_args(name, args).is_some()
+                {
                     *safe = false;
                     return;
                 }
@@ -1532,7 +1533,10 @@ impl Compiler {
                     value: Box::new(value.clone()),
                     super_assign: sup,
                 };
-                let outer = std::mem::replace(&mut self.assign_text, crate::deparse::deparse_first_line(&whole));
+                let outer = std::mem::replace(
+                    &mut self.assign_text,
+                    crate::deparse::deparse_first_line(&whole),
+                );
                 let out = self.rebuild(b, target, value, sup);
                 self.assign_text = outer;
                 out?;
