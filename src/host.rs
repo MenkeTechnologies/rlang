@@ -2327,6 +2327,14 @@ pub fn call_value(
         // embedded R with marshalled arguments.
         #[cfg(not(target_arch = "wasm32"))]
         RData::RForeign(ptr) => crate::rembed::call_handle(ptr, &force_all(args)?),
+        // A function named by a string — what `match.fun` accepts, so
+        // `sapply(x, "sum")`, `Reduce("+", xs)` and `Map("paste", …)` call it.
+        RData::Str(names) if names.len() == 1 => {
+            let name = names[0].clone().unwrap_or_default();
+            let f = crate::builtins::function_named(&name)
+                .ok_or_else(|| format!("could not find function \"{name}\""))?;
+            call_value(&f, args, Some(name))
+        }
         _ => Err("attempt to apply non-function".into()),
     }
 }

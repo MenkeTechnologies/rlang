@@ -926,6 +926,13 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// The function a name resolves to in function position: a binding that is a
+/// function, else a primitive — `match.fun`'s lookup for a string.
+pub(crate) fn function_named(name: &str) -> Option<Value> {
+    with_host(|h| h.lookup_function(name))
+        .or_else(|| is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string())))))
+}
+
 /// A primitive as a first-class value, so `sapply(x, sqrt)` works.
 fn primitive_value(name: &str) -> Option<Value> {
     if let Some(v) = base_constant(name) {

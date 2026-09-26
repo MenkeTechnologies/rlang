@@ -1891,3 +1891,13 @@ k <- max
 for (i in 1:3) print(k(i, 2))
 x <- 5
 print(x + 1)
+#==#
+# The apply family, Reduce, Map and Filter take FUN as a string, as match.fun does.
+print(sapply(1:3, "sum", 10))
+print(lapply(1:2, "-"))
+print(Map("+", 1:2, 3:4))
+print(Reduce("+", 1:4))
+print(vapply(1:2, "sqrt", numeric(1)))
+print(mapply("rep", 1:2, 2:1))
+print(apply(matrix(1:4,2), 1, "max"))
+print(Filter("is.numeric", list(1,"a")))
