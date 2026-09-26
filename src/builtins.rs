@@ -7543,9 +7543,13 @@ fn concat(a: &Args) -> Value {
                 (Some(t), Some(b)) => Some(format!("{t}.{b}")),
                 (Some(t), None) if n == 1 => Some(t.clone()),
                 (Some(t), None) => Some(format!("{t}{}", i + 1)),
+                // An untagged element of a vector with no names takes the empty
+                // name — `names(c(a = 1, 2))` is `c("a", "")` — while one whose
+                // own `names` holds an `NA` keeps that `NA`.
+                (None, None) if inner.is_empty() => Some(String::new()),
                 (None, b) => b.clone(),
             };
-            any_named |= nm.is_some();
+            any_named |= tag.is_some() || !inner.is_empty();
             names.push(nm);
         }
     }

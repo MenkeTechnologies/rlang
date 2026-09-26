@@ -1662,3 +1662,10 @@ g <- factor(c("a", "b", "a"))
 levels(g) <- c("x", "y")
 print(g)
 print(as.integer(g))
+#==#
+# c() names: an untagged element with no names of its own gets "", not NA.
+print(names(c(a = 1, 2)))
+print(names(c(1, b = 2)))
+print(names(c(1, 2)))
+print(names(c(setNames(1:2, c("x", NA)), 3)))
+print(c(a = 1, 2, c = 3))
