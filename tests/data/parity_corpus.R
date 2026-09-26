@@ -1702,3 +1702,13 @@ print(names(c(1, b = 2)))
 print(names(c(1, 2)))
 print(names(c(setNames(1:2, c("x", NA)), 3)))
 print(c(a = 1, 2, c = 3))
+#==#
+# identical() on environments compares the reference, not the handle.
+print(identical(globalenv(), globalenv()))
+e1 <- new.env()
+e2 <- e1
+print(identical(e1, e2))
+print(identical(e1, new.env()))
+print(identical(list(globalenv()), list(globalenv())))
+f <- function() environment()
+print(identical(f(), f()))

@@ -8026,6 +8026,9 @@ fn identical(x: &Value, y: &Value) -> bool {
         (RData::List(a), RData::List(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(p, q)| identical(p, q))
         }
+        // An environment is a reference: two handles are identical exactly
+        // when they name the same one, however many times it was allocated.
+        (RData::Environment(a), RData::Environment(b)) => Rc::ptr_eq(&a, &b),
         _ => x == y,
     }
 }
