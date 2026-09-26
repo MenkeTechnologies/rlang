@@ -1878,3 +1878,16 @@ u <- function(a = b, b = 3) a
 print(u())
 w <- function(e = environment()) identical(e, environment())
 print(w())
+#==#
+# A top-level name bound to a function and called by that name, in a unit
+# with no closure (the native-slot path).
+g <- sum
+print(g(1, 2))
+f <- Negate(is.null)
+print(f(1))
+h <- paste
+print(do.call("h", list("a", "b")))
+k <- max
+for (i in 1:3) print(k(i, 2))
+x <- 5
+print(x + 1)

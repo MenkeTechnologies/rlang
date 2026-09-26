@@ -416,6 +416,10 @@ fn scan_slots(
                     *safe = false;
                     return;
                 }
+                // A name in function position is resolved by `GETFUN` through
+                // the environment chain, so one the program binds (`g <- sum;
+                // g(1, 2)`) has to live there, not in a slot.
+                blocked.insert(name.clone());
             }
             scan_slots(fun, safe, targets, blocked);
             for a in args {
