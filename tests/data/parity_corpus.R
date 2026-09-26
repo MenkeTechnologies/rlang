@@ -1663,6 +1663,39 @@ levels(g) <- c("x", "y")
 print(g)
 print(as.integer(g))
 #==#
+# deparse / dput of values: names written inline (quoted when not syntactic),
+# `names =` as an attribute where inline names cannot go (an `m:n` run, an NA
+# name), `structure()` for every other attribute, typed NAs only when all are
+# NA, doubles at 15 significant digits, and R's two wrap rules — a vector's
+# continuation flush left, a list's indented.
+print(deparse(list(a = 1:3, b = "z")))
+print(deparse(c(a = 1.5, b = 2)))
+print(deparse(c(`a b` = 1, 2)))
+print(deparse(c(a = 1L, b = 2L)))
+print(deparse(setNames(1:3, c("a", "", NA))))
+print(deparse(matrix(c(1.5, 2, 3, 4), 2, dimnames = list(c("r1", "r2"), NULL))))
+print(deparse(factor(c("lo", "hi", "lo"))))
+print(deparse(structure(1:3, myattr = "q", `my at` = 2)))
+print(deparse(c(NA_real_, NA_real_)))
+print(deparse(c(1, NA)))
+print(deparse(c(NA_integer_)))
+print(deparse(c("a", NA)))
+print(deparse(NA_character_))
+print(deparse(character(0)))
+print(deparse(list()))
+print(deparse(list(NULL, a = list(), list(1, "q"))))
+print(deparse(c(1/3, 1e5, 123456, 1e-20, Inf, -Inf, NaN, 0.1 + 0.2)))
+print(deparse(as.numeric(1:30)))
+print(deparse(as.list(1:25)))
+print(deparse(letters))
+print(deparse(as.numeric(1:30), width.cutoff = 20L))
+print(deparse(3:1))
+print(deparse(-1:0))
+dput(list(a = 1:3, b = "z"))
+dput(c(x = 2.5))
+y <- dput(1:3)
+print(y)
+#==#
 # c() names: an untagged element with no names of its own gets "", not NA.
 print(names(c(a = 1, 2)))
 print(names(c(1, b = 2)))

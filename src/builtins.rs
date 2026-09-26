@@ -3341,6 +3341,7 @@ pub const PRIMITIVES: &[&str] = &[
     "Vectorize",
     "toString",
     "deparse",
+    "dput",
     "rownames",
     "colnames",
     "dimnames",
@@ -4214,7 +4215,37 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if let Some(src) = function_src(&x) {
                 return Ok(mk_str(src.into_iter().map(Some).collect()));
             }
-            Ok(scalar_str(deparse_value(&x)))
+            // R accepts a `width.cutoff` in 20..=500 and falls back to 60, with
+            // a warning, for anything else.
+            let cutoff = match a.get(1, "width.cutoff").and_then(|v| num1(&v)) {
+                None => crate::deparse::CUTOFF,
+                Some(w) if (20.0..=500.0).contains(&w) => w as usize,
+                Some(_) => {
+                    signal_warning("invalid 'cutoff' value for 'deparse', using default")?;
+                    crate::deparse::CUTOFF
+                }
+            };
+            Ok(mk_str(
+                deparse_value_lines(&x, cutoff)
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
+            ))
+        }
+        // `dput(x)` writes the deparsed lines to stdout and returns `x`
+        // invisibly, which is R's `dput` with its default `control`.
+        "dput" => {
+            let x = a.get(0, "x").unwrap_or_else(null);
+            let lines = match (lang_of(&x), function_src(&x)) {
+                (Some(e), _) => crate::deparse::deparse_all_lines(&e),
+                (None, Some(src)) => src,
+                (None, None) => deparse_value_lines(&x, crate::deparse::CUTOFF),
+            };
+            let mut text = lines.join("\n");
+            text.push('\n');
+            crate::host::emit(&text);
+            with_host(|h| h.visible = false);
+            Ok(x)
         }
         "format" => {
             let x = a.req(0, "x")?;
@@ -8479,46 +8510,174 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
     res
 }
 
-/// R's `deparse` for a value (not a language object): the source text that would
-/// recreate it — `1:3`, `c(1.5, 2.5)`, `"a"`, `c("a", NA)`, `TRUE`, `NULL`.
+/// R's `deparse` for a value on one line — the text that would recreate it
+/// (`1:3`, `c(a = 1.5)`, `list(x = "q")`, `structure(1:4, dim = c(2L, 2L))`).
+/// For the callers that splice the text into a single string or parse it back.
 fn deparse_value(v: &Value) -> String {
-    let wrap = |parts: Vec<String>| {
-        if parts.len() == 1 {
-            parts.into_iter().next().unwrap()
-        } else {
-            format!("c({})", parts.join(", "))
+    deparse_value_lines(v, usize::MAX).concat()
+}
+
+/// R's `deparse` for a value, as the lines `deparse(x, width.cutoff)` returns —
+/// a port of `deparse2buff`'s value cases in GNU R's `deparse.c` under the
+/// default options (`keepNA`, `keepInteger`, `niceNames`, `showAttributes`).
+pub(crate) fn deparse_value_lines(v: &Value, cutoff: usize) -> Vec<String> {
+    let mut d = crate::deparse::Deparser::with_cutoff(cutoff);
+    deparse_value_into(&mut d, v);
+    d.finish()
+}
+
+/// Whether `v`'s names can be written inline as `c(a = 1)` / `list(a = 1)`:
+/// R's `usable_nice_names` — a `names` attribute with no `NA` and at least one
+/// non-empty name. Otherwise they travel as a `names =` attribute.
+fn nice_names(v: &Value) -> Option<Vec<Option<String>>> {
+    let names = with_host(|h| h.attr(v, "names"))?;
+    let names = as_str(&names);
+    let usable = names.iter().all(Option::is_some)
+        && names.iter().any(|n| n.as_deref().is_some_and(|s| !s.is_empty()));
+    usable.then_some(names)
+}
+
+/// The attributes `structure(…)` must carry for `v`: every one in the order
+/// `attributes()` shows, except `names` when they are written inline.
+fn structure_attrs(v: &Value, names_inline: bool) -> Vec<(String, Value)> {
+    with_host(|h| h.attrs_of(v))
+        .into_iter()
+        .filter(|(k, _)| !(names_inline && k == "names"))
+        .collect()
+}
+
+/// `deparse2buff` on a value: the `structure(` wrapper when attributes need
+/// one (`attr1`), the value itself, then `, name = value…)` (`attr2`).
+fn deparse_value_into(d: &mut crate::deparse::Deparser, v: &Value) {
+    let x = data(v);
+    // An integer run `m:n` has no slot for inline names, so its names (and an
+    // empty vector's) become a `names =` attribute: R's `STR_names`.
+    let int_seq = matches!(&x, RData::Int(xs) if int_colon(xs).is_some());
+    let names = match &x {
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) | RData::List(_) => {
+            nice_names(v)
         }
+        _ => None,
     };
-    match data(v) {
-        RData::Null => "NULL".into(),
-        // An expression deparses to itself, not to a quoted string.
-        RData::Lang(e) => crate::deparse::deparse_lines(&e),
-        RData::Sym(n) => n,
-        RData::Int(xs) => {
-            if let Some(seq) = int_colon(&xs) {
-                return seq;
+    let is_atomic = matches!(&x, RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_));
+    let names = names.filter(|_| !(is_atomic && (int_seq || len(v) == 0)));
+    let attrs = match &x {
+        RData::Null | RData::Lang(_) | RData::Sym(_) => Vec::new(),
+        _ => structure_attrs(v, names.is_some()),
+    };
+    if !attrs.is_empty() {
+        d.print("structure(");
+    }
+    match x {
+        RData::Null => d.print("NULL"),
+        RData::Lang(e) => d.expr(&e),
+        RData::Sym(n) => d.print(&n),
+        RData::List(items) => {
+            d.print("list(");
+            let mut lbreak = false;
+            for (i, it) in items.iter().enumerate() {
+                if i > 0 {
+                    d.print(", ");
+                }
+                d.linebreak(&mut lbreak);
+                if let Some(n) = names.as_ref().and_then(|ns| ns[i].as_deref()) {
+                    if !n.is_empty() {
+                        d.print(&crate::deparse::quote_tag(n));
+                        d.print(" = ");
+                    }
+                }
+                deparse_value_into(d, it);
             }
-            wrap(
-                xs.iter()
-                    .map(|e| e.map(|i| format!("{i}L")).unwrap_or_else(|| "NA".into()))
-                    .collect(),
-            )
+            d.end_break(lbreak);
+            d.print(")");
         }
-        RData::Str(xs) => wrap(
-            xs.iter()
-                .map(|e| {
-                    e.as_ref()
-                        .map(|s| format!("\"{}\"", encode_string(s)))
-                        .unwrap_or_else(|| "NA".into())
-                })
-                .collect(),
-        ),
-        _ => wrap(
-            as_str(v)
-                .into_iter()
-                .map(|s| s.unwrap_or_else(|| "NA".into()))
-                .collect(),
-        ),
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) => {
+            deparse_atomic(d, v, names.as_deref())
+        }
+        _ => match function_src(v) {
+            Some(lines) => {
+                for (i, l) in lines.iter().enumerate() {
+                    if i > 0 {
+                        d.writeline();
+                    }
+                    d.print(l);
+                }
+            }
+            None => d.print("NULL"),
+        },
+    }
+    for (k, a) in &attrs {
+        d.print(", ");
+        d.print(&crate::deparse::quote_tag(k));
+        d.print(" = ");
+        deparse_value_into(d, a);
+    }
+    if !attrs.is_empty() {
+        d.print(")");
+    }
+}
+
+/// `vector2buff`: an atomic vector's elements, `m:n` for an integer run, and
+/// `integer(0)` & co. for an empty one. An `NA` is spelled by its type
+/// (`NA_integer_`, `NA_real_`, `NA_character_`) only when every element is
+/// `NA` — inside a vector with a value it is the bare `NA`.
+fn deparse_atomic(d: &mut crate::deparse::Deparser, v: &Value, names: Option<&[Option<String>]>) {
+    let n = len(v);
+    let x = data(v);
+    if n == 0 {
+        d.print(match x {
+            RData::Lgl(_) => "logical(0)",
+            RData::Int(_) => "integer(0)",
+            RData::Str(_) => "character(0)",
+            _ => "numeric(0)",
+        });
+        return;
+    }
+    if let RData::Int(xs) = &x {
+        if let Some(seq) = int_colon(xs) {
+            d.print(&seq);
+            return;
+        }
+    }
+    // Doubles are written at R's `DBL_DIG` (15) significant digits, not
+    // the 7 `print` uses, so the text reads back to the same number.
+    let text = crate::host::with_print_digits(15, || as_str(v));
+    let all_na = text.iter().all(Option::is_none);
+    let typed_na = match x {
+        RData::Int(_) => "NA_integer_",
+        RData::Dbl(_) => "NA_real_",
+        RData::Str(_) => "NA_character_",
+        _ => "NA",
+    };
+    let wrap = n > 1 || names.is_some();
+    if wrap {
+        d.print("c(");
+    }
+    for i in 0..n {
+        if let Some(name) = names.and_then(|ns| ns[i].as_deref()) {
+            if !name.is_empty() {
+                d.print(&crate::deparse::quote_tag(name));
+                d.print(" = ");
+            }
+        }
+        let cell = match (&x, &text[i]) {
+            (_, None) if all_na => typed_na.to_string(),
+            (_, None) => "NA".to_string(),
+            (RData::Str(_), Some(s)) => format!("\"{}\"", encode_string(s)),
+            (RData::Int(_), Some(s)) => format!("{s}L"),
+            (_, Some(s)) => s.clone(),
+        };
+        d.print(&cell);
+        if i + 1 < n {
+            d.print(", ");
+        }
+        // Only a `c(…)` run wraps; a lone element never ends its line.
+        if wrap {
+            d.wrap_vector();
+        }
+    }
+    if wrap {
+        d.print(")");
     }
 }
 

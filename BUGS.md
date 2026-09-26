@@ -319,7 +319,10 @@ run that compared nothing — no cases generated, or an oracle that never answer
   because rlang has no per-builtin formals table — the reference corpus's
   signatures describe what rlang reads, not what R declares. `deparse(sum)` is
   exact.
-- **No `str()`, `summary()`, or `dput()`.**
+- **`str()` and `dput()` are native; `summary()` is not.** `dput` and
+  `deparse` of a value port `deparse.c`'s value cases: inline names, `structure()`
+  for other attributes, typed `NA`s, 15-digit doubles and the `width.cutoff`
+  wrap. `summary()` has no primitive and runs in the embedded GNU R.
 
 ## Text
 

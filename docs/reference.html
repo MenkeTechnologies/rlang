@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 279 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 289 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.6 &middot; 299 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.6 &middot; 309 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,22 +130,22 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 279 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 289 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
-        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">20</span></li>
+        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">23</span></li>
         <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
         <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
         <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">24</span></li>
+        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">30</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">17</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">60</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">61</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -363,7 +363,7 @@
     </section>
     <section class="tutorial-section" id="ch-output-and-the-inlineminusrust-ffi">
       <h2>Output and the inline-Rust FFI</h2>
-      <p class="chapter-meta">20 entries</p>
+      <p class="chapter-meta">23 entries</p>
       <article class="doc-entry" id="doc-rust">
         <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>.rust</code></h3>
         <pre><code class="lang-r r">.rust(code)
@@ -424,6 +424,18 @@
 </code></pre>
         <p>Return the argument unchanged — useful as a default FUN in the apply family.</p>
       </article>
+      <article class="doc-entry" id="doc-force">
+        <h3><a class="doc-anchor" href="#doc-force">#</a> <code>force</code></h3>
+        <pre><code class="lang-r r">force(x)
+</code></pre>
+        <p>Return the argument, having evaluated it. Written for its effect inside a closure factory, where it forces a promise that would otherwise be evaluated after the loop variable had moved on. Like identity it passes the argument's visibility through, so force(invisible(1)) prints nothing.</p>
+      </article>
+      <article class="doc-entry" id="doc-withvisible">
+        <h3><a class="doc-anchor" href="#doc-withvisible">#</a> <code>withVisible</code></h3>
+        <pre><code class="lang-r r">withVisible(x)
+</code></pre>
+        <p>Evaluate x and report whether its value would auto-print, as a list with elements `value` and `visible`. withVisible(invisible(1))$visible is FALSE; the list itself prints.</p>
+      </article>
       <article class="doc-entry" id="doc-paste">
         <h3><a class="doc-anchor" href="#doc-paste">#</a> <code>paste</code></h3>
         <pre><code class="lang-r r">paste(..., sep = " ", collapse = NULL)
@@ -444,9 +456,15 @@
       </article>
       <article class="doc-entry" id="doc-deparse">
         <h3><a class="doc-anchor" href="#doc-deparse">#</a> <code>deparse</code></h3>
-        <pre><code class="lang-r r">deparse(expr)
+        <pre><code class="lang-r r">deparse(expr, width.cutoff = 60L)
 </code></pre>
-        <p>R source text for a value: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, and longer vectors are wrapped in c(). A closure deparses to its source lines, one character element per line, under R's own keep.source = FALSE layout rules. Because arguments are evaluated eagerly, this deparses the value, never the unevaluated expression.</p>
+        <p>R source text for a value, one element per output line: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, names are written inline (`c(a = 1)`, `list(x = "q")`) when they can be, an all-NA vector spells its type (`NA_integer_`), a list is `list(...)`, and any other attribute wraps the value in `structure(..., dim = c(2L, 2L))`. Lines wrap past `width.cutoff` (20 to 500) the way R's do: a vector's continuation is flush left, a list's is indented. A closure deparses to its source lines under R's own keep.source = FALSE layout rules.</p>
+      </article>
+      <article class="doc-entry" id="doc-dput">
+        <h3><a class="doc-anchor" href="#doc-dput">#</a> <code>dput</code></h3>
+        <pre><code class="lang-r r">dput(x)
+</code></pre>
+        <p>Writes the deparse of `x` to stdout, one line per line, and returns `x` invisibly.</p>
       </article>
       <article class="doc-entry" id="doc-format">
         <h3><a class="doc-anchor" href="#doc-format">#</a> <code>format</code></h3>
@@ -1155,7 +1173,7 @@
     </section>
     <section class="tutorial-section" id="ch-strings-and-regular-expressions">
       <h2>Strings and regular expressions</h2>
-      <p class="chapter-meta">24 entries</p>
+      <p class="chapter-meta">30 entries</p>
       <article class="doc-entry" id="doc-nchar">
         <h3><a class="doc-anchor" href="#doc-nchar">#</a> <code>nchar</code></h3>
         <pre><code class="lang-r r">nchar(x, type = "chars")
@@ -1276,11 +1294,47 @@
 </code></pre>
         <p>A list with every match position for each element, each vector carrying its own `match.length`.</p>
       </article>
+      <article class="doc-entry" id="doc-regexec">
+        <h3><a class="doc-anchor" href="#doc-regexec">#</a> <code>regexec</code></h3>
+        <pre><code class="lang-r r">regexec(pattern, text)
+</code></pre>
+        <p>A list whose element per text is the first match's position followed by each capture group's, with the widths on `match.length`.</p>
+      </article>
       <article class="doc-entry" id="doc-regmatches">
         <h3><a class="doc-anchor" href="#doc-regmatches">#</a> <code>regmatches</code></h3>
         <pre><code class="lang-r r">regmatches(x, m)
 </code></pre>
         <p>The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter.</p>
+      </article>
+      <article class="doc-entry" id="doc-str">
+        <h3><a class="doc-anchor" href="#doc-str">#</a> <code>str</code></h3>
+        <pre><code class="lang-r r">str(object)
+</code></pre>
+        <p>A one-line-per-level sketch of a value: its type, dimensions, first few elements and attributes.</p>
+      </article>
+      <article class="doc-entry" id="doc-tempfile">
+        <h3><a class="doc-anchor" href="#doc-tempfile">#</a> <code>tempfile</code></h3>
+        <pre><code class="lang-r r">tempfile(pattern = "file", tmpdir = tempdir(), fileext = "")
+</code></pre>
+        <p>A path under the temporary directory that no file occupies yet — naming one does not create it.</p>
+      </article>
+      <article class="doc-entry" id="doc-readlines">
+        <h3><a class="doc-anchor" href="#doc-readlines">#</a> <code>readLines</code></h3>
+        <pre><code class="lang-r r">readLines(con)
+</code></pre>
+        <p>The lines of a file as a character vector, without their newlines; a final line with no newline is still a line.</p>
+      </article>
+      <article class="doc-entry" id="doc-file-exists">
+        <h3><a class="doc-anchor" href="#doc-file-exists">#</a> <code>file.exists</code></h3>
+        <pre><code class="lang-r r">file.exists(...)
+</code></pre>
+        <p>TRUE for each path that exists, vectorized over its argument.</p>
+      </article>
+      <article class="doc-entry" id="doc-unlink">
+        <h3><a class="doc-anchor" href="#doc-unlink">#</a> <code>unlink</code></h3>
+        <pre><code class="lang-r r">unlink(x, recursive = FALSE)
+</code></pre>
+        <p>Remove the named files, answering 0 when there is nothing left to remove (a missing path included) and 1 on failure. Invisible.</p>
       </article>
       <article class="doc-entry" id="doc-trimws">
         <h3><a class="doc-anchor" href="#doc-trimws">#</a> <code>trimws</code></h3>
@@ -1509,7 +1563,7 @@
     </section>
     <section class="tutorial-section" id="ch-environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">60 entries</p>
+      <p class="chapter-meta">61 entries</p>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1544,7 +1598,13 @@
         <h3><a class="doc-anchor" href="#doc-missing">#</a> <code>missing</code></h3>
         <pre><code class="lang-r r">missing(x)
 </code></pre>
-        <p>TRUE when the name is not bound in the current call frame. The argument is evaluated first, so missing(v) on an unsupplied parameter raises "object 'v' not found"; the quoted form missing("v") is the portable spelling and works in both engines.</p>
+        <p>TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. R accepts the quoted spelling missing("v") as well, and so does this.</p>
+      </article>
+      <article class="doc-entry" id="doc-nargs">
+        <h3><a class="doc-anchor" href="#doc-nargs">#</a> <code>nargs</code></h3>
+        <pre><code class="lang-r r">nargs()
+</code></pre>
+        <p>How many arguments the caller passed to the function this is called from, counting each element of ... separately and counting nothing for a formal left to its default. Zero at top level.</p>
       </article>
       <article class="doc-entry" id="doc-return">
         <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>

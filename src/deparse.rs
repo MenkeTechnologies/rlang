@@ -30,11 +30,11 @@ use crate::ast::{Arg, BinOp, Expr, IndexKind, NaKind, Param, UnOp};
 use crate::host::{fixed_decimals, render_fixed, render_sci, sci_decimals};
 
 /// R's `width.cutoff` default for `deparse`.
-const CUTOFF: usize = 60;
+pub(crate) const CUTOFF: usize = 60;
 
 /// The deparse buffer: R's `LocalParseData`, minus the options rlang has no
 /// use for.
-struct Deparser {
+pub(crate) struct Deparser {
     lines: Vec<String>,
     buf: String,
     /// Bytes on the current line, indentation included — R counts `strlen`.
@@ -42,10 +42,16 @@ struct Deparser {
     indent: usize,
     startline: bool,
     incurly: usize,
+    /// `width.cutoff`: the line length past which a wrap point breaks.
+    cutoff: usize,
 }
 
 impl Deparser {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        Self::with_cutoff(CUTOFF)
+    }
+
+    pub(crate) fn with_cutoff(cutoff: usize) -> Self {
         Deparser {
             lines: Vec::new(),
             buf: String::new(),
@@ -53,11 +59,12 @@ impl Deparser {
             indent: 0,
             startline: true,
             incurly: 0,
+            cutoff,
         }
     }
 
     /// `print2buff`: append text, tabbing over first if this is a line's start.
-    fn print(&mut self, s: &str) {
+    pub(crate) fn print(&mut self, s: &str) {
         if self.startline {
             self.startline = false;
             self.tabs(self.indent);
@@ -79,7 +86,7 @@ impl Deparser {
 
     /// `writeline`: flush the current line (trailing spaces and all — R keeps
     /// them, which is why a deparsed header is `"function (x) "`).
-    fn writeline(&mut self) {
+    pub(crate) fn writeline(&mut self) {
         self.lines.push(std::mem::take(&mut self.buf));
         self.len = 0;
         self.startline = true;
@@ -87,8 +94,8 @@ impl Deparser {
 
     /// `linebreak`: wrap past the cutoff, indenting the continuation once for
     /// the whole operator/argument run.
-    fn linebreak(&mut self, lbreak: &mut bool) {
-        if self.len > CUTOFF {
+    pub(crate) fn linebreak(&mut self, lbreak: &mut bool) {
+        if self.len > self.cutoff {
             if !*lbreak {
                 *lbreak = true;
                 self.indent += 1;
@@ -97,7 +104,23 @@ impl Deparser {
         }
     }
 
-    fn finish(mut self) -> Vec<String> {
+    /// Close a run that [`Self::linebreak`] may have indented.
+    pub(crate) fn end_break(&mut self, lbreak: bool) {
+        if lbreak {
+            self.indent -= 1;
+        }
+    }
+
+    /// The wrap an atomic vector's elements take (`vector2buff`): past the
+    /// cutoff the line simply ends — the continuation is *not* indented, unlike
+    /// the argument and list runs [`Self::linebreak`] wraps.
+    pub(crate) fn wrap_vector(&mut self) {
+        if self.len > self.cutoff {
+            self.writeline();
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Vec<String> {
         if !self.startline || !self.buf.is_empty() {
             self.writeline();
         }
@@ -167,7 +190,7 @@ impl Deparser {
         self.expr(rhs);
     }
 
-    fn expr(&mut self, e: &Expr) {
+    pub(crate) fn expr(&mut self, e: &Expr) {
         match e {
             Expr::Num(n) => {
                 let s = num_literal(*n);
@@ -515,6 +538,17 @@ pub fn is_syntactic_name(s: &str) -> bool {
             | "next"
             | "break"
     )
+}
+
+/// A name written as a tag — an element name in `c(…)`/`list(…)` or an
+/// attribute name in `structure(…)` — which R quotes with `"` rather than
+/// backticks when it is not syntactic: `c("a b" = 1)`.
+pub(crate) fn quote_tag(s: &str) -> String {
+    if is_syntactic_name(s) {
+        s.to_string()
+    } else {
+        format!("\"{}\"", crate::builtins::encode_string(s))
+    }
 }
 
 fn quote_name(s: &str) -> String {

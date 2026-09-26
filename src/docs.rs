@@ -330,8 +330,13 @@ const OUTPUT: &[Entry] = &[
     ),
     (
         "deparse",
-        "deparse(expr)",
-        "R source text for a value: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, and longer vectors are wrapped in c(). A closure deparses to its source lines, one character element per line, under R's own keep.source = FALSE layout rules. Because arguments are evaluated eagerly, this deparses the value, never the unevaluated expression.",
+        "deparse(expr, width.cutoff = 60L)",
+        "R source text for a value, one element per output line: a run of consecutive integers deparses as `a:b`, other integers carry the L suffix, strings are quoted and escaped, names are written inline (`c(a = 1)`, `list(x = \"q\")`) when they can be, an all-NA vector spells its type (`NA_integer_`), a list is `list(...)`, and any other attribute wraps the value in `structure(..., dim = c(2L, 2L))`. Lines wrap past `width.cutoff` (20 to 500) the way R's do: a vector's continuation is flush left, a list's is indented. A closure deparses to its source lines under R's own keep.source = FALSE layout rules.",
+    ),
+    (
+        "dput",
+        "dput(x)",
+        "Writes the deparse of `x` to stdout, one line per line, and returns `x` invisibly.",
     ),
     (
         "format",
