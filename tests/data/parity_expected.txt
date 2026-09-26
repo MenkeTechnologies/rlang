@@ -2035,3 +2035,62 @@ List of 2
  $ a:<environment: R_GlobalEnv> 
  $ b:List of 1
   ..$ e:<environment: R_GlobalEnv> 
+#==#
+[1] 2
+$class
+[1] "money"
+
+$foo
+[1] "bar"
+
+$foo
+[1] "bar"
+
+$b
+[1] 2
+
+$a
+[1] 1
+
+$a
+[1] 1
+
+$a
+[1] 1
+
+$foo
+[1] "bar"
+
+NULL
+$foo
+[1] "bar"
+
+NULL
+a b 
+2 4 
+    a     b 
+ TRUE FALSE 
+    a     b 
+ TRUE FALSE 
+a b 
+2 3 
+x y 
+2 4 
+  p q
+a 2 4
+b 3 5
+  p q
+a 2 6
+b 4 8
+      p    q
+a FALSE TRUE
+b FALSE TRUE
+     p    q
+a TRUE TRUE
+b TRUE TRUE
+[1] 2 4 6
+attr(,"units")
+[1] "cm"
+[1] 2
+attr(,"class")
+[1] "money"

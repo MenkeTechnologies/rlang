@@ -1295,6 +1295,11 @@ fn b_unop(vm: &mut VM, _: u8) -> Value {
         other => return abort(vm, format!("invalid unary operator '{other}'")),
     };
     carry_attrs(&out, &x, &x);
+    // Negation keeps every attribute of its operand, and so does `!` on a
+    // logical — R duplicates the operand and overwrites its values.
+    if op == "-" || kind(&x) == RKind::Lgl {
+        copy_most_attrs(&out, &x);
+    }
     out
 }
 
@@ -1602,16 +1607,42 @@ fn recycle_len(a: usize, b: usize) -> Result<usize, String> {
     Ok(hi)
 }
 
-/// Copy `names`/`dim`/`dimnames` from the operand that shaped the result.
+/// Give a binary operator's result its shape, the way R's arithmetic, relop
+/// and logic code all do: `dim` from whichever operand is an array (the left
+/// one first), with the left operand's `dimnames` or else the right's; with no
+/// array, the left operand's `names` when they fit the result, else the
+/// right's — so `1:2 + c(a = 1, b = 2)` is named `a b`.
 ///
 /// `dimnames` travels with `dim` — a result that keeps a matrix's shape keeps
-/// its row/column labels too, so `dimnames(m + 1)` is `dimnames(m)`. Dropping it
-/// printed every derived matrix with bare `[,1]` headers instead of the names.
+/// its row/column labels too, so `dimnames(m + 1)` is `dimnames(m)`.
 fn carry_attrs(out: &Value, lhs: &Value, rhs: &Value) {
-    let src = if len(lhs) >= len(rhs) { lhs } else { rhs };
-    for key in ["names", "dim", "dimnames"] {
-        if let Some(a) = with_host(|h| h.attr(src, key)) {
-            with_host(|h| h.set_attr(out, key, a));
+    let attr = |v: &Value, k: &str| with_host(|h| h.attr(v, k));
+    let set = |k: &str, a: Value| with_host(|h| h.set_attr(out, k, a));
+    if let Some(dim) = attr(lhs, "dim").or_else(|| attr(rhs, "dim")) {
+        set("dim", dim);
+        if let Some(dn) = attr(lhs, "dimnames").or_else(|| attr(rhs, "dimnames")) {
+            set("dimnames", dn);
+        }
+        return;
+    }
+    let n = len(out);
+    let fits = |v: &Value| attr(v, "names").filter(|nm| len(nm) == n);
+    if let Some(names) = fits(lhs).or_else(|| fits(rhs)) {
+        set("names", names);
+    }
+}
+
+/// R's `copyMostAttrib`: every attribute of `from` but `names`, `dim` and
+/// `dimnames`, which [`carry_attrs`] decides. Arithmetic applies it from each
+/// operand as long as the result — right operand first, so the left one's
+/// win — which is how `structure(1, class = "money") + 1` stays a `money`.
+fn copy_most_attrs(out: &Value, from: &Value) {
+    if len(out) != len(from) {
+        return;
+    }
+    for (k, a) in with_host(|h| h.attrs_of(from)) {
+        if !matches!(k.as_str(), "names" | "dim" | "dimnames") {
+            with_host(|h| h.set_attr(out, &k, a));
         }
     }
 }
@@ -1770,6 +1801,8 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         mk_dbl(out)
     };
     carry_attrs(&v, lhs, rhs);
+    copy_most_attrs(&v, rhs);
+    copy_most_attrs(&v, lhs);
     Ok(v)
 }
 
@@ -1850,7 +1883,9 @@ fn logic(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             },
         });
     }
-    Ok(mk_lgl(out))
+    let v = mk_lgl(out);
+    carry_attrs(&v, lhs, rhs);
+    Ok(v)
 }
 
 /// `from:to` — an integer sequence when both ends are whole numbers.

@@ -1745,3 +1745,28 @@ environment()
 print(list(globalenv(), 2))
 str(globalenv())
 str(list(a = globalenv(), b = list(e = globalenv())))
+#==#
+# Operator results carry R's attributes: arithmetic copies every attribute of
+# each same-length operand (the left one's win), comparison and logic only
+# the shape; names come from the left operand when they fit, else the right.
+x <- structure(1, class = "money")
+print(unclass(x + 1))
+print(attributes(x + 1))
+print(attributes(structure(1:2, foo = "bar") * 2))
+print(attributes(1 + structure(1:2, foo = "bar")))
+print(attributes(structure(1:2, a = 1) + structure(3:4, b = 2)))
+print(attributes(structure(1:2, a = 1) + structure(3:4, a = 2)))
+print(attributes(structure(1:4, a = 1) + structure(3:4, b = 2)))
+print(attributes(-structure(1:2, foo = "bar")))
+print(attributes(structure(1:2, foo = "bar") == 1))
+print(attributes(!structure(c(TRUE,FALSE), foo = "bar")))
+print(attributes(!structure(c(1,0), foo = "bar")))
+print(1:2 + c(a = 1, b = 2))
+print(c(1, 2) == c(a = 1, b = 3))
+print(c(TRUE, FALSE) & c(a = TRUE, b = TRUE))
+print(1 + c(a = 1, b = 2))
+print(c(x = 1, y = 2) + c(a = 1, b = 2))
+m <- matrix(1:4, 2, dimnames = list(c("a","b"), c("p","q")))
+print(m + 1); print(1:4 + m); print(m > 2); print(m & TRUE)
+print(structure(1:3, units = "cm") * 2)
+x + 1
