@@ -391,9 +391,14 @@ run that compared nothing — no cases generated, or an oracle that never answer
   top-level autoprint.
 - **No S4 (`setClass`, `setGeneric`, `isVirtualClass`), no Reference Classes,
   no R6.** `@` parses and reads an attribute, which is not S4 slot semantics.
-- **No *user-definable* group generics** (`Ops`, `Math`, `Summary`), so a class
-  of your own cannot overload `+` through S3. The built-in factor ones
-  (`Ops.factor`, `Ops.ordered`, `Summary.ordered`) are implemented natively.
+- **S3 group generics dispatch.** An operator on an object with a class calls
+  `<op>.<class>` or `Ops.<class>` (left operand first, the right one's method
+  when the left has none, and R's "Incompatible methods" warning and the
+  internal operator when both differ); `Math` and `Summary` members reach
+  `Math.<class>` / `Summary.<class>`. The method sees `.Generic`, and
+  `NextMethod()` falls through to the internal operator. `.Class`, `.Method`
+  and `.Group` are not bound. The factor methods (`Ops.factor`, `Ops.ordered`,
+  `Summary.ordered`) are implemented natively.
 
 ## Runtime
 

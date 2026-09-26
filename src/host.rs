@@ -2379,6 +2379,13 @@ pub fn call_closure(
         // The dispatch that selected this method, if it was one — set just
         // before the call so `NextMethod` in the body can continue it.
         let dispatch = h.pending_dispatch.take();
+        // A method sees the generic it was reached through as `.Generic` — for
+        // an `Ops` method, the operator (`"+"`), which is how one body serves
+        // the whole group.
+        if let Some((generic, _)) = &dispatch {
+            let g = h.alloc(RData::Str(vec![Some(generic.clone())]));
+            h.bind(&frame_env, ".Generic", g);
+        }
         h.frames.push(Frame {
             env: frame_env,
             promise,

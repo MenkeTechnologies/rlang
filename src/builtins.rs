@@ -1275,32 +1275,44 @@ fn b_binop(vm: &mut VM, _: u8) -> Value {
 fn b_unop(vm: &mut VM, _: u8) -> Value {
     let op = name_of(&vm.pop());
     let x = vm.pop();
+    match unop(&op, &x, true) {
+        // A method or `Ops.factor`'s warning can leave a signal pending.
+        Ok(v) => propagate(vm, v),
+        Err(e) => abort(vm, e),
+    }
+}
+
+/// A unary operator: a user's `Ops` method first when `dispatch` allows,
+/// then `Ops.factor`, then the element-wise default.
+fn unop(op: &str, x: &Value, dispatch: bool) -> Result<Value, String> {
+    if dispatch {
+        if let Some(r) = s3_ops(op, &[x]) {
+            return r;
+        }
+    }
     // `-f` / `!f` reach `Ops.factor` with one argument, so they warn and give NA
     // rather than negating the codes.
-    if let Some(r) = ops_factor(&op, &x, None) {
-        return match r {
-            Ok(v) => propagate(vm, v),
-            Err(e) => abort(vm, e),
-        };
+    if let Some(r) = ops_factor(op, x, None) {
+        return r;
     }
     // `-x` and `!x` are element-wise, so they keep the operand's names/dim/
     // dimnames the same way the binary operators do via `carry_attrs`.
-    let out = match op.as_str() {
-        "-" => match data(&x) {
+    let out = match op {
+        "-" => match data(x) {
             RData::Int(v) => mk_int(v.iter().map(|e| e.map(|n| -n)).collect()),
-            _ => mk_dbl(as_dbl(&x).iter().map(|e| e.map(|n| -n)).collect()),
+            _ => mk_dbl(as_dbl(x).iter().map(|e| e.map(|n| -n)).collect()),
         },
-        "+" => return x,
-        "!" => mk_lgl(as_lgl(&x).iter().map(|e| e.map(|b| !b)).collect()),
-        other => return abort(vm, format!("invalid unary operator '{other}'")),
+        "+" => return Ok(x.clone()),
+        "!" => mk_lgl(as_lgl(x).iter().map(|e| e.map(|b| !b)).collect()),
+        other => return Err(format!("invalid unary operator '{other}'")),
     };
-    carry_attrs(&out, &x, &x);
+    carry_attrs(&out, x, x);
     // Negation keeps every attribute of its operand, and so does `!` on a
     // logical — R duplicates the operand and overwrites its values.
-    if op == "-" || kind(&x) == RKind::Lgl {
-        copy_most_attrs(&out, &x);
+    if op == "-" || kind(x) == RKind::Lgl {
+        copy_most_attrs(&out, x);
     }
-    out
+    Ok(out)
 }
 
 fn b_special(vm: &mut VM, _: u8) -> Value {
@@ -1571,6 +1583,82 @@ fn ops_factor(op: &str, lhs: &Value, rhs: Option<&Value>) -> Option<Result<Value
 }
 
 pub fn binop(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    if let Some(r) = s3_ops(op, &[lhs, rhs]) {
+        return r;
+    }
+    binop_internal(op, lhs, rhs)
+}
+
+/// The members of R's `Ops` group generic.
+const OPS_GROUP: &[&str] = &[
+    "+", "-", "*", "/", "^", "%%", "%/%", "&", "|", "!", "==", "!=", "<", "<=", ">=", ">",
+];
+
+/// The members of R's `Math` group generic that rlang implements.
+const MATH_GROUP: &[&str] = &[
+    "abs", "sign", "sqrt", "floor", "ceiling", "trunc", "round", "signif", "exp", "log", "expm1",
+    "log1p", "cos", "sin", "tan", "cospi", "sinpi", "tanpi", "acos", "asin", "atan", "cosh",
+    "sinh", "tanh", "acosh", "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma",
+    "cumsum", "cumprod", "cummax", "cummin",
+];
+
+/// The members of R's `Summary` group generic.
+const SUMMARY_GROUP: &[&str] = &["all", "any", "sum", "prod", "min", "max", "range"];
+
+/// The group generic `generic` belongs to, if any — the second name S3
+/// dispatch tries for each class (`+.money`, then `Ops.money`).
+fn group_of(generic: &str) -> Option<&'static str> {
+    if OPS_GROUP.contains(&generic) {
+        Some("Ops")
+    } else if MATH_GROUP.contains(&generic) {
+        Some("Math")
+    } else if SUMMARY_GROUP.contains(&generic) {
+        Some("Summary")
+    } else {
+        None
+    }
+}
+
+/// The `<generic>.<class>` or `<group>.<class>` method S3 dispatch selects for
+/// an object with an explicit `class` attribute: for each class in order, the
+/// specific method, then the group's.
+fn s3_method_name(generic: &str, obj: &Value) -> Option<String> {
+    with_host(|h| h.attr(obj, "class"))?;
+    let group = group_of(generic);
+    class_of(obj).iter().find_map(|c| {
+        std::iter::once(format!("{generic}.{c}"))
+            .chain(group.map(|g| format!("{g}.{c}")))
+            .find(|m| with_host(|h| h.lookup_function(m).is_some()))
+    })
+}
+
+/// R's `DispatchGroup("Ops", …)`: an operator whose operand carries a class
+/// with an `Ops` (or operator-specific) method calls that method with the
+/// operands as `e1`/`e2`. The left operand's method is preferred; when both
+/// sides have one and they differ, R warns and uses the internal operator.
+/// `None` when nothing dispatches.
+fn s3_ops(op: &str, operands: &[&Value]) -> Option<Result<Value, String>> {
+    if !OPS_GROUP.contains(&op) {
+        return None;
+    }
+    let methods: Vec<Option<String>> = operands.iter().map(|v| s3_method_name(op, v)).collect();
+    let which = match methods.as_slice() {
+        [Some(l), Some(r)] if l != r => {
+            let msg = format!("Incompatible methods (\"{l}\", \"{r}\") for \"{op}\"");
+            return binop_warning(&msg).err().map(Err);
+        }
+        [Some(_), ..] => 0,
+        [None, Some(_)] => 1,
+        _ => return None,
+    };
+    let classes = class_of(operands[which]);
+    let args = operands.iter().map(|v| (None, (*v).clone())).collect();
+    Some(dispatch_from(op, &classes, args))
+}
+
+/// The operator itself, with no S3 dispatch: what `binop` falls back to and
+/// what `NextMethod` reaches from inside an `Ops` method.
+fn binop_internal(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     // An operator on a foreign R object (`date + months(3)`, `sparse %*% x`)
     // delegates to embedded R, which knows the S3/S4 method.
     if kind(lhs) == RKind::RForeign || kind(rhs) == RKind::RForeign {
@@ -3498,8 +3586,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     } else {
         args
     };
+    // Set by `dispatch_from` when no method is left: this call is the
+    // generic's own default and must not dispatch again.
+    let suppressed = with_host(|h| std::mem::take(&mut h.suppress_s3));
     if OPERATORS.contains(&name) {
-        return call_operator(name, &args);
+        return call_operator(name, &args, !suppressed);
     }
     // A foreign R object (data frame, S4, raw, …) "infects" the call: rlang's
     // native builtins can't operate on an opaque handle, so the whole call is
@@ -3510,7 +3601,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     // A primitive R treats as generic hands off to a user's S3 method before
     // running its own implementation, so `print.myclass` wins over the default
     // layout the way it does in R.
-    if !with_host(|h| std::mem::take(&mut h.suppress_s3)) {
+    if !suppressed {
         if let Some(res) = s3_primitive_method(name, &args) {
             return res;
         }
@@ -7426,7 +7517,11 @@ fn cran_eval(_: &str) -> Result<Value, String> {
 
 /// An operator invoked through its function name: ``\`+\`(1, 2)``, ``\`[\`(x, 2)``.
 /// A one-argument call of `-`/`+`/`!` is the unary form.
-fn call_operator(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+fn call_operator(
+    name: &str,
+    args: &[(Option<String>, Value)],
+    dispatch: bool,
+) -> Result<Value, String> {
     let vals: Vec<Value> = args.iter().map(|(_, v)| v.clone()).collect();
     let first = vals
         .first()
@@ -7450,18 +7545,10 @@ fn call_operator(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, 
         }
         _ => {}
     }
-    match vals.len() {
-        1 => match name {
-            "-" => Ok(mk_dbl(
-                as_dbl(&first).iter().map(|e| e.map(|n| -n)).collect(),
-            )),
-            "+" => Ok(first),
-            "!" => Ok(mk_lgl(
-                as_lgl(&first).iter().map(|e| e.map(|b| !b)).collect(),
-            )),
-            other => Err(format!("invalid unary operator '{other}'")),
-        },
-        _ => binop(name, &first, &vals[1]),
+    match (vals.len(), dispatch) {
+        (1, _) => unop(name, &first, dispatch),
+        (_, true) => binop(name, &first, &vals[1]),
+        (_, false) => binop_internal(name, &first, &vals[1]),
     }
 }
 
@@ -9857,7 +9944,8 @@ fn s3_primitive_method(
     name: &str,
     args: &[(Option<String>, Value)],
 ) -> Option<Result<Value, String>> {
-    if !INTERNAL_GENERICS.contains(&name) {
+    let group = group_of(name);
+    if !INTERNAL_GENERICS.contains(&name) && !matches!(group, Some("Math" | "Summary")) {
         return None;
     }
     let obj = args.iter().find(|(t, _)| t.is_none()).map(|(_, v)| v)?;
@@ -9866,14 +9954,21 @@ fn s3_primitive_method(
     // matching R, where those reach `print.default`.
     with_host(|h| h.attr(obj, "class"))?;
     let mut classes = class_of(obj);
-    classes.push("default".to_string());
+    // A group generic has no `default` method to fall back to: past the last
+    // class it is the primitive itself.
+    if group.is_none() {
+        classes.push("default".to_string());
+    }
     // Only take over when a method actually exists; otherwise the primitive's
     // own implementation is the answer and `dispatch_from` would just bounce
     // straight back into it.
-    classes
-        .iter()
-        .any(|c| with_host(|h| h.lookup_function(&format!("{name}.{c}")).is_some()))
-        .then(|| dispatch_from(name, &classes, args.to_vec()))
+    let found = match group {
+        Some(_) => s3_method_name(name, obj).is_some(),
+        None => classes
+            .iter()
+            .any(|c| with_host(|h| h.lookup_function(&format!("{name}.{c}")).is_some())),
+    };
+    found.then(|| dispatch_from(name, &classes, args.to_vec()))
 }
 
 // ── conditions ──────────────────────────────────────────────────────────
@@ -10495,9 +10590,13 @@ fn dispatch_from(
     classes: &[String],
     args: Vec<(Option<String>, Value)>,
 ) -> Result<Value, String> {
+    let group = group_of(generic);
     for (i, cls) in classes.iter().enumerate() {
-        let method = format!("{generic}.{cls}");
-        if let Some(f) = with_host(|h| h.lookup_function(&method)) {
+        // `+.money`, then the group's `Ops.money`.
+        let found = std::iter::once(format!("{generic}.{cls}"))
+            .chain(group.map(|g| format!("{g}.{cls}")))
+            .find_map(|m| with_host(|h| h.lookup_function(&m)).map(|f| (m, f)));
+        if let Some((method, f)) = found {
             with_host(|h| {
                 h.pending_dispatch = Some((generic.to_string(), classes[i + 1..].to_vec()))
             });

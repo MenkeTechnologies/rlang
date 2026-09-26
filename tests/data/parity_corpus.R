@@ -1785,3 +1785,56 @@ s <- function() identity(sys.function())
 print(is.function(s()))
 outer_f <- function(a, b, c) identity(identity(nargs()))
 print(outer_f(1, 2, 3))
+#==#
+# User-defined S3 group generics: operator-specific and Ops methods (with
+# .Generic, unary calls, NextMethod to the internal operator, the right
+# operand's method when the left has none), and Math / Summary methods.
+x <- structure(1, class = "money")
+"+.money" <- function(e1, e2) "plus"
+print(x + x)
+print(1 + x)
+"==.money" <- function(e1, e2) "eq"
+print(x == 1)
+Ops.cash <- function(e1, e2) paste(.Generic, class(e1), nargs())
+y <- structure(2, class = "cash")
+print(y * 3)
+print(3 - y)
+print(-y)
+print(!y)
+Math.cash <- function(x, ...) paste("math", .Generic)
+print(sqrt(y))
+print(cumsum(y))
+Summary.cash <- function(..., na.rm = FALSE) paste("sum", .Generic)
+print(max(y))
+print(range(y, 5))
+Ops.temp <- function(e1, e2) {
+  v <- get(.Generic)(unclass(e1), unclass(e2))
+  if (.Generic %in% c("+", "-", "*", "/")) structure(v, class = "temp") else v
+}
+print.temp <- function(x, ...) cat(unclass(x), "degrees\n")
+t1 <- structure(20, class = "temp")
+print(t1 + 5)
+t1 * 2
+print(t1 > 10)
+Ops.meters <- function(e1, e2) {
+  r <- NextMethod()
+  if (.Generic %in% c("<", ">", "==", "!=", "<=", ">=")) unclass(r) else r
+}
+m <- structure(c(1, 5), class = "meters")
+print(unclass(m + 1))
+print(class(m * 2))
+print(m > 2)
+format.meters <- function(x, ...) paste0(unclass(x), "m")
+print.meters <- function(x, ...) cat(format(x), "\n")
+m + 10
+a <- structure(1, class = "A"); b <- structure(2, class = "B")
+Ops.A <- function(e1, e2) "A"
+Ops.B <- function(e1, e2) "B"
+print(unclass(a + b))
+print(b + 1)
+print(1 + a)
+Ops.vec <- function(e1, e2) { if (missing(e2)) paste("unary", .Generic) else paste("binary", .Generic) }
+v <- structure(1, class = "vec")
+print(-v)
+print(v - 1)
+print(sum(structure(1:3, class = "plain")))
