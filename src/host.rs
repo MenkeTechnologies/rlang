@@ -1467,10 +1467,18 @@ impl RHost {
         Some(self.closures.get(*id)?.params.clone())
     }
 
-    /// The innermost frame that is a CALL — the promise frames above it are
-    /// evaluation of the caller's own expressions, which R makes no frame for.
+    /// The call frame code is running in now: the innermost non-promise frame
+    /// that owns the current environment. A promise frame is evaluation of its
+    /// writer's own expression, which R makes no frame for, and it may be
+    /// forced several calls deeper than where it was written — `f(nargs())`
+    /// inside `g` asks about `g`'s call however far down `f` reads it.
     pub fn innermost_call(&self) -> Option<&Frame> {
-        self.frames.iter().rev().find(|f| !f.promise)
+        let env = self.env();
+        self.frames
+            .iter()
+            .rev()
+            .find(|f| !f.promise && Rc::ptr_eq(&f.env, &env))
+            .or_else(|| self.frames.iter().rev().find(|f| !f.promise))
     }
 
     /// R's `parent.frame(n)`: the environment `n` calling generations above

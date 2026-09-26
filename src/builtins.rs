@@ -7046,7 +7046,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // bound by the prologue, which records the name for exactly this.
             Ok(scalar_lgl(with_host(|h| {
                 !h.env().borrow().vars.contains_key(&n)
-                    || h.frames.last().is_some_and(|f| f.defaulted.contains(&n))
+                    || h.innermost_call().is_some_and(|f| f.defaulted.contains(&n))
             })))
         }
         "nargs" => {
@@ -7055,7 +7055,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // call's own list, `...` expanded, before any default filled in.
             // A primitive makes no context, so the frame here is the closure's.
             Ok(scalar_int(
-                with_host(|h| h.frames.last().map_or(0, |f| f.args.len())) as i64,
+                with_host(|h| h.innermost_call().map_or(0, |f| f.args.len())) as i64,
             ))
         }
         "return" => {
@@ -7142,7 +7142,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // Re-invoke the closure that is currently executing, one frame down
             // (the top frame is Recall's own primitive call is not pushed, so the
             // last closure frame is the caller).
-            let here = with_host(|h| h.frames.last().and_then(|f| f.fun.clone()));
+            let here = with_host(|h| h.innermost_call().and_then(|f| f.fun.clone()));
             match here {
                 Some((id, env)) => {
                     let f = with_host(|h| h.alloc(RData::Closure { id, env }));
@@ -7376,7 +7376,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         // `sys.function()` is the closure being executed, not its call.
         "sys.function" => Ok(with_host(|h| {
-            match h.frames.last().and_then(|f| f.fun.clone()) {
+            match h.innermost_call().and_then(|f| f.fun.clone()) {
                 Some((id, env)) => h.alloc(RData::Closure { id, env }),
                 None => h.null(),
             }

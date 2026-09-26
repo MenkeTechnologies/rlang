@@ -1770,3 +1770,18 @@ m <- matrix(1:4, 2, dimnames = list(c("a","b"), c("p","q")))
 print(m + 1); print(1:4 + m); print(m > 2); print(m & TRUE)
 print(structure(1:3, units = "cm") * 2)
 x + 1
+#==#
+# nargs(), missing(), Recall() and sys.function() written inside an argument
+# answer for the closure that wrote it, however deep the promise is forced.
+f <- function(a, b) paste(nargs())
+print(f(1, 2))
+g <- function(a, b = 2) c(missing(b), nargs())
+print(g(1))
+h <- function(a, b = 2) paste(missing(b))
+print(h(1))
+k <- function(n) if (n <= 1) 1 else n * identity(Recall(n - 1))
+print(k(4))
+s <- function() identity(sys.function())
+print(is.function(s()))
+outer_f <- function(a, b, c) identity(identity(nargs()))
+print(outer_f(1, 2, 3))
