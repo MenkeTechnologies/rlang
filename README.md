@@ -346,18 +346,21 @@ adapter (handshake plus run-to-completion; stepping is a later wave) are all in
 the tree. The parity corpus and every example match the reference R
 byte-for-byte.
 
-Arguments are evaluated eagerly rather than as promises, so `substitute()` /
-`quote()` / non-standard evaluation are not available; data frames, complex
-numbers, and part of the linear-algebra surface (`solve`, `det`,
-`eigen`) are not implemented yet. Factors (ordered included, surviving
+Arguments and defaults are promises, forced at first use in the environment
+that wrote them, and `substitute()` / `quote()` / `match.call()` /
+`sys.call()` / `eval(expr, envir)` work on rlang's own evaluator; S3 dispatch
+covers `UseMethod`/`NextMethod` and the `Ops`/`Math`/`Summary` group generics.
+Data frames, complex numbers, `Date`, and part of the linear-algebra surface
+(`solve`, `det`, `eigen`) are not native — they reach the embedded GNU R when
+one is installed. Factors (ordered included, surviving
 subsetting and reordering, comparing by label), `table`, `%*%`, `outer`,
 `crossprod`, `cbind`/`rbind` with R's deparsed seam labels, and `apply` over
 matrix margins (carrying the margin's `dimnames`) all work; the condition
 system is complete through restarts (`withCallingHandlers` resumes,
 `invokeRestart("muffleWarning")`, `withRestarts`/`computeRestarts`,
 `suppressWarnings`/`suppressMessages`); `tryCatch` /
-`try` / `on.exit` / `local` / `NextMethod` work, with conditions carrying no
-`call`; and a closure prints and deparses its own source. See
+`try` / `on.exit` / `local` / `NextMethod` work, and a condition carries the
+call it was raised in; a closure prints and deparses its own source. See
 [`BUGS.md`](BUGS.md) for the full known-gaps list.
 
 ---

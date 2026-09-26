@@ -1855,3 +1855,26 @@ print(noquote(matrix(c("p", NA, "r", "s"), 2)))
 print(unclass(x))
 print(c(TRUE, NA), quote = FALSE)
 print(list("a", 1), quote = FALSE)
+#==#
+# A default argument is a promise: evaluated at first use, in the callee's
+# frame, after the body may have rebound what it reads, and never if unread.
+f <- function(a, b = a * 2) { a <- 10; b }
+print(f(1))
+g <- function(x, n = length(x)) { x <- c(x, 0); n }
+print(g(1:3))
+h <- function(a, b = stop("never")) a
+print(h(5))
+k <- function(n = nargs()) n
+print(k())
+m <- function(a, b = missing(a)) b
+print(m())
+p <- function(x, y = x + 1) { if (missing(y)) "defaulted" else y }
+print(p(1))
+q <- function(...) { r <- function(v = sum(...)) v; r() }
+print(q(1, 2, 3))
+s <- function(z = { cat("forced\n"); 7 }) { cat("before\n"); z + z }
+print(s())
+u <- function(a = b, b = 3) a
+print(u())
+w <- function(e = environment()) identical(e, environment())
+print(w())

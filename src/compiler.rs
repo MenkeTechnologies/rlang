@@ -1454,12 +1454,20 @@ impl Compiler {
         let mut fb = ChunkBuilder::new();
         for p in params {
             let Some(default) = &p.default else { continue };
-            // if (missing(p)) p <- <default>
+            // if (missing(p)) p <- <default>, the default bound as a promise:
+            // R evaluates it at first use, in the callee's frame, so
+            // `function(a, b = a * 2) { a <- 10; b }` sees the rebound `a`.
+            // A literal cannot tell the difference and is bound as itself.
             self.kstr(&mut fb, &p.name);
             fb.emit(Op::CallBuiltin(ops::MISSING, 1), 0);
             let skip = fb.emit(Op::JumpIfFalse(0), 0);
             self.kstr(&mut fb, &p.name);
-            self.expr(&mut fb, default)?;
+            let promised = promise_args(&[Arg {
+                name: None,
+                value: Some(default.clone()),
+            }])
+            .and_then(|mut wrapped| wrapped.remove(0).value);
+            self.expr(&mut fb, promised.as_ref().unwrap_or(default))?;
             fb.emit(Op::CallBuiltin(ops::SETVAR, 2), 0);
             fb.emit(Op::Pop, 0);
             let here = fb.current_pos();

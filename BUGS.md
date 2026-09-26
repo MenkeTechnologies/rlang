@@ -41,38 +41,21 @@ run that compared nothing — no cases generated, or an oracle that never answer
   that prints as source, deparses, indexes (`quote(f(1))[[1]]`), decomposes with
   `as.list`, and answers `class`/`typeof`/`mode`/`is.call`/`is.name`. `eval`
   runs one in the caller's environment, so it reads and binds there.
-- **Arguments are evaluated eagerly, not as promises**, and this is a decision
-  rather than an omission. `substitute()` does *not* need promises — the
-  caller's call is on the context stack, so the expression a formal stands for
-  is recoverable, and it works. What is left is one root cause with four
-  visible shapes: an argument is evaluated even when the callee never uses it,
-  and it is evaluated *before* the call rather than at first use. So
-  `f <- function(a, b) a; f(1, stop("no"))` stops where R returns 1;
-  `f <- function(a) a; f(1, x + y)` with `x` unbound reports
-  `object 'x' not found` where R reports `unused argument (x + y)`, because the
-  argument is evaluated before the matching that would have rejected it; an
-  argument's side effects happen at the call rather than where the body first
-  reads it; and an argument the body never reads still runs.
+- **Arguments and defaults are promises.** A closure's argument is wrapped in a
+  thunk at the call and forced on first read, in the environment it was written
+  in: `f <- function(a, b) a; f(1, stop("no"))` returns 1, an unused argument
+  is rejected before it is evaluated (`unused argument (x + y)`), and an
+  argument's side effects happen where the body first reads it. A default is
+  bound the same way when the caller omits the formal, so it is evaluated at
+  first use in the callee's frame — `f <- function(a, b = a * 2) { a <- 10; b }`
+  gives 20, and a default that is never read never runs. A literal argument or
+  default is bound as itself, since forcing it could not differ. A forced
+  promise runs in its writer's environment, so `environment()`, `nargs()`,
+  `missing()`, `Recall()`, `sys.function()` and `parent.frame(n)` written inside
+  an argument answer for the closure that wrote it. Primitives take their
+  arguments forced, as R's builtins do.
 
-  The cost of closing it, measured on this tree rather than estimated: a
-  closure call costs about 7.1µs, a loop iteration 1.4µs, and forcing one
-  deferred expression 1.4–4.2µs (measured through `local(expr)`, which already
-  compiles to a thunk built and called — the same machinery a promise would
-  force through). Every argument would allocate and force one of those, so a
-  one-argument call gains 20–60% and a three-argument call runs roughly 1.6–2.8x
-  slower. Worse, an argument in arithmetic position (`f(i * 2)`) would stop
-  being two native fusevm ops and become a chunk run. That is the whole of
-  rlang's arithmetic and call performance spent to close four shapes, none of
-  which appears in the parity corpus or in 8000 fuzz cases. Defaults already
-  behave lazily by another route — they compile into a body prologue
-  (`if (missing(p)) p <- <default>`), so a default may refer to another
-  argument. The prologue runs at body *entry* rather than at first use, which
-  is where that route stops short of a promise: `f <- function(a, b = a * 2) {
-  a <- 10; b }` gives 2 where R gives 20, because R forces `b` after the body
-  has rebound `a`. A default reading a name the body then rebinds is the only
-  shape that separates the two.
-
-  Where the distinction is observable through the context stack it *is*
+  Where the distinction is observable through the context stack it is
   reproduced: a call is opened before its arguments so a condition raised in one
   names the enclosing call as R's forced promise does, and a `sys.call()` written
   as an argument still reports the frame whose body wrote it. Non-standard-
@@ -80,12 +63,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   run by re-running the whole script in the embedded GNU R (needs R installed)
   when rlang cannot evaluate it. Set `RLANG_NO_CRAN=1` to force the native path
   only.
-- **No `match.arg()`.** It raises `could not find function`. Called with one
-  argument it reads the *choices* out of the formal's default expression —
-  `formals(sys.function(sys.parent()))[[as.character(substitute(arg))]]` — and
-  rlang has no `formals()`: a default is compiled into the body prologue rather
-  than kept as a readable expression, so there is nothing to look up. It needs
-  the same defaults-as-data the promise entry above describes.
+- **No `match.arg()` or `formals()`.** Both raise `could not find function`.
+  One-argument `match.arg` reads the *choices* out of the formal's default
+  expression through `formals(sys.function(sys.parent()))`, and a default is
+  compiled into the body prologue rather than kept as a readable expression, so
+  there is nothing for `formals()` to return.
   `nargs()` and `missing()`, the neighbouring pieces of argument
   introspection, both work — `missing()` for a formal with a default included.
 - **The condition system, including the call a condition carries.**
