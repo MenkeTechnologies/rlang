@@ -1473,6 +1473,34 @@ impl RHost {
         self.frames.iter().rev().find(|f| !f.promise)
     }
 
+    /// R's `parent.frame(n)`: the environment `n` calling generations above
+    /// the one `parent.frame` was written in.
+    ///
+    /// A call's parent is the frame its call expression was *evaluated* in,
+    /// not the frame below it on the stack: a closure called while a promise
+    /// is forced was written in the promise's frame — whose environment is its
+    /// writer's (see [`call_closure`]) — so the walk finds the innermost call
+    /// frame owning that environment, as `do_parentframe` matches `cloenv`.
+    /// Past the outermost call there is only the global environment.
+    pub fn parent_frame_env(&self, n: usize) -> Env {
+        let frame_of = |env: &Env, below: usize| {
+            self.frames[..below]
+                .iter()
+                .rposition(|f| !f.promise && Rc::ptr_eq(&f.env, env))
+        };
+        let mut cur = frame_of(&self.env(), self.frames.len());
+        for _ in 0..n {
+            cur = match cur {
+                Some(i) if i > 0 => frame_of(&self.frames[i - 1].env, i),
+                _ => None,
+            };
+        }
+        match cur {
+            Some(i) => self.frames[i].env.clone(),
+            None => self.global.clone(),
+        }
+    }
+
     /// Bind `name` in the current environment.
     pub fn set_var(&mut self, name: &str, val: Value) {
         let env = self.env();
@@ -2318,7 +2346,15 @@ pub fn call_closure(
     if with_host(|h| h.frames.len()) >= MAX_DEPTH {
         return Err("evaluation nested too deeply: infinite recursion?".into());
     }
-    let frame_env = new_env(Some(env.clone()));
+    // A forced promise is its caller's own expression, evaluated where it
+    // was written: R makes no environment for it, so `environment()` or an
+    // assignment inside one sees the writer's frame, not a child of it.
+    let promise = FORCING.with(|f| f.replace(false));
+    let frame_env = if promise {
+        env.clone()
+    } else {
+        new_env(Some(env.clone()))
+    };
     let bindings = match_args(&params, &args)?;
     with_host(|h| {
         for (k, v) in bindings {
@@ -2337,7 +2373,7 @@ pub fn call_closure(
         let dispatch = h.pending_dispatch.take();
         h.frames.push(Frame {
             env: frame_env,
-            promise: FORCING.with(|f| f.replace(false)),
+            promise,
             args,
             fun_name,
             fun: Some((id, env)),

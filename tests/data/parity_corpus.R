@@ -1712,3 +1712,29 @@ print(identical(e1, new.env()))
 print(identical(list(globalenv()), list(globalenv())))
 f <- function() environment()
 print(identical(f(), f()))
+#==#
+# A forced promise runs in the environment its expression was written in, so
+# environment() inside an argument is the writer's frame, and parent.frame(n)
+# walks calling generations — through promise frames — not stack positions.
+print(environmentName(environment()))
+print(identical(environment(), globalenv()))
+f <- function() parent.frame()
+print(identical(f(), globalenv()))
+g <- function() f()
+print(identical(g(), globalenv()))
+h <- function() { e <- environment(); k <- function() parent.frame(); identical(k(), e) }
+print(h())
+id <- function(v) v
+p2 <- function() parent.frame(2)
+q2 <- function() id(p2())
+r2 <- function() { tag <- "r2"; e <- q2(); exists("tag", envir = e, inherits = FALSE) }
+print(r2())
+s2 <- function() { tag <- "s2"; id(id(q2())) }
+print(exists("tag", envir = s2(), inherits = FALSE))
+print(identical(id(parent.frame()), globalenv()))
+v3 <- function() parent.frame(3)
+print(identical(id(id(v3())), globalenv()))
+w <- function() { x <- 1; v <- function() get("x", envir = parent.frame()); v() }
+print(w())
+k2 <- function() { id(q <- 3); q }
+print(k2())

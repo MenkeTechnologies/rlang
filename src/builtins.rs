@@ -7274,25 +7274,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             Ok(mk_lang(substitute_in(&e, &map, true)))
         }
-        // `parent.frame()` is the environment of the frame that called this
-        // one. A builtin pushes no frame, so the stack below the current one
-        // is the caller's closure — which is what R means by the parent frame.
+        // `parent.frame(n)`: the frame `n` calling generations up — see
+        // `RHost::parent_frame_env` for how a promise's frame is looked through.
         "parent.frame" => {
             let up = a.get(0, "n").and_then(|v| num1(&v)).unwrap_or(1.0).max(1.0) as usize;
             Ok(with_host(|h| {
-                let n = h.frames.len();
-                match n.checked_sub(up + 1).and_then(|i| h.frames.get(i)) {
-                    Some(f) => {
-                        let e = f.env.clone();
-                        h.alloc(RData::Environment(e))
-                    }
-                    // Past the outermost frame there is only the global
-                    // environment, which is what R answers there too.
-                    None => {
-                        let g = h.global.clone();
-                        h.alloc(RData::Environment(g))
-                    }
-                }
+                let e = h.parent_frame_env(up);
+                h.alloc(RData::Environment(e))
             }))
         }
         "globalenv" => Ok(with_host(|h| {

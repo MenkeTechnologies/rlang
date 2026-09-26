@@ -2009,3 +2009,15 @@ a   c
 [1] FALSE
 [1] TRUE
 [1] FALSE
+#==#
+[1] "R_GlobalEnv"
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] 1
+[1] 3
