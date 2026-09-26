@@ -2021,3 +2021,17 @@ a   c
 [1] TRUE
 [1] 1
 [1] 3
+#==#
+<environment: R_GlobalEnv>
+<environment: R_GlobalEnv>
+[[1]]
+<environment: R_GlobalEnv>
+
+[[2]]
+[1] 2
+
+<environment: R_GlobalEnv> 
+List of 2
+ $ a:<environment: R_GlobalEnv> 
+ $ b:List of 1
+  ..$ e:<environment: R_GlobalEnv> 

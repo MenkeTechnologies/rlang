@@ -1738,3 +1738,10 @@ w <- function() { x <- 1; v <- function() get("x", envir = parent.frame()); v() 
 print(w())
 k2 <- function() { id(q <- 3); q }
 print(k2())
+#==#
+# The global environment prints by name, alone, inside a list, and under str().
+print(globalenv())
+environment()
+print(list(globalenv(), 2))
+str(globalenv())
+str(list(a = globalenv(), b = list(e = globalenv())))

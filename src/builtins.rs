@@ -9402,6 +9402,15 @@ fn str_num(x: f64) -> String {
 }
 
 /// The indent every line at `nest` carries: a space, then `" .."` per level.
+/// How R prints an environment: the global one by name, any other by its
+/// address — which no two processes share, so only the shape can match.
+fn env_label(e: &crate::host::Env) -> String {
+    match with_host(|h| Rc::ptr_eq(e, &h.global)) {
+        true => "<environment: R_GlobalEnv>".into(),
+        false => format!("<environment: {:p}>", Rc::as_ptr(e)),
+    }
+}
+
 fn str_indent(nest: usize) -> String {
     format!(" {}", " ..".repeat(nest))
 }
@@ -9430,6 +9439,11 @@ fn str_dims(x: &Value, n: usize, has_names: bool, classed: bool) -> String {
 /// a list element are both "the str of a value, one level further in".
 fn str_lines(x: &Value, nest: usize) -> Vec<String> {
     let ind = str_indent(nest);
+    // `str.default` writes an environment as its printed form and a space,
+    // flush against the `$ name:` that introduces it.
+    if let RData::Environment(e) = data(x) {
+        return vec![format!("{}{} ", ind.trim_end(), env_label(&e))];
+    }
     let k = kind(x);
     let classes = class_of(x);
     // A factor's class and levels ARE its line, so that case is read first.
@@ -9469,7 +9483,7 @@ fn str_lines(x: &Value, nest: usize) -> Vec<String> {
                 .strip_prefix(&child_ind[..])
                 .unwrap_or(&head)
                 .to_string();
-            let sep = if body.starts_with("List of") { "" } else { " " };
+            let sep = if body.starts_with("List of") || body.starts_with("<environment") { "" } else { " " };
             // The `$` sits at the LIST's indent, not the child's: a nested list
             // draws its own elements one level further in, and that level comes
             // from the child's own nest when it renders them.
@@ -10601,7 +10615,7 @@ fn format_value_body(v: &Value) -> Vec<String> {
         RData::RForeign(ptr) => crate::rembed::print_foreign(ptr),
         #[cfg(target_arch = "wasm32")]
         RData::RForeign(_) => vec!["<R object>".into()],
-        RData::Environment(_) => vec!["<environment>".into()],
+        RData::Environment(e) => vec![env_label(&e)],
         // An unevaluated expression prints as its source, unquoted and
         // unindexed — `print(quote(f(1)))` is `f(1)`, not `[1] "f(1)"`.
         RData::Lang(e) => crate::deparse::deparse_all_lines(&e),
