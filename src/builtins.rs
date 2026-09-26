@@ -929,8 +929,9 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
 /// The function a name resolves to in function position: a binding that is a
 /// function, else a primitive — `match.fun`'s lookup for a string.
 pub(crate) fn function_named(name: &str) -> Option<Value> {
-    with_host(|h| h.lookup_function(name))
-        .or_else(|| is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string())))))
+    with_host(|h| h.lookup_function(name)).or_else(|| {
+        is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
+    })
 }
 
 /// A primitive as a first-class value, so `sapply(x, sqrt)` works.
@@ -1605,8 +1606,8 @@ const OPS_GROUP: &[&str] = &[
 const MATH_GROUP: &[&str] = &[
     "abs", "sign", "sqrt", "floor", "ceiling", "trunc", "round", "signif", "exp", "log", "expm1",
     "log1p", "cos", "sin", "tan", "cospi", "sinpi", "tanpi", "acos", "asin", "atan", "cosh",
-    "sinh", "tanh", "acosh", "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma",
-    "cumsum", "cumprod", "cummax", "cummin",
+    "sinh", "tanh", "acosh", "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma", "cumsum",
+    "cumprod", "cummax", "cummin",
 ];
 
 /// The members of R's `Summary` group generic.
@@ -8672,7 +8673,9 @@ fn nice_names(v: &Value) -> Option<Vec<Option<String>>> {
     let names = with_host(|h| h.attr(v, "names"))?;
     let names = as_str(&names);
     let usable = names.iter().all(Option::is_some)
-        && names.iter().any(|n| n.as_deref().is_some_and(|s| !s.is_empty()));
+        && names
+            .iter()
+            .any(|n| n.as_deref().is_some_and(|s| !s.is_empty()));
     usable.then_some(names)
 }
 
@@ -8698,7 +8701,10 @@ fn deparse_value_into(d: &mut crate::deparse::Deparser, v: &Value) {
         }
         _ => None,
     };
-    let is_atomic = matches!(&x, RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_));
+    let is_atomic = matches!(
+        &x,
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_)
+    );
     let names = names.filter(|_| !(is_atomic && (int_seq || len(v) == 0)));
     let attrs = match &x {
         RData::Null | RData::Lang(_) | RData::Sym(_) => Vec::new(),
@@ -9631,7 +9637,11 @@ fn str_lines(x: &Value, nest: usize) -> Vec<String> {
                 .strip_prefix(&child_ind[..])
                 .unwrap_or(&head)
                 .to_string();
-            let sep = if body.starts_with("List of") || body.starts_with("<environment") { "" } else { " " };
+            let sep = if body.starts_with("List of") || body.starts_with("<environment") {
+                ""
+            } else {
+                " "
+            };
             // The `$` sits at the LIST's indent, not the child's: a nested list
             // draws its own elements one level further in, and that level comes
             // from the child's own nest when it renders them.
@@ -10694,7 +10704,11 @@ pub fn format_value(v: &Value) -> Vec<String> {
             .filter(|c| c != "noquote")
             .map(Some)
             .collect();
-        let cls = if rest.is_empty() { null() } else { mk_str(rest) };
+        let cls = if rest.is_empty() {
+            null()
+        } else {
+            mk_str(rest)
+        };
         with_host(|h| h.set_attr(&plain, "class", cls));
         return with_print_quote(false, || format_value(&plain));
     }
