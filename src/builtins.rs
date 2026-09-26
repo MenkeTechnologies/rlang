@@ -10567,8 +10567,16 @@ fn r_try(a: &Args) -> Result<Value, String> {
             });
             // R heads the string with the call when the error carries one:
             // `Error in f() : msg`, and a bare `Error : msg` when it does not.
+            // `try`'s own R code folds the message onto an indented second
+            // line when `14 + width(call) + width(first message line)` passes
+            // its `LONG` of 75 — the same allowance `errors.c` gives.
             let text = match raised_call.as_deref().and_then(|c| c.lines().next()) {
-                Some(c) => format!("Error in {c} : {msg}\n"),
+                Some(c) => {
+                    let first = msg.split('\n').next().unwrap_or("");
+                    let w = 14 + crate::strwidth::display_width(c) + crate::strwidth::display_width(first);
+                    let sep = if w > 75 { "\n  " } else { "" };
+                    format!("Error in {c} : {sep}{msg}\n")
+                }
                 None => format!("Error : {msg}\n"),
             };
             if !silent {

@@ -584,3 +584,17 @@ fn use_method_dispatches_on_the_implicit_class() {
         "[1] \"Error in UseMethod(\\\"g\\\") : \\n  no applicable method for 'g' applied to an object of class \\\"c('matrix', 'array', 'integer', 'numeric')\\\"\\n\""
     );
 }
+
+#[test]
+fn try_folds_a_long_message_as_its_r_code_does() {
+    // 14 + width(call) + width(first line) > 75 puts the message on its own
+    // indented line.
+    assert_eq!(
+        r("r <- try(stop('a long message that goes on and on and on and on and on and on'), silent = TRUE); r[1]"),
+        "[1] \"Error in try(stop(\\\"a long message that goes on and on and on and on and on and on\\\"),  : \\n  a long message that goes on and on and on and on and on and on\\n\""
+    );
+    assert_eq!(
+        r("f <- function() stop('short'); r <- try(f(), silent = TRUE); r[1]"),
+        "[1] \"Error in f() : short\\n\""
+    );
+}
