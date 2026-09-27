@@ -671,3 +671,44 @@ fn formals_and_match_arg_read_the_written_defaults() {
     );
     assert_eq!(r(r#"match.arg(NULL, c("x", "y"))"#), r#"[1] "x""#);
 }
+
+/// `new.env()` encloses the environment it is called from, `environment<-`
+/// rebinds a closure's free names, and `topenv` walks to the global
+/// environment unless `matchThisEnv` is met first. Read off R 4.6.1.
+#[test]
+fn environments_enclose_where_they_are_made() {
+    assert_eq!(
+        r(r#"k <- function() { v <- 42; e <- new.env(); get("v", envir = e) }; k()"#),
+        "[1] 42"
+    );
+    assert_eq!(
+        r(
+            r#"m <- function() { v <- 1; e <- new.env(parent = globalenv()); exists("v", envir = e) }; m()"#
+        ),
+        "[1] FALSE"
+    );
+    assert_eq!(
+        r(
+            r#"w <- 5; f <- function() w; e <- new.env(); assign("w", 99, envir = e); environment(f) <- e; f()"#
+        ),
+        "[1] 99"
+    );
+    assert_eq!(
+        r(
+            r#"f <- function() 1; tryCatch(environment(f) <- 3, error = function(e) conditionMessage(e))"#
+        ),
+        r#"[1] "replacement object is not an environment""#
+    );
+    assert_eq!(
+        r("f <- function() topenv(); identical(f(), globalenv())"),
+        "[1] TRUE"
+    );
+    assert_eq!(
+        r("e <- new.env(); identical(topenv(new.env(parent = e), e), e)"),
+        "[1] TRUE"
+    );
+    assert_eq!(
+        r("e <- new.env(); identical(topenv(new.env(parent = e)), globalenv())"),
+        "[1] TRUE"
+    );
+}

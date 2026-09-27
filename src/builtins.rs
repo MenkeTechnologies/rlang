@@ -3215,6 +3215,26 @@ fn replacement(
                     .collect(),
             ))
         }
+        // R's `do_envirgets`: a closure is rebuilt around the new environment,
+        // which is where its free names now resolve; anything else carries it
+        // as the `.Environment` attribute. Only an environment (or NULL, for a
+        // non-function) may be assigned.
+        "environment" => {
+            let env = env_of(value);
+            match data(x) {
+                RData::Closure { id, .. } => {
+                    let env = env.ok_or("replacement object is not an environment")?;
+                    Ok(with_host(|h| h.alloc(RData::Closure { id, env })))
+                }
+                _ if env.is_none() && !is_null(value) => {
+                    Err("replacement object is not an environment".into())
+                }
+                _ => {
+                    with_host(|h| h.set_attr(&out, ".Environment", value.clone()));
+                    Ok(out)
+                }
+            }
+        }
         // A user-defined replacement function: `\`f<-\`(x, ..., value)`.
         other => {
             let fq = format!("{other}<-");
@@ -3565,6 +3585,7 @@ pub const PRIMITIVES: &[&str] = &[
     "ls",
     "objects",
     "globalenv",
+    "topenv",
     "environmentName",
     "is.call",
     "is.name",
@@ -7343,10 +7364,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             })
         }
         "environment" | "new.env" => {
+            // `new.env(hash, parent = parent.frame())`: the enclosure defaults to
+            // the environment the call is made from, not the global one.
             let e = if name == "new.env" {
+                let parent = match a.get(1, "parent") {
+                    Some(p) => env_of(&p).ok_or("'enclos' must be an environment")?,
+                    None => with_host(|h| h.env()),
+                };
                 Rc::new(std::cell::RefCell::new(crate::host::EnvData {
                     vars: NameMap::default(),
-                    parent: Some(with_host(|h| h.global.clone())),
+                    parent: Some(parent),
                 }))
             } else {
                 with_host(|h| h.env())
@@ -7631,6 +7658,31 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 let e = h.parent_frame_env(up);
                 h.alloc(RData::Environment(e))
             }))
+        }
+        // `topenv(envir = parent.frame(), matchThisEnv)`: the first environment
+        // up `envir`'s enclosure chain that is `matchThisEnv` or a top level.
+        // rlang has no namespaces or package environments, so the global
+        // environment is the one top level, and a chain that ends without
+        // reaching it lands there too, as R's does. A non-environment `envir`
+        // means R's base namespace, which only the embedded R can answer.
+        "topenv" => {
+            let start = match a.get(0, "envir") {
+                Some(v) => match env_of(&v) {
+                    Some(e) => e,
+                    None => return cran_call(name, &a.all),
+                },
+                None => with_host(|h| h.env()),
+            };
+            let target = a.get(1, "matchThisEnv").and_then(|v| env_of(&v));
+            let global = with_host(|h| h.global.clone());
+            let mut cur = Some(start);
+            while let Some(e) = cur {
+                if target.as_ref().is_some_and(|t| Rc::ptr_eq(t, &e)) || Rc::ptr_eq(&e, &global) {
+                    return Ok(with_host(|h| h.alloc(RData::Environment(e))));
+                }
+                cur = e.borrow().parent.clone();
+            }
+            Ok(with_host(|h| h.alloc(RData::Environment(global))))
         }
         "globalenv" => Ok(with_host(|h| {
             let g = h.global.clone();

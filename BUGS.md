@@ -170,8 +170,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `aggregate(v ~ g, df, sum)`, and one-sided `~ x` work. A formula referencing a
   bare rlang variable (`lm(y ~ x)` with `x` defined only in rlang) can't see it —
   pass the data explicitly, or use literal vectors.
-- **Environments are manipulable**: `new.env()`, `environment()`, `local()`,
-  `globalenv()`, `environmentName()`, `parent.frame()`, `ls`/`objects` with
+- **Environments are manipulable**: `new.env(parent =)` (enclosing, by
+  default, the environment it is called from, as R's `parent.frame()` default
+  does), `environment()` and `environment<-` (a closure rebuilt around the new
+  environment), `topenv()` (the global environment is rlang's one top level),
+  `local()`, `globalenv()`, `environmentName()`, `parent.frame()`, `ls`/`objects` with
   `all.names`, `assign`/`get`/`exists` with `envir`, `eval(expr, envir)`, `$`
   and `[[` on an environment. `sys.nframe()` and `sys.frame(n)` are not: a
   builtin pushes no frame in rlang where R's closures do, so the numbering they

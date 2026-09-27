@@ -1198,8 +1198,8 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         "new.env",
-        "new.env()",
-        "A fresh environment whose parent is the global environment. Read and write it with $ and [[.",
+        "new.env(hash, parent)",
+        "A fresh environment enclosed by parent, by default the environment the call is made from. Read and write it with $ and [[.",
     ),
     (
         "missing",
@@ -1481,6 +1481,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "globalenv",
         "globalenv()",
         "The global environment — where a top-level assignment binds.",
+    ),
+    (
+        "topenv",
+        "topenv(envir, matchThisEnv)",
+        "The first environment up envir's enclosure chain that is matchThisEnv or a top level. envir defaults to the calling environment; rlang's one top level is the global environment.",
     ),
     (
         "environmentName",
