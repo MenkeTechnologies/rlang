@@ -12256,45 +12256,6 @@ fn format_list_at(v: &Value, prefix: &str) -> Vec<String> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::eval_to_string;
-
-    #[test]
-    fn arithmetic_recycles_and_keeps_integer_type() {
-        assert_eq!(eval_to_string("c(1L, 2L) + 1L").unwrap(), "[1] 2 3");
-        assert_eq!(eval_to_string("1:6 * c(1, 0)").unwrap(), "[1] 1 0 3 0 5 0");
-    }
-
-    #[test]
-    fn na_propagates_but_logic_stays_three_valued() {
-        assert_eq!(eval_to_string("NA + 1").unwrap(), "[1] NA");
-        assert_eq!(eval_to_string("NA & FALSE").unwrap(), "[1] FALSE");
-        assert_eq!(eval_to_string("NA | TRUE").unwrap(), "[1] TRUE");
-    }
-
-    #[test]
-    fn modulo_follows_the_sign_of_the_divisor() {
-        // R: -5 %% 3 is 1, not -2.
-        assert_eq!(eval_to_string("-5 %% 3").unwrap(), "[1] 1");
-        assert_eq!(eval_to_string("-5 %/% 3").unwrap(), "[1] -2");
-    }
-
-    #[test]
-    fn negative_subscripts_exclude() {
-        assert_eq!(eval_to_string("(1:5)[-1]").unwrap(), "[1] 2 3 4 5");
-        assert_eq!(
-            eval_to_string("(1:5)[c(TRUE, FALSE)]").unwrap(),
-            "[1] 1 3 5"
-        );
-    }
-
-    #[test]
-    fn doubles_share_a_decimal_width_when_printed() {
-        assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
-    }
-}
-
 /// The formals of closure `id` with their defaults, parsed back out of its
 /// deparsed source. `None` when the source is not a single function.
 fn closure_params(id: usize) -> Option<Vec<crate::ast::Param>> {
@@ -12452,5 +12413,44 @@ fn default_choices() -> Result<Value, String> {
     match default {
         Some(e) => eval_expr(&e),
         None => Err(format!("argument \"{formal}\" is missing, with no default")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::eval_to_string;
+
+    #[test]
+    fn arithmetic_recycles_and_keeps_integer_type() {
+        assert_eq!(eval_to_string("c(1L, 2L) + 1L").unwrap(), "[1] 2 3");
+        assert_eq!(eval_to_string("1:6 * c(1, 0)").unwrap(), "[1] 1 0 3 0 5 0");
+    }
+
+    #[test]
+    fn na_propagates_but_logic_stays_three_valued() {
+        assert_eq!(eval_to_string("NA + 1").unwrap(), "[1] NA");
+        assert_eq!(eval_to_string("NA & FALSE").unwrap(), "[1] FALSE");
+        assert_eq!(eval_to_string("NA | TRUE").unwrap(), "[1] TRUE");
+    }
+
+    #[test]
+    fn modulo_follows_the_sign_of_the_divisor() {
+        // R: -5 %% 3 is 1, not -2.
+        assert_eq!(eval_to_string("-5 %% 3").unwrap(), "[1] 1");
+        assert_eq!(eval_to_string("-5 %/% 3").unwrap(), "[1] -2");
+    }
+
+    #[test]
+    fn negative_subscripts_exclude() {
+        assert_eq!(eval_to_string("(1:5)[-1]").unwrap(), "[1] 2 3 4 5");
+        assert_eq!(
+            eval_to_string("(1:5)[c(TRUE, FALSE)]").unwrap(),
+            "[1] 1 3 5"
+        );
+    }
+
+    #[test]
+    fn doubles_share_a_decimal_width_when_printed() {
+        assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
     }
 }
