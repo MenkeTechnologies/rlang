@@ -63,11 +63,15 @@ run that compared nothing — no cases generated, or an oracle that never answer
   run by re-running the whole script in the embedded GNU R (needs R installed)
   when rlang cannot evaluate it. Set `RLANG_NO_CRAN=1` to force the native path
   only.
-- **No `match.arg()` or `formals()`.** Both raise `could not find function`.
-  One-argument `match.arg` reads the *choices* out of the formal's default
-  expression through `formals(sys.function(sys.parent()))`, and a default is
-  compiled into the body prologue rather than kept as a readable expression, so
-  there is nothing for `formals()` to return.
+- **`match.arg()`, `formals()` and `formalArgs()`** — fixed. A default is still
+  compiled into the body prologue, so `formals()` parses the closure's deparsed
+  source back and returns each default as the expression written (the empty
+  symbol for a formal without one, printed as a blank line the way R does).
+  `match.arg` follows base R's closure: one-argument form reads the formal's
+  default out of the calling function and evaluates it in that frame, then
+  `pmatch`-style exact-then-unique-prefix matching, `several.ok`, and R's
+  `'arg' should be one of “a”, “bb”` error. Regression:
+  `tests/eval.rs::formals_and_match_arg_read_the_written_defaults`.
   `nargs()` and `missing()`, the neighbouring pieces of argument
   introspection, both work — `missing()` for a formal with a default included.
 - **The condition system, including the call a condition carries.**

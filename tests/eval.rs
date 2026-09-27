@@ -624,3 +624,50 @@ fn sprintf_hex_floats_and_unformattable_doubles() {
         "[1] \" NA|NA    |0000NA\""
     );
 }
+
+/// `formals` reads each default back as the expression written (the empty
+/// symbol for none), and one-argument `match.arg` takes its choices from the
+/// calling function's default for that formal. Expectations read off R 4.6.1.
+#[test]
+fn formals_and_match_arg_read_the_written_defaults() {
+    let g = "g <- function(a, b = 2, ..., d = x + 1) NULL; ";
+    assert_eq!(
+        r(&format!("{g}names(formals(g))")),
+        r#"[1] "a"   "b"   "..." "d""#
+    );
+    assert_eq!(r(&format!("{g}formals(g)$d")), "x + 1");
+    assert_eq!(r(&format!("{g}formals(g)$b")), "[1] 2");
+    assert_eq!(
+        r(&format!("{g}sapply(formals(g), is.name)")),
+        "    a     b   ...     d \n TRUE FALSE  TRUE FALSE"
+    );
+    assert_eq!(r("formals(sum)"), "NULL");
+    assert_eq!(
+        r("h <- function(x = 1, y) formals(); names(h())"),
+        r#"[1] "x" "y""#
+    );
+
+    let f = r#"f <- function(type = c("a", "bb", "c")) match.arg(type); "#;
+    assert_eq!(r(&format!("{f}f()")), r#"[1] "a""#);
+    assert_eq!(r(&format!("{f}f(\"b\")")), r#"[1] "bb""#);
+    assert_eq!(
+        r(&format!(
+            "{f}tryCatch(f(\"z\"), error = function(e) conditionMessage(e))"
+        )),
+        "[1] \"'arg' should be one of \u{201c}a\u{201d}, \u{201c}bb\u{201d}, \u{201c}c\u{201d}\""
+    );
+    // An ambiguous prefix matches nothing; a unique one resolves.
+    assert_eq!(
+        r(r#"match.arg("med", c("mean", "median"))"#),
+        r#"[1] "median""#
+    );
+    assert_eq!(
+        r(r#"tryCatch(match.arg("me", c("mean", "median")), error = function(e) "none")"#),
+        r#"[1] "none""#
+    );
+    assert_eq!(
+        r(r#"match.arg(c("a", "b"), c("a", "b", "c"), several.ok = TRUE)"#),
+        r#"[1] "a" "b""#
+    );
+    assert_eq!(r(r#"match.arg(NULL, c("x", "y"))"#), r#"[1] "x""#);
+}

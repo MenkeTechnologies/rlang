@@ -1428,6 +1428,21 @@ const ENVIRONMENTS: &[Entry] = &[
         "The current call with every argument that binds to a named formal carrying that formal's name, and the arguments in formal order. Arguments absorbed by ... keep their own tag and follow.",
     ),
     (
+        "match.arg",
+        "match.arg(arg, choices, several.ok = FALSE)",
+        "Match arg against choices: an exact match, else a unique prefix. Without choices they are the default of the formal arg names in the calling function, evaluated there, and an argument still equal to that whole default yields its first element. several.ok = TRUE accepts several arguments; no match raises 'arg' should be one of the choices.",
+    ),
+    (
+        "formals",
+        "formals(fun)",
+        "The formals of a closure as a named list: each default as the expression written, and the empty symbol for a formal without one. Without fun, the calling function's; a string names the function; a primitive has none (NULL).",
+    ),
+    (
+        "formalArgs",
+        "formalArgs(def)",
+        "The names of a closure's formals, ... included.",
+    ),
+    (
         "sys.function",
         "sys.function()",
         "The closure being executed — the function itself, not its call.",

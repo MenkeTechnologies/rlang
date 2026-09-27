@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 295 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 298 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.8 &middot; 315 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.8 &middot; 318 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 295 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 298 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">30</span></li>
         <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">22</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">61</span></li>
+        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">64</span></li>
         <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -1599,7 +1599,7 @@
     </section>
     <section class="tutorial-section" id="ch-environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">61 entries</p>
+      <p class="chapter-meta">64 entries</p>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1905,6 +1905,24 @@
         <pre><code class="lang-r r">match.call()
 </code></pre>
         <p>The current call with every argument that binds to a named formal carrying that formal's name, and the arguments in formal order. Arguments absorbed by ... keep their own tag and follow.</p>
+      </article>
+      <article class="doc-entry" id="doc-match-arg">
+        <h3><a class="doc-anchor" href="#doc-match-arg">#</a> <code>match.arg</code></h3>
+        <pre><code class="lang-r r">match.arg(arg, choices, several.ok = FALSE)
+</code></pre>
+        <p>Match arg against choices: an exact match, else a unique prefix. Without choices they are the default of the formal arg names in the calling function, evaluated there, and an argument still equal to that whole default yields its first element. several.ok = TRUE accepts several arguments; no match raises 'arg' should be one of the choices.</p>
+      </article>
+      <article class="doc-entry" id="doc-formals">
+        <h3><a class="doc-anchor" href="#doc-formals">#</a> <code>formals</code></h3>
+        <pre><code class="lang-r r">formals(fun)
+</code></pre>
+        <p>The formals of a closure as a named list: each default as the expression written, and the empty symbol for a formal without one. Without fun, the calling function's; a string names the function; a primitive has none (NULL).</p>
+      </article>
+      <article class="doc-entry" id="doc-formalargs">
+        <h3><a class="doc-anchor" href="#doc-formalargs">#</a> <code>formalArgs</code></h3>
+        <pre><code class="lang-r r">formalArgs(def)
+</code></pre>
+        <p>The names of a closure's formals, ... included.</p>
       </article>
       <article class="doc-entry" id="doc-sys-function">
         <h3><a class="doc-anchor" href="#doc-sys-function">#</a> <code>sys.function</code></h3>

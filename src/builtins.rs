@@ -3553,6 +3553,9 @@ pub const PRIMITIVES: &[&str] = &[
     "as.symbol",
     "sys.call",
     "match.call",
+    "match.arg",
+    "formals",
+    "formalArgs",
     "sys.function",
     "eval",
     "evalq",
@@ -7685,6 +7688,37 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 None => parse_one(&src),
             }
         }
+        // `formals(fun)`: each formal's default as the expression written, and
+        // the empty symbol for one with no default. The compiler folds defaults
+        // into the body prologue, so they are read back out of the closure's
+        // deparsed source, where they still stand as written. With no argument
+        // it answers for the calling function, R's `sys.function(sys.parent())`;
+        // a primitive has none.
+        "formals" => {
+            let f = match a.get(0, "fun") {
+                Some(f) if kind(&f) == RKind::Str => {
+                    let n = str1(&f).unwrap_or_default();
+                    with_host(|h| h.lookup_function(&n))
+                        .ok_or_else(|| format!("could not find function \"{n}\""))?
+                }
+                Some(f) => f,
+                None => calling_closure(),
+            };
+            match data(&f) {
+                RData::Closure { id, .. } => Ok(formals_list(id)),
+                RData::Combinator { .. } => cran_call(name, &a.all),
+                _ => Ok(null()),
+            }
+        }
+        "formalArgs" => {
+            let f = a.req(0, "def")?;
+            match data(&f) {
+                RData::Closure { id, .. } => Ok(names_value(&formals_list(id))),
+                RData::Combinator { .. } => cran_call(name, &a.all),
+                _ => Ok(null()),
+            }
+        }
+        "match.arg" => match_arg(&a),
         // `sys.function()` is the closure being executed, not its call.
         "sys.function" => Ok(with_host(|h| {
             match h.innermost_call().and_then(|f| f.fun.clone()) {
@@ -11479,11 +11513,14 @@ fn format_value_body(v: &Value) -> Vec<String> {
         // unindexed — `print(quote(f(1)))` is `f(1)`, not `[1] "f(1)"`.
         RData::Lang(e) => crate::deparse::deparse_all_lines(&e),
         // A name prints backquoted unless the parser would read it back as the
-        // same symbol — `as.name("+")` shows as `+` in backticks.
-        RData::Sym(n) => vec![match crate::deparse::is_syntactic_name(&n) {
-            true => n,
-            false => format!("`{n}`"),
-        }],
+        // same symbol — `as.name("+")` shows as `+` in backticks. The empty
+        // symbol (a formal with no default) prints as nothing at all.
+        RData::Sym(n) => vec![
+            match n.is_empty() || crate::deparse::is_syntactic_name(&n) {
+                true => n,
+                false => format!("`{n}`"),
+            },
+        ],
         RData::Args(_) => format_list(v),
         RData::List(_) => format_list(v),
         _ => {
@@ -12203,5 +12240,165 @@ mod tests {
     #[test]
     fn doubles_share_a_decimal_width_when_printed() {
         assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
+    }
+}
+
+/// The formals of closure `id` with their defaults, parsed back out of its
+/// deparsed source. `None` when the source is not a single function.
+fn closure_params(id: usize) -> Option<Vec<crate::ast::Param>> {
+    let src = with_host(|h| h.closures.get(id).map(|c| c.src.join("\n")))?;
+    match crate::parser::parse(&src).ok()?.as_slice() {
+        [Expr::Function { params, .. }] => Some(params.clone()),
+        _ => None,
+    }
+}
+
+/// `formals(f)` for a closure: a list tagged by formal name, each element the
+/// default expression, or the empty symbol R uses for a formal without one.
+fn formals_list(id: usize) -> Value {
+    let params = closure_params(id).unwrap_or_default();
+    if params.is_empty() {
+        return null();
+    }
+    let names = params.iter().map(|p| Some(p.name.clone())).collect();
+    let vals = params
+        .into_iter()
+        .map(|p| match p.default {
+            Some(e) => mk_lang(e),
+            None => with_host(|h| h.alloc(RData::Sym(String::new()))),
+        })
+        .collect();
+    let out = mk_list(vals);
+    set_names(&out, names);
+    out
+}
+
+/// The closure whose frame is running now — what `sys.function(sys.parent())`
+/// finds from inside a closure that was called by it. NULL at top level.
+fn calling_closure() -> Value {
+    with_host(|h| match h.innermost_call().and_then(|f| f.fun.clone()) {
+        Some((id, env)) => h.alloc(RData::Closure { id, env }),
+        None => h.null(),
+    })
+}
+
+/// The `names` attribute of `v` as a character vector.
+fn names_value(v: &Value) -> Value {
+    mk_str(names_of(v))
+}
+
+/// R's `match.arg(arg, choices, several.ok = FALSE)`, following base R's
+/// closure step by step.
+///
+/// With `choices` omitted, the choices are the default of the formal that
+/// `arg` names in the calling function, evaluated in that function's frame —
+/// R's `eval(formals(sys.function(sysP))[[as.character(substitute(arg))]])`.
+/// `arg` is read as it was written from the call on the context stack, since
+/// `match.arg` makes a context of its own.
+fn match_arg(a: &Args) -> Result<Value, String> {
+    let arg = a.req(0, "arg")?;
+    let choices = match a.get(1, "choices") {
+        Some(c) => c,
+        None => default_choices()?,
+    };
+    let choice_strs = as_str(&choices);
+    let first_choice = || mk_str(choice_strs.first().cloned().into_iter().collect());
+    if kind(&arg) == RKind::Null {
+        return Ok(first_choice());
+    }
+    if kind(&arg) != RKind::Str {
+        return Err("'arg' must be NULL or a character vector".into());
+    }
+    let (several_ok, all_match) = match a.get(2, "several.ok") {
+        None => (false, false),
+        Some(s) if kind(&s) == RKind::Lgl => (lgl1(&s) == Some(true), false),
+        Some(s) if kind(&s) == RKind::Str && str1(&s).is_some_and(|t| t.starts_with("all")) => {
+            (true, true)
+        }
+        Some(_) => {
+            return Err("'several.ok' must be logical or a string starting with \"all\"".into())
+        }
+    };
+    let args = as_str(&arg);
+    if !several_ok {
+        if identical(&arg, &choices) {
+            return Ok(mk_str(args.into_iter().take(1).collect()));
+        }
+        if args.len() != 1 {
+            return Err("'arg' must be of length 1".into());
+        }
+    } else if args.is_empty() {
+        return Err("'arg' must be of length >= 1".into());
+    }
+    // `pmatch(arg, choices, nomatch = 0L, duplicates.ok = TRUE)`: an exact
+    // match wins, else a unique prefix match; the empty string matches nothing.
+    let hits: Vec<Option<usize>> = args
+        .iter()
+        .map(|x| {
+            let x = x.as_deref().filter(|s| !s.is_empty())?;
+            if let Some(i) = choice_strs.iter().position(|c| c.as_deref() == Some(x)) {
+                return Some(i);
+            }
+            let mut prefixed = choice_strs
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.as_deref().is_some_and(|c| c.starts_with(x)));
+            match (prefixed.next(), prefixed.next()) {
+                (Some((i, _)), None) => Some(i),
+                _ => None,
+            }
+        })
+        .collect();
+    if hits.iter().all(Option::is_none) || (all_match && hits.iter().any(Option::is_none)) {
+        let mut chs: Vec<String> = Vec::new();
+        for c in choice_strs.iter().flatten() {
+            if !c.is_empty() && !chs.contains(c) {
+                chs.push(c.clone());
+            }
+        }
+        let quoted: Vec<String> = chs.iter().map(|c| format!("\u{201c}{c}\u{201d}")).collect();
+        let lead = if chs.len() == 1 {
+            "'arg' should be"
+        } else {
+            "'arg' should be one of"
+        };
+        return Err(format!("{lead} {}", quoted.join(", ")));
+    }
+    Ok(mk_str(
+        hits.into_iter()
+            .flatten()
+            .map(|i| choice_strs[i].clone())
+            .collect(),
+    ))
+}
+
+/// The default of the formal `match.arg`'s `arg` names, evaluated in the
+/// calling function's frame.
+fn default_choices() -> Result<Value, String> {
+    let src = with_host(|h| h.current_call_source()).unwrap_or_default();
+    let written = crate::parser::parse(&src)
+        .ok()
+        .and_then(|mut es| match es.pop() {
+            Some(Expr::Call { args, .. }) => args
+                .iter()
+                .find(|x| x.name.as_deref() == Some("arg"))
+                .or_else(|| args.iter().find(|x| x.name.is_none()))
+                .and_then(|x| x.value.clone()),
+            _ => None,
+        });
+    let Some(Expr::Ident(formal)) = written else {
+        return Err("'arg' must be of length 1".into());
+    };
+    let id = with_host(|h| {
+        h.innermost_call()
+            .and_then(|f| f.fun.as_ref().map(|(id, _)| *id))
+    });
+    let default = id
+        .and_then(closure_params)
+        .and_then(|ps| ps.into_iter().find(|p| p.name == formal))
+        .and_then(|p| p.default);
+    match default {
+        Some(e) => eval_expr(&e),
+        None => Err(format!("argument \"{formal}\" is missing, with no default")),
     }
 }
