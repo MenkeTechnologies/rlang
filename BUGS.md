@@ -14,6 +14,19 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Evaluation model
 
+- **Which of `NA` and `NaN` survives an operation on both is the hardware's,
+  and rlang reproduces x86-64's answer only.** `NaN + NA`, `sum(c(1, NaN,
+  NA))` and `mean(c(NaN, NA))` are computed by R as plain C double
+  arithmetic, and R documents the outcome as platform-dependent. An x86-64 R
+  keeps the first operand's payload (`NaN + NA` is NaN), which is what rlang
+  implements and what the corpus is frozen against (the `Rscript` on `PATH`).
+  An arm64 R propagates the signalling `NA` payload R stores for a literal
+  `NA` over a quiet NaN in either order (`NaN + NA` is NA), but a quieted `NA`
+  — one already through an operation — does not win, so `sum(c(NaN, 1),
+  c(NA, 2))` is still NaN there. rlang holds a missing double as `None`, not as
+  a payload with a signalling bit, so it cannot tell those two `NA`s apart.
+  This is the one divergence class `parity-fuzz` reports against the
+  Homebrew arm64 `Rscript` (`sum(c(NaN, NA))`, mode `missing`).
 - **`force` and `withVisible` lose their argument's visibility** — fixed. The
   diagnosis recorded here was wrong: neither name is in `compiler::R_PRIMITIVES`
   (R implements both as closures, so neither belongs there), and `call_op`'s
@@ -265,13 +278,14 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Printing and formatting
 
-- **A value that went through a replacement function loses the name `table()`
-  labels it with.** After `names(v) <- …`, `attr(v, "k") <- …` or
-  `levels(f) <- …`, `table(v)` prints its counts without the leading line naming
-  the variable, where the reference prints `v`. An untouched variable is
-  labelled correctly, so what is lost is carried on the value rather than read
-  off the call. Every replacement function does it, including ones that long
-  predate the indexed form, so it is not specific to `f(x)[i] <- v`.
+- **`table(v)` lost the line naming `v` after a replacement function** — fixed.
+  The diagnosis recorded here (a name carried on the value) was wrong: a
+  replacement target makes a program ineligible for slot compilation, and on
+  the general path the compiler had already wrapped `v` in a promise thunk
+  before it looked for a bare symbol to pass as `.dnn`. The names are now read
+  before the promise rewrite, one per unnamed argument, which also gives
+  `table(a, b)` both margin names. `library(pkg)` had the same ordering bug and
+  read `pkg` as a variable. Regression: the `table` snippets in the corpus.
 
 
 - **Numeric literals with a decimal exponent past about ±100 parse to a
