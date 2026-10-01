@@ -2308,6 +2308,25 @@ pub fn force_value(v: &Value) -> Result<Value, String> {
     Ok(out)
 }
 
+/// R's `findFun`: the first binding of `name`, from the current frame outward,
+/// that is a function — forcing a promise on the way to see what it holds, so
+/// a function factory's unforced argument (`function(f) function(x) f(x)`) is
+/// callable. A binding that is not a function, forced or not, is passed over.
+pub fn lookup_function_forcing(name: &str) -> Result<Option<Value>, String> {
+    let mut e = Some(with_host(|h| h.env()));
+    while let Some(cur) = e {
+        let hit = cur.borrow().vars.get(name).cloned();
+        if let Some(v) = hit {
+            let v = force_value(&v)?;
+            if with_host(|h| h.is_function(&v)) {
+                return Ok(Some(v));
+            }
+        }
+        e = cur.borrow().parent.clone();
+    }
+    Ok(None)
+}
+
 /// Call any callable value with an already-evaluated argument list.
 pub fn call_value(
     f: &Value,

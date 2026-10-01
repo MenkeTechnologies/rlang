@@ -250,7 +250,11 @@ fn r_dirname(path: &str) -> String {
         None => ".".into(),
         Some(i) => {
             let head = p[..i].trim_end_matches('/');
-            if head.is_empty() { "/".into() } else { head.to_string() }
+            if head.is_empty() {
+                "/".into()
+            } else {
+                head.to_string()
+            }
         }
     }
 }
@@ -510,12 +514,19 @@ fn bquote_in(e: &Expr) -> Result<Expr, String> {
     };
     Ok(match e {
         Expr::Call { fun, args: xs } => match (fun.as_ref(), xs.as_slice()) {
-            (Expr::Ident(f), [Arg { name: None, value: Some(x) }]) if f == "." => {
+            (
+                Expr::Ident(f),
+                [Arg {
+                    name: None,
+                    value: Some(x),
+                }],
+            ) if f == "." => {
                 let v = eval_expr(x)?;
                 match lang_of(&v) {
                     Some(l) => l,
-                    None => value_as_expr(&v)
-                        .ok_or_else(|| format!("cannot splice {} into bquote", deparse_value(&v)))?,
+                    None => value_as_expr(&v).ok_or_else(|| {
+                        format!("cannot splice {} into bquote", deparse_value(&v))
+                    })?,
                 }
             }
             _ => Expr::Call {
@@ -553,7 +564,11 @@ fn bquote_in(e: &Expr) -> Result<Expr, String> {
             value: boxed(value)?,
             super_assign: *super_assign,
         },
-        Expr::Index { kind, obj, args: xs } => Expr::Index {
+        Expr::Index {
+            kind,
+            obj,
+            args: xs,
+        } => Expr::Index {
             kind: *kind,
             obj: boxed(obj)?,
             args: args(xs)?,
@@ -848,13 +863,12 @@ fn list_elt_text(v: &Value) -> String {
         let na = |s: Option<String>| s.unwrap_or_else(|| "NA".into());
         Some(match x {
             RData::Str(xs) => xs.iter().map(quote).collect(),
-            RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) => crate::host::with_print_digits(
-                crate::host::AS_CHARACTER_DIGITS,
-                || as_str(v),
-            )
-            .into_iter()
-            .map(na)
-            .collect(),
+            RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) => {
+                crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || as_str(v))
+                    .into_iter()
+                    .map(na)
+                    .collect()
+            }
             _ => return None,
         })
     };
@@ -890,10 +904,12 @@ fn list_elt_text(v: &Value) -> String {
     let parts: Vec<String> = items
         .into_iter()
         .enumerate()
-        .map(|(i, s)| match names.as_ref().and_then(|ns| ns[i].as_deref()) {
-            Some(n) if !n.is_empty() => format!("{} = {s}", crate::deparse::quote_name(n)),
-            _ => s,
-        })
+        .map(
+            |(i, s)| match names.as_ref().and_then(|ns| ns[i].as_deref()) {
+                Some(n) if !n.is_empty() => format!("{} = {s}", crate::deparse::quote_name(n)),
+                _ => s,
+            },
+        )
         .collect();
     format!("c({})", parts.join(", "))
 }
@@ -1085,14 +1101,15 @@ fn cran_has_function(_: &str) -> bool {
 
 fn b_getfun(vm: &mut VM, _: u8) -> Value {
     let name = name_of(&vm.pop());
-    match with_host(|h| h.lookup_function(&name)) {
-        Some(v) => v,
+    match crate::host::lookup_function_forcing(&name) {
+        Err(e) => abort(vm, e),
+        Ok(Some(v)) => v,
         // An unknown *function* resolves to a builtin regardless: at call time
         // the CRAN bridge delegates it to embedded R (a base function rlang
         // doesn't implement, or a loaded package's routine), reproducing the
         // "could not find function" error if R lacks it too. A bare *variable*
         // (`b_getvar`) is unaffected — it still errors as "object not found".
-        None => primitive_value(&name)
+        Ok(None) => primitive_value(&name)
             .unwrap_or_else(|| with_host(|h| h.alloc(RData::Builtin(name.clone())))),
     }
 }
@@ -1100,9 +1117,12 @@ fn b_getfun(vm: &mut VM, _: u8) -> Value {
 /// The function a name resolves to in function position: a binding that is a
 /// function, else a primitive — `match.fun`'s lookup for a string.
 pub(crate) fn function_named(name: &str) -> Option<Value> {
-    with_host(|h| h.lookup_function(name)).or_else(|| {
-        is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
-    })
+    crate::host::lookup_function_forcing(name)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string()))))
+        })
 }
 
 /// A primitive as a first-class value, so `sapply(x, sqrt)` works.
@@ -1516,7 +1536,11 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
             // A user-defined infix operator is an ordinary function named
             // `%other%`.
             let fname = format!("%{other}%");
-            match with_host(|h| h.lookup_function(&fname)).or_else(|| primitive_value(&fname)) {
+            match crate::host::lookup_function_forcing(&fname)
+                .ok()
+                .flatten()
+                .or_else(|| primitive_value(&fname))
+            {
                 Some(f) => call_value(&f, vec![(None, lhs), (None, rhs)], Some(fname)),
                 None => Err(format!("could not find function \"{fname}\"")),
             }
@@ -1867,7 +1891,9 @@ fn binop_internal(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         "+" | "-" | "*" | "/" | "^" | "%%" | "%/%" => {
             // R's arithmetic takes numbers only: a list, a function, an
             // environment or a language object is rejected outright.
-            let non_numeric = |v: &Value| not_data(v) || matches!(kind(v), RKind::List | RKind::Lang | RKind::Sym);
+            let non_numeric = |v: &Value| {
+                not_data(v) || matches!(kind(v), RKind::List | RKind::Lang | RKind::Sym)
+            };
             if non_numeric(lhs) || non_numeric(rhs) {
                 return Err("non-numeric argument to binary operator".into());
             }
@@ -1875,7 +1901,9 @@ fn binop_internal(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         }
         "==" | "!=" | "<" | ">" | "<=" | ">=" => {
             if not_data(lhs) || not_data(rhs) {
-                return Err(format!("comparison ({op}) is possible only for atomic and list types"));
+                return Err(format!(
+                    "comparison ({op}) is possible only for atomic and list types"
+                ));
             }
             // `relop` compares a symbol by its name and a call by its deparse,
             // so `quote(f(x)) == "f(x)"` is TRUE.
@@ -1931,6 +1959,15 @@ fn carry_attrs(out: &Value, lhs: &Value, rhs: &Value) {
     if let Some(names) = fits(lhs).or_else(|| fits(rhs)) {
         set("names", names);
     }
+}
+
+/// The result of a `Math` group member (`round`, `sqrt`, `abs`, `log`, …):
+/// R's `math1`/`math2` give it every attribute of `x` — shape, labels, class
+/// and the rest — so `round(table(x) / 3, 2)` is still a table.
+fn math_like(out: Value, x: &Value) -> Value {
+    carry_attrs(&out, x, x);
+    copy_most_attrs(&out, x);
+    out
 }
 
 /// R's `copyMostAttrib`: every attribute of `from` but `names`, `dim` and
@@ -2553,6 +2590,7 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     // `[.factor` puts the level table and class back on the subset codes, and
     // `drop = TRUE` then re-levels to only the labels that survived.
     carry_factor(&out, x);
+    keep_one_d_array(&out, x, args);
     let drop = args
         .iter()
         .find(|(t, _)| t.as_deref() == Some("drop"))
@@ -2562,6 +2600,52 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
         return Ok(drop_unused_levels(&out));
     }
     Ok(out)
+}
+
+/// A one-dimensional array (a 1-D `table`, `array(1:3, 3)`) keeps its `dim`
+/// under `x[i]` unless `drop` leaves a single element, the selected labels
+/// moving from `names` back into `dimnames` (whose own names survive), as R's
+/// `do_subset_dflt` does. `[.table` then puts the class back on a table.
+fn keep_one_d_array(out: &Value, x: &Value, args: &[(Option<String>, Value)]) {
+    let Some(dim) = with_host(|h| h.attr(x, "dim")) else {
+        return;
+    };
+    if len(&dim) != 1 || is_factor(x) {
+        return;
+    }
+    let drop = args
+        .iter()
+        .find(|(t, _)| t.as_deref() == Some("drop"))
+        .and_then(|(_, v)| lgl1(v))
+        .unwrap_or(true);
+    let n = len(out);
+    if drop && n <= 1 {
+        return;
+    }
+    let labels = names_of(out);
+    let d = mk_int(vec![Some(n as i64)]);
+    with_host(|h| h.set_attr(out, "dim", d));
+    if let Some(dn) = with_host(|h| h.attr(x, "dimnames")) {
+        let row = if labels.is_empty() {
+            null()
+        } else {
+            mk_str(labels)
+        };
+        let nd = mk_list(vec![row]);
+        if let Some(dnn) = with_host(|h| h.attr(&dn, "names")) {
+            with_host(|h| h.set_attr(&nd, "names", dnn));
+        }
+        let none = null();
+        with_host(|h| {
+            h.set_attr(out, "names", none);
+            h.set_attr(out, "dimnames", nd);
+        });
+    }
+    if class_of(x).iter().any(|c| c == "table") {
+        if let Some(cl) = with_host(|h| h.attr(x, "class")) {
+            with_host(|h| h.set_attr(out, "class", cl));
+        }
+    }
 }
 
 /// R's *matrix subscript*: when an array is indexed with a single argument that
@@ -3640,6 +3724,7 @@ pub const PRIMITIVES: &[&str] = &[
     "is.infinite",
     "anyNA",
     "complete.cases",
+    "na.omit",
     "is.double",
     "is.integer",
     "is.numeric",
@@ -3986,7 +4071,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             // A list element becomes one string each — see `list_elt_text`.
             if kind(&x) == RKind::List {
-                return Ok(mk_str(elements(&x).iter().map(|e| Some(list_elt_text(e))).collect()));
+                return Ok(mk_str(
+                    elements(&x)
+                        .iter()
+                        .map(|e| Some(list_elt_text(e)))
+                        .collect(),
+                ));
             }
             // `as.character(factor)` yields the level labels, not the codes.
             if class_of(&x).iter().any(|c| c == "factor") {
@@ -4423,7 +4513,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if kind(&text) != RKind::Str {
                 return Err("can only write character objects".into());
             }
-            let sep = a.get(2, "sep").and_then(|v| str1(&v)).unwrap_or_else(|| "\n".into());
+            let sep = a
+                .get(2, "sep")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "\n".into());
             let out: String = as_str(&text)
                 .into_iter()
                 .map(|s| s.unwrap_or_else(|| "NA".into()) + &sep)
@@ -4438,7 +4531,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `file.path(..., fsep = "/")`: the parts joined element-wise, recycled
         // to the longest; any zero-length part makes the result empty.
         "file.path" => {
-            let fsep = a.named("fsep").and_then(|v| str1(&v)).unwrap_or_else(|| "/".into());
+            let fsep = a
+                .named("fsep")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "/".into());
             let parts: Vec<Vec<Option<String>>> = a
                 .all
                 .iter()
@@ -4521,11 +4617,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let Some(x) = a.get(0, "x") else {
                 return Err("Sys.getenv() with no arguments is not supported".into());
             };
-            let unset = a.get(1, "unset").map(|v| as_str(&v)).and_then(|v| v.into_iter().next()).unwrap_or(Some(String::new()));
+            let unset = a
+                .get(1, "unset")
+                .map(|v| as_str(&v))
+                .and_then(|v| v.into_iter().next())
+                .unwrap_or(Some(String::new()));
             let keys = as_str(&x);
             let out = mk_str(
                 keys.iter()
-                    .map(|k| k.as_deref().and_then(|k| std::env::var(k).ok()).or_else(|| unset.clone()))
+                    .map(|k| {
+                        k.as_deref()
+                            .and_then(|k| std::env::var(k).ok())
+                            .or_else(|| unset.clone())
+                    })
                     .collect(),
             );
             let names = a.get(2, "names").and_then(|v| lgl1(&v));
@@ -4535,7 +4639,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "Sys.setenv" => {
-            if a.all.iter().any(|(t, _)| t.as_deref().map_or(true, str::is_empty)) {
+            if a.all
+                .iter()
+                .any(|(t, _)| t.as_deref().map_or(true, str::is_empty))
+            {
                 return Err("all arguments must be named".into());
             }
             let set: Vec<Option<bool>> = a
@@ -4579,7 +4686,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `NROW`/`NCOL`: a vector counts as one column of `length(x)` rows.
         "NROW" | "NCOL" => {
             let x = a.req(0, "x")?;
-            let dim = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d)).unwrap_or_default();
+            let dim = with_host(|h| h.attr(&x, "dim"))
+                .map(|d| as_int(&d))
+                .unwrap_or_default();
             let n = if name == "NROW" {
                 dim.first().copied().flatten().unwrap_or(len(&x) as i64)
             } else if is_null(&x) {
@@ -4619,12 +4728,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "prop.table" | "proportions" => {
             let x = a.req(0, "x")?;
             let total = |xs: &[Option<f64>]| xs.iter().try_fold(0.0, |s, v| v.map(|v| s + v));
-            let margin = a.get(1, "margin").filter(|m| !is_null(m)).and_then(|m| num1(&m));
+            let margin = a
+                .get(1, "margin")
+                .filter(|m| !is_null(m))
+                .and_then(|m| num1(&m));
             let Some(margin) = margin else {
                 let t = total(&as_dbl(&x));
                 return binop_internal("/", &x, &mk_dbl(vec![t]));
             };
-            let dim = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d)).unwrap_or_default();
+            let dim = with_host(|h| h.attr(&x, "dim"))
+                .map(|d| as_int(&d))
+                .unwrap_or_default();
             let (Some(Some(nr)), Some(Some(nc)), 2) = (dim.first(), dim.get(1), dim.len()) else {
                 return Err("'x' is not an array".into());
             };
@@ -4632,7 +4746,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let xs = as_dbl(&x);
             let by_row = margin == 1.0;
             let sums: Vec<Option<f64>> = if by_row {
-                (0..nr).map(|i| total(&(0..nc).map(|j| xs[i + j * nr]).collect::<Vec<_>>())).collect()
+                (0..nr)
+                    .map(|i| total(&(0..nc).map(|j| xs[i + j * nr]).collect::<Vec<_>>()))
+                    .collect()
             } else {
                 (0..nc).map(|j| total(&xs[j * nr..(j + 1) * nr])).collect()
             };
@@ -4684,7 +4800,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     if warn {
                         user_warning(&text);
                     } else {
-                        eprint!("{text}");
+                        crate::host::emit_stderr(&text);
                     }
                 }
                 Signalled::Muffled => {}
@@ -5152,8 +5268,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if !nm.is_empty() {
                 set_names(&out, nm.into_iter().rev().collect());
             }
-            // `rev.default` is `x[length(x):1L]`, so a factor stays one.
+            // `rev.default` is `x[length(x):1L]`, so a factor stays one, and so
+            // does a 1-D table.
             carry_factor(&out, &x);
+            keep_one_d_array(&out, &x, &[]);
             Ok(out)
         }
         "unname" => {
@@ -5247,8 +5365,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 (total as usize - k..total as usize).map(Some).collect()
             };
             let out = take_positions(&x, &pos);
+            let nm = names_of(&x);
+            if !nm.is_empty() {
+                set_names(&out, pos.iter().flatten().map(|&i| nm[i].clone()).collect());
+            }
             // `head`/`tail` are `x[seq]`, which for a factor is `[.factor`.
+            // `head.array` subsets with `drop = FALSE`, so a 1-D table stays one
+            // even at a single element.
             carry_factor(&out, &x);
+            keep_one_d_array(&out, &x, &[(Some("drop".into()), scalar_lgl(false))]);
             Ok(out)
         }
         "append" => {
@@ -5293,7 +5418,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `na.last` defaults to `NA` for `sort` (drop the missing values)
             // and to `TRUE` for `order` (keep them, at the end).
             let na_last = na_last_arg(&a, None);
-            let sorted = sort_value(&x, decreasing, na_last);
+            // `sort.default` sorts a classed value (a 1-D table) as
+            // `x[order(x)]`, so the subset method keeps what it is.
+            let one_d = with_host(|h| h.attr(&x, "dim")).is_some_and(|d| len(&d) == 1);
+            let sorted = if one_d && !is_factor(&x) && with_host(|h| h.attr(&x, "class")).is_some()
+            {
+                index_single(&x, &[(None, order_value(&x, decreasing, na_last))])?
+            } else {
+                sort_value(&x, decreasing, na_last)
+            };
             // `index.return = TRUE` also returns the ordering as `$ix`.
             if a.named("index.return")
                 .and_then(|v| lgl1(&v))
@@ -5539,27 +5672,39 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
+        // R's `do_first_min`: NA and NaN are skipped, the first extreme wins,
+        // and the answer keeps that element's name.
         "which.max" | "which.min" => {
-            let xs = as_dbl(&a.req(0, "x")?);
+            let x = a.req(0, "x")?;
+            let xs = as_dbl(&x);
             let mut best: Option<(usize, f64)> = None;
             for (i, e) in xs.iter().enumerate() {
-                let Some(v) = e else { continue };
+                let Some(v) = e.filter(|v| !v.is_nan()) else {
+                    continue;
+                };
                 let better = match best {
                     None => true,
                     Some((_, b)) => {
                         if name == "which.max" {
-                            *v > b
+                            v > b
                         } else {
-                            *v < b
+                            v < b
                         }
                     }
                 };
                 if better {
-                    best = Some((i, *v));
+                    best = Some((i, v));
                 }
             }
             Ok(match best {
-                Some((i, _)) => scalar_int(i as i64 + 1),
+                Some((i, _)) => {
+                    let out = scalar_int(i as i64 + 1);
+                    let nm = names_of(&x);
+                    if !nm.is_empty() {
+                        set_names(&out, vec![nm.get(i).cloned().flatten()]);
+                    }
+                    out
+                }
                 None => mk_int(vec![]),
             })
         }
@@ -5999,7 +6144,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `abs` on an integer vector stays integer, like R.
             if name == "abs" {
                 if let RData::Int(v) = data(&x) {
-                    return Ok(mk_int(v.iter().map(|e| e.map(|n| n.abs())).collect()));
+                    return Ok(math_like(
+                        mk_int(v.iter().map(|e| e.map(|n| n.abs())).collect()),
+                        &x,
+                    ));
                 }
             }
             let input = as_dbl(&x);
@@ -6010,9 +6158,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if produced_nan(&vals, &input) {
                 nan_warning()?;
             }
-            let out = mk_dbl(vals);
-            carry_attrs(&out, &x, &x);
-            Ok(out)
+            Ok(math_like(mk_dbl(vals), &x))
         }
         "log" => {
             let x = a.req(0, "x")?;
@@ -6034,7 +6180,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if produced_nan(&vals, &input) {
                 nan_warning()?;
             }
-            shaped_like(mk_dbl(vals), &x)
+            Ok(math_like(mk_dbl(vals), &x))
         }
         "atan2" => {
             let y = as_dbl(&a.req(0, "y")?);
@@ -6184,7 +6330,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "round" => {
             let x = a.req(0, "x")?;
             let digits = a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(0.0) as i32;
-            shaped_like(
+            Ok(math_like(
                 mk_dbl(
                     as_dbl(&x)
                         .iter()
@@ -6192,12 +6338,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .collect(),
                 ),
                 &x,
-            )
+            ))
         }
         "signif" => {
             let x = a.req(0, "x")?;
             let digits = (a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(6.0) as i32).max(1);
-            shaped_like(
+            Ok(math_like(
                 mk_dbl(
                     as_dbl(&x)
                         .iter()
@@ -6205,7 +6351,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .collect(),
                 ),
                 &x,
-            )
+            ))
         }
 
         // ── predicates ──────────────────────────────────────────────────
@@ -6288,6 +6434,63 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 _ => vec![false; len(&x)],
             };
             Ok(mk_lgl(na.into_iter().map(|n: bool| Some(!n)).collect()))
+        }
+        // `na.omit.default`: drop the missing elements of an atomic vector (the
+        // rows holding one, for a matrix) and record their positions, named by
+        // the dropped labels, as an `"omit"`-classed `na.action` attribute.
+        // Anything else — a list, an array of rank > 2 — comes back as is.
+        "na.omit" => {
+            let x = a.req(0, "object")?;
+            let missing: Vec<usize> = match data(&x) {
+                RData::Dbl(v) => v
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.map_or(true, f64::is_nan))
+                    .map(|(i, _)| i)
+                    .collect(),
+                RData::Int(v) => (0..v.len()).filter(|&i| v[i].is_none()).collect(),
+                RData::Lgl(v) => (0..v.len()).filter(|&i| v[i].is_none()).collect(),
+                RData::Str(v) => (0..v.len()).filter(|&i| v[i].is_none()).collect(),
+                _ => return Ok(x),
+            };
+            let dim: Vec<usize> = with_host(|h| h.attr(&x, "dim"))
+                .map(|d| as_int(&d).iter().map(|e| e.unwrap_or(0) as usize).collect())
+                .unwrap_or_default();
+            if dim.len() > 2 || missing.is_empty() {
+                return Ok(x);
+            }
+            let (omit, labels, out) = if dim.len() == 2 {
+                let mut rows: Vec<usize> = missing.iter().map(|i| i % dim[0].max(1)).collect();
+                rows.dedup();
+                let mut seen = std::collections::HashSet::new();
+                rows.retain(|r| seen.insert(*r));
+                let drop_rows = mk_int(rows.iter().map(|r| Some(-(*r as i64) - 1)).collect());
+                let out = index_single(
+                    &x,
+                    &[
+                        (None, drop_rows),
+                        (None, Value::Undef),
+                        (Some("drop".into()), scalar_lgl(false)),
+                    ],
+                )?;
+                let labels = dimnames_of(&x).first().cloned().flatten();
+                (rows, labels, out)
+            } else {
+                let drop = mk_int(missing.iter().map(|i| Some(-(*i as i64) - 1)).collect());
+                let out = index_single(&x, &[(None, drop)])?;
+                let nm = names_of(&x);
+                (missing, (!nm.is_empty()).then_some(nm), out)
+            };
+            let action = mk_int(omit.iter().map(|i| Some(*i as i64 + 1)).collect());
+            if let Some(labels) = labels {
+                set_names(&action, omit.iter().map(|&i| labels[i].clone()).collect());
+            }
+            let class = scalar_str("omit");
+            with_host(|h| {
+                h.set_attr(&action, "class", class);
+                h.set_attr(&out, "na.action", action);
+            });
+            Ok(out)
         }
         // `is.numeric` is true for both numeric types; `is.double` and
         // `is.integer` distinguish them (`is.double(1L)` is FALSE). All three
@@ -6841,7 +7044,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                             .enumerate()
                             .map(|(i, st)| {
                                 let one = mk_int(vec![st]);
-                                let ln = lens.as_ref().and_then(|l| as_int(l).get(i).copied().flatten());
+                                let ln = lens
+                                    .as_ref()
+                                    .and_then(|l| as_int(l).get(i).copied().flatten());
                                 let lv = mk_int(vec![ln]);
                                 with_host(|h| h.set_attr(&one, "match.length", lv));
                                 one
@@ -6863,7 +7068,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         let mut pieces = Vec::new();
                         let mut at = 0usize;
                         for (st, ln) in as_int(mi).iter().zip(&lens) {
-                            let (Some(st), Some(ln)) = (st, ln) else { continue };
+                            let (Some(st), Some(ln)) = (st, ln) else {
+                                continue;
+                            };
                             if *st < 1 {
                                 continue;
                             }
@@ -10029,33 +10236,13 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
         }
         _ => {
             let replacement = str1(&a.req(1, "replacement")?).unwrap_or_default();
-            // R writes back-references as \1; the regex crate wants ${1}. The
-            // brace form is required (bare `$1_` would read `1_` as the group
-            // name), and `\\` collapses to a literal backslash as R does.
-            let rep = if fixed {
-                replacement.replace('$', "$$")
+            let perl = a.named("perl").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let pieces = if fixed {
+                vec![RepPiece::Lit(replacement)]
             } else {
-                let mut out = String::new();
-                let mut chars = replacement.chars().peekable();
-                while let Some(c) = chars.next() {
-                    if c == '\\' {
-                        match chars.next() {
-                            Some(d) if d.is_ascii_digit() => {
-                                out.push_str("${");
-                                out.push(d);
-                                out.push('}');
-                            }
-                            Some(d) => out.push(d),
-                            None => out.push('\\'),
-                        }
-                    } else if c == '$' {
-                        out.push_str("$$");
-                    } else {
-                        out.push(c);
-                    }
-                }
-                out
+                parse_replacement(&replacement, perl)
             };
+            let expand = |caps: &regex::Captures| expand_replacement(&pieces, caps);
             // `sub`/`gsub` rewrite each element in place, so the result keeps
             // the subject's names/dim (`grepl`/`grep` do not: one selects, the
             // other renumbers).
@@ -10065,9 +10252,9 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
                         .map(|s| {
                             s.as_ref().map(|s| {
                                 if name == "sub" {
-                                    re.replace(s, rep.as_str()).into_owned()
+                                    re.replace(s, &expand).into_owned()
                                 } else {
-                                    re.replace_all(s, rep.as_str()).into_owned()
+                                    re.replace_all(s, &expand).into_owned()
                                 }
                             })
                         })
@@ -10077,6 +10264,72 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
             )
         }
     }
+}
+
+/// One piece of a `sub`/`gsub` replacement string.
+enum RepPiece {
+    Lit(String),
+    Group(usize),
+    /// `\U` / `\L` / `\E` (perl = TRUE only): upper-case, lower-case, or stop
+    /// changing the case of the back-references that follow.
+    Case(Option<bool>),
+}
+
+/// Split a replacement the way R's `string_adj` / `R_pcre_string_adj` read
+/// it: `\1`…`\9` is a back-reference, `\U`/`\L`/`\E` switch case conversion
+/// when `perl` is set, a trailing `\` is dropped, and any other `\c` is the
+/// literal `c` (so `\0` is `0` and `\\` is one backslash).
+fn parse_replacement(rep: &str, perl: bool) -> Vec<RepPiece> {
+    let mut out = Vec::new();
+    let mut lit = String::new();
+    let mut chars = rep.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            lit.push(c);
+            continue;
+        }
+        let piece = match chars.next() {
+            Some(d @ '1'..='9') => RepPiece::Group(d as usize - '0' as usize),
+            Some('U') if perl => RepPiece::Case(Some(true)),
+            Some('L') if perl => RepPiece::Case(Some(false)),
+            Some('E') if perl => RepPiece::Case(None),
+            Some(d) => {
+                lit.push(d);
+                continue;
+            }
+            None => continue,
+        };
+        if !lit.is_empty() {
+            out.push(RepPiece::Lit(std::mem::take(&mut lit)));
+        }
+        out.push(piece);
+    }
+    if !lit.is_empty() {
+        out.push(RepPiece::Lit(lit));
+    }
+    out
+}
+
+/// Build one match's replacement. As in R, `\U`/`\L` convert only the
+/// back-referenced text, never the literal text between them.
+fn expand_replacement(pieces: &[RepPiece], caps: &regex::Captures) -> String {
+    let mut out = String::new();
+    let mut case = None;
+    for p in pieces {
+        match p {
+            RepPiece::Lit(s) => out.push_str(s),
+            RepPiece::Case(c) => case = *c,
+            RepPiece::Group(k) => {
+                let g = caps.get(*k).map_or("", |m| m.as_str());
+                match case {
+                    Some(true) => out.push_str(&g.to_uppercase()),
+                    Some(false) => out.push_str(&g.to_lowercase()),
+                    None => out.push_str(g),
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `sprintf(fmt, ...)` — vectorized over the arguments, with R's `%d %i %s %f
@@ -10222,7 +10475,10 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 _ => {
                     // `%s` coerces the way `as.character` does: a double keeps
                     // 15 significant digits, not the 7 `print` shows.
-                    let v = crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || as_str(&arg))
+                    let v =
+                        crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || {
+                            as_str(&arg)
+                        })
                         .get(k)
                         .cloned()
                         .flatten()
@@ -11690,7 +11946,7 @@ fn r_try(a: &Args) -> Result<Value, String> {
                 None => format!("Error : {msg}\n"),
             };
             if !silent {
-                eprint!("{text}");
+                crate::host::emit_stderr(&text);
             }
             let out = scalar_str(text);
             let classes: Vec<&str> = if classes.is_empty() {

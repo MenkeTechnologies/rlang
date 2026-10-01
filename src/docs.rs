@@ -773,6 +773,11 @@ const PREDICATES: &[Entry] = &[
         "TRUE at each non-missing element. Over a plain vector this is the negation of is.na; data-frame input is not supported natively.",
     ),
     (
+        "na.omit",
+        "na.omit(object)",
+        "na.omit.default: drops the missing elements of an atomic vector (the rows holding one, for a matrix) and records their positions, named by the dropped labels, in an omit-classed na.action attribute. A list or a higher-rank array is returned unchanged.",
+    ),
+    (
         "is.numeric",
         "is.numeric(x)",
         "TRUE for a double or integer vector, and FALSE for a factor — which R excludes explicitly even though a factor is stored as an integer vector.",

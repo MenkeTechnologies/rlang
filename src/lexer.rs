@@ -545,6 +545,9 @@ impl<'a> Lexer<'a> {
             b'?' => Tok::Question,
             b'$' => Tok::Dollar,
             b'@' => Tok::At,
+            // R 4.1's lambda shorthand: the parser reads `\(x) body` as
+            // `function(x) body`, so it deparses and prints as `function`.
+            b'\\' => Tok::Function,
             b',' => Tok::Comma,
             b';' => Tok::Semi,
             b'(' => {

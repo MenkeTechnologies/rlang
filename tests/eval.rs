@@ -712,3 +712,27 @@ fn environments_enclose_where_they_are_made() {
         "[1] TRUE"
     );
 }
+
+#[test]
+fn a_replacement_reads_back_references_the_way_r_does() {
+    // Only `\1`…`\9` refer to a group: `\0` is a literal `0`, in both regex
+    // engines, and a group the pattern lacks is empty.
+    assert_eq!(
+        r(r#"gsub("(a)", "<\\0>", "bab", perl = TRUE)"#),
+        "[1] \"b<0>b\""
+    );
+    assert_eq!(r(r#"gsub("(a)", "<\\0>", "bab")"#), "[1] \"b<0>b\"");
+    assert_eq!(r(r#"gsub("(b)", "[\\2]", "abc")"#), "[1] \"a[]c\"");
+    // `\U` / `\L` / `\E` (perl = TRUE only) change the case of the groups
+    // that follow, never the literal text between them.
+    assert_eq!(
+        r(r#"sub("(\\w+) (\\w+)", "\\U\\1 x\\E \\2", "hello world", perl = TRUE)"#),
+        "[1] \"HELLO x world\""
+    );
+    assert_eq!(
+        r(r#"gsub("(\\w)(\\w*)", "\\U\\1\\L\\2", "hELLO wORLD", perl = TRUE)"#),
+        "[1] \"Hello World\""
+    );
+    assert_eq!(r(r#"sub("a", "\\Ux", "a", perl = TRUE)"#), "[1] \"x\"");
+    assert_eq!(r(r#"sub("(\\w+)", "\\U\\1", "hello")"#), "[1] \"Uhello\"");
+}

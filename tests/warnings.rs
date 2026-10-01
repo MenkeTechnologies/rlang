@@ -325,3 +325,16 @@ fn a_muffled_warning_is_not_queued() {
         "[1] \"caught\"\n"
     );
 }
+
+#[test]
+fn messages_and_try_errors_keep_their_place_among_the_output() {
+    // `message()` and `try()`'s report go to stderr through the same ordered
+    // channel as the warning batches; written straight to stderr they landed
+    // ahead of every buffered line of stdout.
+    assert_eq!(
+        merged(
+            r#"print(1); message("m"); print(2); try(stop("e")); print(3); withCallingHandlers(warning("w"), warning = function(w) { message("caught ", conditionMessage(w)); invokeRestart("muffleWarning") }); print(4)"#
+        ),
+        "[1] 1\nm\n[1] 2\nError in try(stop(\"e\")) : e\n[1] 3\ncaught w\n[1] 4\n"
+    );
+}
