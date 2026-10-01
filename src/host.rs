@@ -140,6 +140,10 @@ pub mod ops {
     /// already opened. Identical to [`CALL`] but for adopting that entry
     /// instead of pushing a second one.
     pub const CALL_OPENED: u16 = 59;
+    /// `[v, which]` → `v` as one logical, for an operand of `&&` / `||`:
+    /// `which` is `"x&&"`, `"y||"`, … — the operand and the operator, which
+    /// name it in the error a non-number or a longer vector raises.
+    pub const LOGIC2_ARG: u16 = 60;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -1349,6 +1353,25 @@ impl RHost {
 
     /// Look up a name, skipping non-function bindings — R's function-position
     /// rule, which lets `c <- 1; c(1, 2)` still call the concatenate function.
+    /// Whether `name` is a formal of the closure running in the current frame
+    /// that the call left unbound — omitted, with no default to fill it. A
+    /// defaulted formal is bound by the prologue before any read, and `...`
+    /// is never read as a name.
+    pub fn unsupplied_formal(&self, name: &str) -> bool {
+        let Some(frame) = self.frames.last() else {
+            return false;
+        };
+        let Some((id, _)) = &frame.fun else {
+            return false;
+        };
+        if frame.promise || frame.env.borrow().vars.contains_key(name) {
+            return false;
+        }
+        self.closures
+            .get(*id)
+            .is_some_and(|c| c.params.iter().any(|p| p == name))
+    }
+
     pub fn lookup_function(&self, name: &str) -> Option<Value> {
         let mut e = Some(self.env());
         while let Some(cur) = e {

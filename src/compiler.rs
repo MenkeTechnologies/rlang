@@ -1384,7 +1384,16 @@ impl Compiler {
         lhs: &Expr,
         rhs: &Expr,
     ) -> Result<(), String> {
+        // Each operand is read down to one logical first (`LOGIC2_ARG`), so a
+        // longer vector or a string is R's error rather than a vectorized `&`.
+        let sym = if matches!(op, BinOp::And2) {
+            "&&"
+        } else {
+            "||"
+        };
         self.expr(b, lhs)?;
+        self.kstr(b, &format!("x{sym}"));
+        b.emit(Op::CallBuiltin(ops::LOGIC2_ARG, 2), 0);
         b.emit(Op::Dup, 0);
         let probe = if matches!(op, BinOp::And2) {
             ops::IS_FALSE
@@ -1394,6 +1403,8 @@ impl Compiler {
         b.emit(Op::CallBuiltin(probe, 1), 0);
         let done = b.emit(Op::JumpIfTrue(0), 0);
         self.expr(b, rhs)?;
+        self.kstr(b, &format!("y{sym}"));
+        b.emit(Op::CallBuiltin(ops::LOGIC2_ARG, 2), 0);
         self.kstr(b, binop_name(op));
         b.emit(Op::CallBuiltin(ops::BINOP, 3), 0);
         let end = b.current_pos();

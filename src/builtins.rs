@@ -92,6 +92,7 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::MARK_SHARED, b_mark_shared);
     vm.register_builtin(ops::OPEN_CALL, b_open_call);
     vm.register_builtin(ops::CALL_OPENED, b_call_opened);
+    vm.register_builtin(ops::LOGIC2_ARG, b_logic2_arg);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -1071,6 +1072,14 @@ fn b_getvar(vm: &mut VM, _: u8) -> Value {
     // a default-argument prologue ran `p <- <default>` (an invisible assignment),
     // so `function(x = 3) x` printed nothing.
     with_host(|h| h.visible = true);
+    // A formal the caller left out, with no default, is bound to R's missing
+    // marker: reading it is an error even when an outer scope has the name.
+    if with_host(|h| h.unsupplied_formal(&name)) {
+        return abort(
+            vm,
+            format!("argument \"{name}\" is missing, with no default"),
+        );
+    }
     match with_host(|h| h.lookup(&name)) {
         // A formal bound to an unforced argument is evaluated HERE, on the
         // first read — R's promise, and the reason an argument a function
@@ -2274,13 +2283,48 @@ fn colon(lhs: &Value, rhs: &Value) -> Value {
 
 // ── conditions and loop support ─────────────────────────────────────────
 
+/// An `if`/`while` condition, by R's `asLogicalNoNA`: more than one element is
+/// an error (R 4.2+), and a missing answer is reported by why it is missing —
+/// an `NA`, an empty condition, or a value with no logical reading (`"yes"`, a
+/// list).
 fn b_truthy(vm: &mut VM, _: u8) -> Value {
     let v = vm.pop();
-    match as_lgl(&v).first().copied() {
-        Some(Some(b)) => Value::Bool(b),
-        Some(None) => abort(vm, "missing value where TRUE/FALSE needed".into()),
-        None => abort(vm, "argument is of length zero".into()),
+    if let Value::Bool(b) = v {
+        return Value::Bool(b);
     }
+    let n = len(&v);
+    if n > 1 {
+        return abort(vm, "the condition has length > 1".into());
+    }
+    let readable = matches!(kind(&v), RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str);
+    match as_lgl(&v).first().copied().filter(|_| readable) {
+        Some(Some(b)) => Value::Bool(b),
+        _ if n == 0 => abort(vm, "argument is of length zero".into()),
+        Some(None) if kind(&v) == RKind::Lgl => {
+            abort(vm, "missing value where TRUE/FALSE needed".into())
+        }
+        _ => abort(vm, "argument is not interpretable as logical".into()),
+    }
+}
+
+/// One operand of `&&` / `||`, read as R's `do_logic2` reads it
+/// (`asLogical2`): only a logical or number qualifies, a vector longer than one
+/// is an error (R 4.3+), and an empty one is `NA`.
+fn b_logic2_arg(vm: &mut VM, _: u8) -> Value {
+    let which = name_of(&vm.pop());
+    let v = vm.pop();
+    if let Value::Bool(_) = v {
+        return v;
+    }
+    let (operand, op) = which.split_at(1);
+    if is_factor(&v) || !matches!(kind(&v), RKind::Lgl | RKind::Int | RKind::Dbl) {
+        return abort(vm, format!("invalid '{operand}' type in 'x {op} y'"));
+    }
+    let n = len(&v);
+    if n > 1 {
+        return abort(vm, format!("'length = {n}' in coercion to 'logical(1)'"));
+    }
+    mk_lgl(vec![as_lgl(&v).first().copied().flatten()])
 }
 
 fn b_is_false(vm: &mut VM, _: u8) -> Value {
@@ -2828,6 +2872,26 @@ fn array_positions(
             Value::Undef => Ok((0..dims[d]).collect()),
             v => {
                 let labels = dimnames.get(d).cloned().flatten().unwrap_or_default();
+                // Unlike a vector, an array has no room to grow into: a
+                // subscript past a margin, or a label the margin lacks, is
+                // R's "subscript out of bounds" (NA still selects NA).
+                let oob = match data(v) {
+                    RData::Lgl(b) if b.len() > dims[d] => {
+                        return Err("(subscript) logical subscript too long".into())
+                    }
+                    RData::Str(keys) => keys
+                        .iter()
+                        .flatten()
+                        .any(|k| !labels.iter().any(|l| l.as_deref() == Some(k.as_str()))),
+                    RData::Int(_) | RData::Dbl(_) => as_dbl(v)
+                        .iter()
+                        .flatten()
+                        .any(|&i| i >= dims[d] as f64 + 1.0),
+                    _ => false,
+                };
+                if oob {
+                    return Err("subscript out of bounds".into());
+                }
                 resolve_index(v, dims[d], &labels).map(|p| p.into_iter().flatten().collect())
             }
         })
@@ -2893,6 +2957,16 @@ fn array_index(
                     .map(|&d| labels(d).map(mk_str).unwrap_or_else(null))
                     .collect(),
             );
+            // The surviving margins keep their names (`t2[1:2, ]` of a table).
+            let margin_names = with_host(|h| h.attr(x, "dimnames"))
+                .and_then(|d| with_host(|h| h.attr(&d, "names")))
+                .map(|n| as_str(&n));
+            if let Some(mn) = margin_names {
+                set_names(
+                    &dnv,
+                    kept.iter().map(|&d| mn.get(d).cloned().flatten()).collect(),
+                );
+            }
             with_host(|h| h.set_attr(&out, "dimnames", dnv));
         }
     } else if let Some(&d) = kept.first() {
@@ -4047,13 +4121,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .get(0, "mode")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| "logical".into());
-            let n = a.get(1, "length").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
-            Ok(empty_vector(&mode, n))
+            Ok(empty_vector(&mode, vector_length(&a, 1)?))
         }
-        "numeric" | "double" => Ok(mk_dbl(vec![Some(0.0); a.n(0, 0.0) as usize])),
-        "integer" => Ok(mk_int(vec![Some(0); a.n(0, 0.0) as usize])),
-        "character" => Ok(mk_str(vec![Some(String::new()); a.n(0, 0.0) as usize])),
-        "logical" => Ok(mk_lgl(vec![Some(false); a.n(0, 0.0) as usize])),
+        "numeric" | "double" => Ok(empty_vector("numeric", vector_length(&a, 0)?)),
+        "integer" => Ok(empty_vector("integer", vector_length(&a, 0)?)),
+        "character" => Ok(empty_vector("character", vector_length(&a, 0)?)),
+        "logical" => Ok(empty_vector("logical", vector_length(&a, 0)?)),
         "as.numeric" | "as.double" => {
             let x = a.req(0, "x")?;
             let out = as_dbl(&x);
@@ -5242,7 +5315,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         // ── sequences ───────────────────────────────────────────────────
         "seq_len" => {
-            let n = a.n(0, 0.0) as i64;
+            // `length.out` must read as one non-negative whole count.
+            let n = match a.n(0, f64::NAN) {
+                n if n >= 0.0 => n as i64,
+                _ => return Err("argument must be coercible to non-negative integer".into()),
+            };
             Ok(mk_int((1..=n).map(Some).collect()))
         }
         "seq_along" => {
@@ -5253,7 +5330,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `seq.default`, and both the message's call and the chain name it.
         "seq" => in_method("seq.default", || seq(&a)),
         "seq.int" => seq(&a),
-        "rep" => Ok(rep(&a)),
+        "rep" => rep(&a),
         "rep_len" => {
             let x = a.req(0, "x")?;
             let n = a.get(1, "length.out").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
@@ -5734,6 +5811,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .filter(|(t, _)| t.as_deref() != Some("na.rm"))
                 .map(|(_, v)| v)
                 .collect();
+            // Only numbers sum: `Summary.factor` refuses a factor, and
+            // `do_summary` any other type by name.
+            for v in &args {
+                if is_factor(v) {
+                    return Err(format!("\u{2018}{name}\u{2019} not meaningful for factors"));
+                }
+                if !matches!(kind(v), RKind::Int | RKind::Lgl | RKind::Dbl | RKind::Null) {
+                    let t = with_host(|h| h.type_of(v));
+                    return Err(format!("invalid 'type' ({t}) of argument"));
+                }
+            }
             let all_int = args
                 .iter()
                 .all(|v| matches!(kind(v), RKind::Int | RKind::Lgl));
@@ -5768,7 +5856,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             })
         }
         "mean" => {
-            if let Some(v) = missing_result(&a, &a.req(0, "x")?, true) {
+            // `mean.default` answers NA, with a warning naming itself, for
+            // anything that is not numbers or logicals.
+            let x = a.req(0, "x")?;
+            if is_factor(&x) || !matches!(kind(&x), RKind::Lgl | RKind::Int | RKind::Dbl) {
+                let call = with_host(|h| h.current_call())
+                    .map(|c| c.replacen("mean(", "mean.default(", 1));
+                signal_warning_in("argument is not numeric or logical: returning NA", call)?;
+                return Ok(mk_dbl(vec![None]));
+            }
+            if let Some(v) = missing_result(&a, &x, true) {
                 return Ok(v);
             }
             let xs = numeric_arg(&a, 0, "x")?;
@@ -6837,7 +6934,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             ))
         }
         "strsplit" => {
-            let x = as_str(&a.req(0, "x")?);
+            let xv = a.req(0, "x")?;
+            if kind(&xv) != RKind::Str {
+                return Err("non-character argument".into());
+            }
+            let x = as_str(&xv);
             let sep = str1(&a.req(1, "split")?).unwrap_or_default();
             let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
             // R's `split` is a regular expression by default (POSIX ERE);
@@ -8839,6 +8940,19 @@ fn numeric_arg(a: &Args, i: usize, name: &str) -> Result<Vec<f64>, String> {
     Ok(xs.into_iter().flatten().filter(|x| !x.is_nan()).collect())
 }
 
+/// The `length` of `vector()` / `numeric()` / `character()` …, taken from
+/// untagged position `i` or the `length` tag: R's `do_makevector` wants one
+/// non-negative count and calls anything else an "invalid 'length' argument".
+fn vector_length(a: &Args, i: usize) -> Result<usize, String> {
+    let Some(v) = a.get(i, "length") else {
+        return Ok(0);
+    };
+    match as_dbl(&v).as_slice() {
+        [Some(n)] if *n >= 0.0 => Ok(*n as usize),
+        _ => Err("invalid 'length' argument".into()),
+    }
+}
+
 fn empty_vector(mode: &str, n: usize) -> Value {
     match mode {
         "numeric" | "double" => mk_dbl(vec![Some(0.0); n]),
@@ -9129,17 +9243,25 @@ fn seq(a: &Args) -> Result<Value, String> {
     })
 }
 
-/// `rep(x, times=, each=)`.
-fn rep(a: &Args) -> Value {
+/// `rep(x, times=, each=)`. A missing or negative `times` or `each` is R's
+/// "invalid 'times' argument" (`each` likewise).
+fn rep(a: &Args) -> Result<Value, String> {
     let x = match a.get(0, "x") {
         Some(v) => v,
-        None => return null(),
+        None => return Ok(null()),
     };
-    let each = a
-        .named("each")
-        .and_then(|v| num1(&v))
-        .unwrap_or(1.0)
-        .max(0.0) as usize;
+    let each = match a.named("each") {
+        Some(v) => match as_dbl(&v).first().copied().flatten() {
+            Some(e) if e >= 0.0 => e as usize,
+            _ => return Err("invalid 'each' argument".into()),
+        },
+        None => 1,
+    };
+    if let Some(t) = a.get(1, "times") {
+        if as_dbl(&t).iter().any(|c| !c.is_some_and(|c| c >= 0.0)) {
+            return Err("invalid 'times' argument".into());
+        }
+    }
     let n = len(&x);
 
     // R applies `each` first: every element is repeated in place.
@@ -9192,7 +9314,7 @@ fn rep(a: &Args) -> Value {
     }
     // `rep.factor` is `structure(NextMethod(), class = class(x), levels = levels(x))`.
     carry_factor(&out, &x);
-    out
+    Ok(out)
 }
 
 fn sort_value(x: &Value, decreasing: bool, na_last: Option<bool>) -> Value {
@@ -9430,7 +9552,12 @@ extern "C" {
     fn tgamma(x: f64) -> f64;
     fn lgamma_r(x: f64, sign: *mut i32) -> f64;
 }
+/// R's `gammafn`: a pole (zero or a negative integer) is NaN, which the
+/// caller reports as "NaNs produced", where C's `tgamma` answers ±Inf.
 fn r_tgamma(x: f64) -> f64 {
+    if x == 0.0 || (x < 0.0 && x == x.round()) {
+        return f64::NAN;
+    }
     unsafe { tgamma(x) }
 }
 fn r_lgamma(x: f64) -> f64 {
