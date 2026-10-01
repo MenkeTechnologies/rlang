@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 321 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 323 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.9 &middot; 341 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.9 &middot; 343 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,16 +130,16 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 321 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 323 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-Construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-Attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
         <li><a href="#ch-Output-and-the-inlineminusRust-FFI">Output and the inline-Rust FFI</a> <span class="chapter-count">25</span></li>
-        <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
-        <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">17</span></li>
+        <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">18</span></li>
         <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">30</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">36</span></li>
@@ -517,7 +517,7 @@
     </section>
     <section class="tutorial-section" id="ch-Sequences">
       <h2>Sequences</h2>
-      <p class="chapter-meta">12 entries</p>
+      <p class="chapter-meta">13 entries</p>
       <article class="doc-entry" id="doc-seq-len">
         <h3><a class="doc-anchor" href="#doc-seq-len">#</a> <code>seq_len</code></h3>
         <pre><code class="lang-r r">seq_len(n)
@@ -586,9 +586,15 @@
       </article>
       <article class="doc-entry" id="doc-append">
         <h3><a class="doc-anchor" href="#doc-append">#</a> <code>append</code></h3>
-        <pre><code class="lang-r r">append(x, values)
+        <pre><code class="lang-r r">append(x, values, after = length(x))
 </code></pre>
-        <p>Concatenate values onto the end of x, with c()'s type promotion. R's `after` argument is accepted and ignored — insertion is always at the end.</p>
+        <p>Splice values into x after position `after` (by default at the end), with c()'s type promotion; a named x keeps its labels on both sides of the splice.</p>
+      </article>
+      <article class="doc-entry" id="doc-replace">
+        <h3><a class="doc-anchor" href="#doc-replace">#</a> <code>replace</code></h3>
+        <pre><code class="lang-r r">replace(x, list, values)
+</code></pre>
+        <p>A copy of x with the elements list selects (positions, names or a logical mask) set to values, recycled — R's x[list] &lt;- values; x.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-Ordering-and-sets">
@@ -650,9 +656,9 @@
       </article>
       <article class="doc-entry" id="doc-rank">
         <h3><a class="doc-anchor" href="#doc-rank">#</a> <code>rank</code></h3>
-        <pre><code class="lang-r r">rank(x)
+        <pre><code class="lang-r r">rank(x, ties.method = "average")
 </code></pre>
-        <p>Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = "average". Character input ranks in collation order, and the missing values take the trailing ranks. The result is always a double vector.</p>
+        <p>Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = "average", a double vector), or with ties.method = "first", "last", "min" or "max" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order, and the missing values take the trailing ranks. "random" is not supported.</p>
       </article>
       <article class="doc-entry" id="doc-sort-list">
         <h3><a class="doc-anchor" href="#doc-sort-list">#</a> <code>sort.list</code></h3>
@@ -687,7 +693,7 @@
     </section>
     <section class="tutorial-section" id="ch-Numeric-summaries">
       <h2>Numeric summaries</h2>
-      <p class="chapter-meta">17 entries</p>
+      <p class="chapter-meta">18 entries</p>
       <article class="doc-entry" id="doc-weighted-mean">
         <h3><a class="doc-anchor" href="#doc-weighted-mean">#</a> <code>weighted.mean</code></h3>
         <pre><code class="lang-r r">weighted.mean(x, w, na.rm = FALSE)
@@ -730,6 +736,12 @@
 </code></pre>
         <p>The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.</p>
       </article>
+      <article class="doc-entry" id="doc-cov">
+        <h3><a class="doc-anchor" href="#doc-cov">#</a> <code>cov</code></h3>
+        <pre><code class="lang-r r">cov(x, y)
+</code></pre>
+        <p>The sample covariance of two equal-length numeric vectors (n-1 denominator), each mean refined by a correction pass as R's cov.c does. A missing value in either gives NA; the use argument and matrix arguments are not supported.</p>
+      </article>
       <article class="doc-entry" id="doc-rle">
         <h3><a class="doc-anchor" href="#doc-rle">#</a> <code>rle</code></h3>
         <pre><code class="lang-r r">rle(x)
@@ -744,9 +756,9 @@
       </article>
       <article class="doc-entry" id="doc-var">
         <h3><a class="doc-anchor" href="#doc-var">#</a> <code>var</code></h3>
-        <pre><code class="lang-r r">var(x, na.rm = FALSE)
+        <pre><code class="lang-r r">var(x, y = NULL, na.rm = FALSE)
 </code></pre>
-        <p>The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. A covariance matrix from two arguments is not supported.</p>
+        <p>The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A covariance matrix of a matrix argument is not supported.</p>
       </article>
       <article class="doc-entry" id="doc-sd">
         <h3><a class="doc-anchor" href="#doc-sd">#</a> <code>sd</code></h3>
@@ -1446,13 +1458,13 @@
         <h3><a class="doc-anchor" href="#doc-Map">#</a> <code>Map</code></h3>
         <pre><code class="lang-r r">Map(f, ...)
 </code></pre>
-        <p>Apply f elementwise across several lists, stopping at the shortest, and return a list.</p>
+        <p>mapply(FUN = f, ..., SIMPLIFY = FALSE): apply f elementwise across several vectors or lists, recycled to the longest, and return the list of answers.</p>
       </article>
       <article class="doc-entry" id="doc-mapply">
         <h3><a class="doc-anchor" href="#doc-mapply">#</a> <code>mapply</code></h3>
-        <pre><code class="lang-r r">mapply(FUN, ...)
+        <pre><code class="lang-r r">mapply(FUN, ..., MoreArgs, SIMPLIFY = TRUE, USE.NAMES = TRUE)
 </code></pre>
-        <p>Like Map, but the arguments recycle to the longest and the result is simplified, matching R's default SIMPLIFY = TRUE.</p>
+        <p>Call FUN once per position across the vectors or lists in ..., recycled to the longest (an empty one makes the answer empty). A tag names that argument in each call, MoreArgs adds the same arguments to every call, the answer is labelled from the first argument, and with SIMPLIFY it collapses the way sapply does.</p>
       </article>
       <article class="doc-entry" id="doc-Reduce">
         <h3><a class="doc-anchor" href="#doc-Reduce">#</a> <code>Reduce</code></h3>
@@ -1486,9 +1498,9 @@
       </article>
       <article class="doc-entry" id="doc-tapply">
         <h3><a class="doc-anchor" href="#doc-tapply">#</a> <code>tapply</code></h3>
-        <pre><code class="lang-r r">tapply(X, INDEX, FUN)
+        <pre><code class="lang-r r">tapply(X, INDEX, FUN, ...)
 </code></pre>
-        <p>Apply FUN to each group of X defined by INDEX, returning one simplified value per level, named by level.</p>
+        <p>Apply FUN, with the extra arguments, to each cell of the cross-classification of X by INDEX (one grouping vector, or a list of them). The answer is an array over the level grid, labelled by the levels and by INDEX's names, NA for an empty cell; it is a list array when FUN's answers are not all single atomic values. Elements with a missing group are dropped.</p>
       </article>
       <article class="doc-entry" id="doc-modifyList">
         <h3><a class="doc-anchor" href="#doc-modifyList">#</a> <code>modifyList</code></h3>

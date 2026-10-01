@@ -440,8 +440,13 @@ const SEQUENCES: &[Entry] = &[
     ),
     (
         "append",
-        "append(x, values)",
-        "Concatenate values onto the end of x, with c()'s type promotion. R's `after` argument is accepted and ignored — insertion is always at the end.",
+        "append(x, values, after = length(x))",
+        "Splice values into x after position `after` (by default at the end), with c()'s type promotion; a named x keeps its labels on both sides of the splice.",
+    ),
+    (
+        "replace",
+        "replace(x, list, values)",
+        "A copy of x with the elements list selects (positions, names or a logical mask) set to values, recycled — R's x[list] <- values; x.",
     ),
 ];
 
@@ -493,8 +498,8 @@ const ORDERING: &[Entry] = &[
     ),
     (
         "rank",
-        "rank(x)",
-        "Ranks with tied values sharing the average of the slots they occupy — R's default ties.method = \"average\". Character input ranks in collation order, and the missing values take the trailing ranks. The result is always a double vector.",
+        "rank(x, ties.method = \"average\")",
+        "Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = \"average\", a double vector), or with ties.method = \"first\", \"last\", \"min\" or \"max\" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order, and the missing values take the trailing ranks. \"random\" is not supported.",
     ),
     (
         "sort.list",
@@ -560,6 +565,11 @@ const SUMMARIES: &[Entry] = &[
         "The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.",
     ),
     (
+        "cov",
+        "cov(x, y)",
+        "The sample covariance of two equal-length numeric vectors (n-1 denominator), each mean refined by a correction pass as R's cov.c does. A missing value in either gives NA; the use argument and matrix arguments are not supported.",
+    ),
+    (
         "rle",
         "rle(x)",
         "Run-length encoding: a list of $lengths and $values for each run of equal consecutive elements, classed \"rle\" so it prints in R's layout.",
@@ -571,8 +581,8 @@ const SUMMARIES: &[Entry] = &[
     ),
     (
         "var",
-        "var(x, na.rm = FALSE)",
-        "The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. A covariance matrix from two arguments is not supported.",
+        "var(x, y = NULL, na.rm = FALSE)",
+        "The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A covariance matrix of a matrix argument is not supported.",
     ),
     (
         "sd",
@@ -1046,12 +1056,12 @@ const APPLY: &[Entry] = &[
     (
         "Map",
         "Map(f, ...)",
-        "Apply f elementwise across several lists, stopping at the shortest, and return a list.",
+        "mapply(FUN = f, ..., SIMPLIFY = FALSE): apply f elementwise across several vectors or lists, recycled to the longest, and return the list of answers.",
     ),
     (
         "mapply",
-        "mapply(FUN, ...)",
-        "Like Map, but the arguments recycle to the longest and the result is simplified, matching R's default SIMPLIFY = TRUE.",
+        "mapply(FUN, ..., MoreArgs, SIMPLIFY = TRUE, USE.NAMES = TRUE)",
+        "Call FUN once per position across the vectors or lists in ..., recycled to the longest (an empty one makes the answer empty). A tag names that argument in each call, MoreArgs adds the same arguments to every call, the answer is labelled from the first argument, and with SIMPLIFY it collapses the way sapply does.",
     ),
     (
         "Reduce",
@@ -1080,8 +1090,8 @@ const APPLY: &[Entry] = &[
     ),
     (
         "tapply",
-        "tapply(X, INDEX, FUN)",
-        "Apply FUN to each group of X defined by INDEX, returning one simplified value per level, named by level.",
+        "tapply(X, INDEX, FUN, ...)",
+        "Apply FUN, with the extra arguments, to each cell of the cross-classification of X by INDEX (one grouping vector, or a list of them). The answer is an array over the level grid, labelled by the levels and by INDEX's names, NA for an empty cell; it is a list array when FUN's answers are not all single atomic values. Elements with a missing group are dropped.",
     ),
     (
         "modifyList",

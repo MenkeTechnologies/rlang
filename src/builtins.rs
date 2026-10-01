@@ -332,6 +332,78 @@ fn label_from_first(out: &Value, first: Option<&Value>) {
     }
 }
 
+/// R's `mapply`: call `f` once per position across every argument after it,
+/// recycling the shorter ones to the longest (any empty one makes the answer
+/// empty). An argument's tag names it in each call, and `MoreArgs` adds the
+/// same extra arguments to every call. The answer is labelled from the first
+/// mapped argument (`USE.NAMES`) and, with `simplified`, collapsed the way
+/// `sapply` collapses.
+fn mapply(f: &Value, a: &Args, simplified: bool) -> Result<Value, String> {
+    let mapped: Vec<(Option<String>, Value)> = a
+        .rest(1)
+        .into_iter()
+        .filter(|(t, _)| !matches!(t.as_deref(), Some("SIMPLIFY" | "USE.NAMES" | "MoreArgs")))
+        .collect();
+    let more: Vec<(Option<String>, Value)> = match a.named("MoreArgs") {
+        Some(m) => {
+            let nm = names_of(&m);
+            elements(&m)
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (nm.get(i).cloned().flatten(), v))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let lists: Vec<Vec<Value>> = mapped.iter().map(|(_, v)| elements(v)).collect();
+    let n = match lists.iter().any(|l| l.is_empty()) {
+        true => 0,
+        false => lists.iter().map(|l| l.len()).max().unwrap_or(0),
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut call_args: Vec<(Option<String>, Value)> = mapped
+            .iter()
+            .zip(&lists)
+            .map(|((t, _), l)| (t.clone(), l[i % l.len()].clone()))
+            .collect();
+        call_args.extend(more.iter().cloned());
+        out.push(call_value(f, call_args, None)?);
+    }
+    let res = mk_list(out);
+    if a.named("USE.NAMES").and_then(|v| lgl1(&v)).unwrap_or(true) {
+        label_from_first(&res, mapped.first().map(|(_, v)| v));
+        // An empty character first argument still labels: `named list()`.
+        if n == 0 && mapped.first().is_some_and(|(_, v)| kind(v) == RKind::Str) {
+            let nv = mk_str(vec![]);
+            with_host(|h| h.set_attr(&res, "names", nv));
+        }
+    }
+    Ok(if simplified { simplify(&res) } else { res })
+}
+
+/// A grouping vector as R's `factor()` reads it for `table` / `tapply`: its
+/// level labels (a factor's own, else the sorted distinct values) and each
+/// element's 0-based level, `None` for a missing value.
+fn classify_factor(x: &Value) -> (Vec<String>, Vec<Option<usize>>) {
+    if is_factor(x) {
+        let levels: Vec<String> = with_host(|h| h.attr(x, "levels"))
+            .map(|l| as_str(&l).into_iter().flatten().collect())
+            .unwrap_or_default();
+        let codes = as_int(x)
+            .iter()
+            .map(|c| c.map(|i| (i - 1) as usize).filter(|&i| i < levels.len()))
+            .collect();
+        return (levels, codes);
+    }
+    let levels = factor_levels(x);
+    let codes = as_str(x)
+        .iter()
+        .map(|s| s.as_ref().and_then(|s| levels.iter().position(|l| l == s)))
+        .collect();
+    (levels, codes)
+}
+
 /// The environment a value holds, for the builtins that take an `envir`.
 fn env_of(v: &Value) -> Option<crate::host::Env> {
     match data(v) {
@@ -3772,6 +3844,7 @@ pub const PRIMITIVES: &[&str] = &[
     "median",
     "quantile",
     "cor",
+    "cov",
     "rle",
     "inverse.rle",
     "var",
@@ -3913,6 +3986,7 @@ pub const PRIMITIVES: &[&str] = &[
     "head",
     "tail",
     "append",
+    "replace",
     "setdiff",
     "union",
     "intersect",
@@ -5486,6 +5560,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             keep_one_d_array(&out, &x, &[(Some("drop".into()), scalar_lgl(false))]);
             Ok(out)
         }
+        // `replace(x, list, values)` is R's `{ x[list] <- values; x }`, on a
+        // copy: the caller's `x` is untouched.
+        "replace" => {
+            let x = a.req(0, "x")?;
+            let list = a.req(1, "list")?;
+            let values = a.req(2, "values")?;
+            assign_index(&x, &[(None, list)], &values, false, false)
+        }
         "append" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "values")?;
@@ -5722,6 +5804,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // ranks in collation order, so `rank(c("b", "b", "a"))` is
             // `2.5 2.5 1` and not one universal tie.
             let x = a.req(0, "x")?;
+            let ties = a
+                .named("ties.method")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "average".into());
+            if !matches!(ties.as_str(), "average" | "first" | "last" | "min" | "max") {
+                return Err(format!("ties.method = \"{ties}\" is not supported"));
+            }
             let key = SortKey::of(&x);
             let n = len(&x);
             let mut good: Vec<usize> = (0..n).filter(|&i| !key.missing(i)).collect();
@@ -5733,11 +5822,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 while j < good.len() && key.cmp(good[j], good[i]).is_eq() {
                     j += 1;
                 }
-                // positions i..j are tied; their shared rank is the average of
-                // the 1-based slots i+1..=j.
-                let avg = ((i + 1 + j) as f64) / 2.0;
-                for &k in &good[i..j] {
-                    ranks[k] = avg;
+                // Positions i..j are tied (in order of appearance, the sort
+                // being stable) over the 1-based slots i+1..=j. `ties.method`
+                // picks what they get: the slots' average, the smallest or
+                // largest slot, or the slots themselves in appearance order
+                // (`first`) or reversed (`last`).
+                for (t, &k) in good[i..j].iter().enumerate() {
+                    ranks[k] = match ties.as_str() {
+                        "min" => (i + 1) as f64,
+                        "max" => j as f64,
+                        "first" => (i + 1 + t) as f64,
+                        "last" => (j - t) as f64,
+                        _ => ((i + 1 + j) as f64) / 2.0,
+                    };
                 }
                 i = j;
             }
@@ -5746,8 +5843,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             for (slot, i) in (0..n).filter(|&i| key.missing(i)).enumerate() {
                 ranks[i] = (good.len() + slot + 1) as f64;
             }
-            // Integer ranks (no ties) print as a double vector in R anyway.
-            shaped_like(mk_dbl(ranks.into_iter().map(Some).collect()), &x)
+            // Average ranks are doubles (even with no ties); the other
+            // methods answer whole ranks as an integer vector.
+            let out = match ties.as_str() {
+                "average" => mk_dbl(ranks.into_iter().map(Some).collect()),
+                _ => mk_int(ranks.into_iter().map(|r| Some(r as i64)).collect()),
+            };
+            shaped_like(out, &x)
         }
         "which" => {
             let x = a.req(0, "x")?;
@@ -6022,6 +6124,33 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
             }
             Ok(take_positions(&values, &pos))
+        }
+        // `var(x, y)` is `cov(x, y)`: R's `cov.c` with complete observations —
+        // each mean refined by one correction pass, then the cross-product sum
+        // over n - 1. NA in either vector (without `use =`) answers NA.
+        "var" | "cov" if name == "cov" || a.get(1, "y").is_some_and(|y| !is_null(&y)) => {
+            let x = as_dbl(&a.req(0, "x")?);
+            let y = as_dbl(&a.req(1, "y")?);
+            if x.len() != y.len() {
+                return Err("incompatible dimensions".into());
+            }
+            let (Some(x), Some(y)) = (
+                x.into_iter().collect::<Option<Vec<f64>>>(),
+                y.into_iter().collect::<Option<Vec<f64>>>(),
+            ) else {
+                return Ok(mk_dbl(vec![None]));
+            };
+            if x.len() < 2 {
+                return Ok(mk_dbl(vec![None]));
+            }
+            let n = x.len() as f64;
+            let mean = |v: &[f64]| {
+                let m = v.iter().sum::<f64>() / n;
+                m + v.iter().map(|e| e - m).sum::<f64>() / n
+            };
+            let (mx, my) = (mean(&x), mean(&y));
+            let s: f64 = x.iter().zip(&y).map(|(a, b)| (a - mx) * (b - my)).sum();
+            Ok(scalar_dbl(s / (n - 1.0)))
         }
         "var" | "sd" => {
             let xs = numeric_arg(&a, 0, "x")?;
@@ -7396,41 +7525,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(simplify(&res))
         }
-        "Map" => {
-            let f = a.req(0, "f")?;
-            let rest = a.rest(1);
-            let lists: Vec<Vec<Value>> = rest.iter().map(|(_, v)| elements(v)).collect();
-            let n = lists.iter().map(|l| l.len()).min().unwrap_or(0);
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let call_args: Vec<(Option<String>, Value)> =
-                    lists.iter().map(|l| (None, l[i].clone())).collect();
-                out.push(call_value(&f, call_args, None)?);
-            }
-            let res = mk_list(out);
-            // R defines `Map` as `mapply(SIMPLIFY = FALSE)`, so it labels its
-            // result the same way — from the first mapped argument.
-            label_from_first(&res, rest.first().map(|(_, v)| v));
-            Ok(res)
-        }
+        // R defines `Map` as `mapply(FUN = f, ..., SIMPLIFY = FALSE)`.
+        "Map" => mapply(&a.req(0, "f")?, &a, false),
         "mapply" => {
-            // Like `Map` but simplified to an atomic vector when every result
-            // is a scalar, matching R's default `SIMPLIFY = TRUE`.
-            let f = a.req(0, "FUN")?;
-            let rest = a.rest(1);
-            let lists: Vec<Vec<Value>> = rest.iter().map(|(_, v)| elements(v)).collect();
-            let n = lists.iter().map(|l| l.len()).max().unwrap_or(0);
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let call_args: Vec<(Option<String>, Value)> = lists
-                    .iter()
-                    .map(|l| (None, l[i % l.len().max(1)].clone()))
-                    .collect();
-                out.push(call_value(&f, call_args, None)?);
-            }
-            let res = mk_list(out);
-            label_from_first(&res, rest.first().map(|(_, v)| v));
-            Ok(simplify(&res))
+            let simplify = a.named("SIMPLIFY").and_then(|v| lgl1(&v)).unwrap_or(true);
+            mapply(&a.req(0, "FUN")?, &a, simplify)
         }
         "Filter" => {
             let f = a.req(0, "f")?;
@@ -7545,24 +7644,85 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             set_names(&out, levels.into_iter().map(Some).collect());
             Ok(out)
         }
+        // `tapply(X, INDEX, FUN, ...)`: FUN over each cell of the
+        // cross-classification of INDEX (one factor, or a list of them), with
+        // the extra arguments passed on. The answer is an array over the level
+        // grid, labelled by the levels (and by INDEX's own names), NA for a
+        // cell no element falls in; it stays a list when FUN's answers are not
+        // all single atomic values. Elements with a missing group are dropped.
         "tapply" => {
             let x = a.req(0, "X")?;
-            let index = as_str_labels(&a.req(1, "INDEX")?);
+            let index = a.req(1, "INDEX")?;
             let f = a.req(2, "FUN")?;
-            let levels = factor_levels(&a.req(1, "INDEX")?);
-            let mut results = Vec::with_capacity(levels.len());
-            for lev in &levels {
-                let pos: Vec<Option<usize>> = index
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, k)| k.as_deref() == Some(lev.as_str()))
-                    .map(|(i, _)| Some(i))
-                    .collect();
-                let group = take_positions(&x, &pos);
-                results.push(call_value(&f, vec![(None, group)], None)?);
+            let extra: Vec<(Option<String>, Value)> = a
+                .rest(3)
+                .into_iter()
+                .filter(|(t, _)| !matches!(t.as_deref(), Some("simplify" | "default")))
+                .collect();
+            let factors: Vec<Value> = match kind(&index) {
+                RKind::List => elements(&index),
+                _ => vec![index.clone()],
+            };
+            let classified: Vec<(Vec<String>, Vec<Option<usize>>)> =
+                factors.iter().map(classify_factor).collect();
+            let n = len(&x);
+            if classified.iter().any(|(_, c)| c.len() != n) {
+                return Err("arguments must have same length".into());
             }
-            let out = simplify(&mk_list(results));
-            set_names(&out, levels.into_iter().map(Some).collect());
+            let dims: Vec<usize> = classified.iter().map(|(l, _)| l.len()).collect();
+            let mut cells: Vec<Vec<Option<usize>>> = vec![Vec::new(); dims.iter().product()];
+            'elem: for i in 0..n {
+                let (mut at, mut stride) = (0, 1);
+                for ((_, codes), d) in classified.iter().zip(&dims) {
+                    let Some(c) = codes[i] else { continue 'elem };
+                    at += c * stride;
+                    stride *= d;
+                }
+                cells[at].push(Some(i));
+            }
+            let mut results: Vec<Option<Value>> = Vec::with_capacity(cells.len());
+            for pos in &cells {
+                if pos.is_empty() {
+                    results.push(None);
+                    continue;
+                }
+                let mut call_args = vec![(None, take_positions(&x, pos))];
+                call_args.extend(extra.iter().cloned());
+                results.push(Some(call_value(&f, call_args, None)?));
+            }
+            let scalar = results.iter().flatten().all(|v| {
+                len(v) == 1 && matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str)
+            });
+            let out = if scalar {
+                let parts: Vec<(Option<String>, Value)> = results
+                    .into_iter()
+                    .map(|r| (None, r.unwrap_or_else(|| mk_lgl(vec![None]))))
+                    .collect();
+                concat(&Args::new(parts))
+            } else {
+                mk_list(
+                    results
+                        .into_iter()
+                        .map(|r| r.unwrap_or_else(null))
+                        .collect(),
+                )
+            };
+            let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
+            let dn = mk_list(
+                classified
+                    .into_iter()
+                    .map(|(levels, _)| mk_str(levels.into_iter().map(Some).collect()))
+                    .collect(),
+            );
+            if kind(&index) == RKind::List {
+                if let Some(nm) = with_host(|h| h.attr(&index, "names")) {
+                    with_host(|h| h.set_attr(&dn, "names", nm));
+                }
+            }
+            with_host(|h| {
+                h.set_attr(&out, "dim", dim);
+                h.set_attr(&out, "dimnames", dn);
+            });
             Ok(out)
         }
         "modifyList" => {
@@ -8541,30 +8701,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             // Each factor's level labels and every element's 0-based level,
             // `None` for a missing value, which R's `table` drops.
-            let classified: Vec<(Vec<String>, Vec<Option<usize>>)> = factors
-                .iter()
-                .map(|(_, x)| {
-                    let levels = if is_factor(x) {
-                        with_host(|h| h.attr(x, "levels"))
-                            .map(|l| as_str(&l).into_iter().flatten().collect())
-                            .unwrap_or_default()
-                    } else {
-                        factor_levels(x)
-                    };
-                    let codes = if is_factor(x) {
-                        as_int(x)
-                            .iter()
-                            .map(|c| c.map(|i| (i - 1) as usize).filter(|&i| i < levels.len()))
-                            .collect()
-                    } else {
-                        as_str(x)
-                            .iter()
-                            .map(|s| s.as_ref().and_then(|s| levels.iter().position(|l| l == s)))
-                            .collect()
-                    };
-                    (levels, codes)
-                })
-                .collect();
+            let classified: Vec<(Vec<String>, Vec<Option<usize>>)> =
+                factors.iter().map(|(_, x)| classify_factor(x)).collect();
             let n = classified[0].1.len();
             if classified.iter().any(|(_, c)| c.len() != n) {
                 return Err("all arguments must have the same length".into());
@@ -13554,7 +13692,10 @@ fn is_plain_list(v: &Value) -> bool {
 fn format_list_at(v: &Value, prefix: &str) -> Vec<String> {
     let items = elements(v);
     if items.is_empty() {
-        return vec!["list()".into()];
+        // An empty list that keeps a (zero-length) `names` attribute is
+        // `named list()`, as an empty atomic vector is `named integer(0)`.
+        let named = with_host(|h| h.attr(v, "names")).is_some_and(|n| !is_null(&n));
+        return vec![if named { "named list()" } else { "list()" }.into()];
     }
     let names = names_of(v);
     let mut out = Vec::new();
