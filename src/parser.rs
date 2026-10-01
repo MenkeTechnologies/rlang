@@ -208,6 +208,17 @@ impl Parser {
         self.comparison()
     }
 
+    /// The right operand of an operator that binds tighter than `!`. R's grammar
+    /// still accepts a `!` there, parsed at its own (low) precedence: `a + !b ==
+    /// c` is `a + !(b == c)`, and `x * -!y` is `x * -(!y)`.
+    fn operand_or_not(&mut self, tighter: fn(&mut Self) -> Result<Expr, String>) -> Result<Expr, String> {
+        if self.peek() == &Tok::Bang {
+            self.not_expr()
+        } else {
+            tighter(self)
+        }
+    }
+
     fn comparison(&mut self) -> Result<Expr, String> {
         let mut lhs = self.additive()?;
         loop {
@@ -222,7 +233,7 @@ impl Parser {
             };
             self.pos += 1;
             self.nl();
-            let rhs = self.additive()?;
+            let rhs = self.operand_or_not(Self::additive)?;
             lhs = bin(op, lhs, rhs);
         }
     }
@@ -237,7 +248,7 @@ impl Parser {
             };
             self.pos += 1;
             self.nl();
-            let rhs = self.multiplicative()?;
+            let rhs = self.operand_or_not(Self::multiplicative)?;
             lhs = bin(op, lhs, rhs);
         }
     }
@@ -252,7 +263,7 @@ impl Parser {
             };
             self.pos += 1;
             self.nl();
-            let rhs = self.special_expr()?;
+            let rhs = self.operand_or_not(Self::special_expr)?;
             lhs = bin(op, lhs, rhs);
         }
     }
@@ -265,7 +276,7 @@ impl Parser {
                 Tok::Special(name) => {
                     self.pos += 1;
                     self.nl();
-                    let rhs = self.range_expr()?;
+                    let rhs = self.operand_or_not(Self::range_expr)?;
                     lhs = Expr::Special {
                         name,
                         lhs: Box::new(lhs),
@@ -289,7 +300,7 @@ impl Parser {
         let mut lhs = self.unary()?;
         while self.eat(&Tok::Colon) {
             self.nl();
-            let rhs = self.unary()?;
+            let rhs = self.operand_or_not(Self::unary)?;
             lhs = bin(BinOp::Colon, lhs, rhs);
         }
         Ok(lhs)
@@ -303,7 +314,7 @@ impl Parser {
         };
         self.pos += 1;
         self.nl();
-        let operand = self.unary()?;
+        let operand = self.operand_or_not(Self::unary)?;
         Ok(Expr::Unary {
             op,
             operand: Box::new(operand),
@@ -316,7 +327,7 @@ impl Parser {
         let lhs = self.postfix()?;
         if self.eat(&Tok::Caret) {
             self.nl();
-            let rhs = self.unary()?;
+            let rhs = self.operand_or_not(Self::unary)?;
             return Ok(bin(BinOp::Pow, lhs, rhs));
         }
         Ok(lhs)

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 299 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 315 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.9 &middot; 319 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.9 &middot; 335 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,26 +130,26 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 299 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 315 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
-        <li><a href="#ch-construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
-        <li><a href="#ch-attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
-        <li><a href="#ch-output-and-the-inlineminusrust-ffi">Output and the inline-Rust FFI</a> <span class="chapter-count">24</span></li>
-        <li><a href="#ch-sequences">Sequences</a> <span class="chapter-count">12</span></li>
-        <li><a href="#ch-ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
-        <li><a href="#ch-numeric-summaries">Numeric summaries</a> <span class="chapter-count">16</span></li>
-        <li><a href="#ch-elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
-        <li><a href="#ch-predicates">Predicates</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">30</span></li>
-        <li><a href="#ch-the-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
-        <li><a href="#ch-matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">22</span></li>
-        <li><a href="#ch-environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">65</span></li>
-        <li><a href="#ch-operators">Operators</a> <span class="chapter-count">20</span></li>
+        <li><a href="#ch-Construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
+        <li><a href="#ch-Attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
+        <li><a href="#ch-Output-and-the-inlineminusRust-FFI">Output and the inline-Rust FFI</a> <span class="chapter-count">25</span></li>
+        <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">12</span></li>
+        <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
+        <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">17</span></li>
+        <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
+        <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">29</span></li>
+        <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">36</span></li>
+        <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
+        <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">26</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">68</span></li>
+        <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
-    <section class="tutorial-section" id="ch-construction-and-coercion">
+    <section class="tutorial-section" id="ch-Construction-and-coercion">
       <h2>Construction and coercion</h2>
       <p class="chapter-meta">15 entries</p>
       <article class="doc-entry" id="doc-c">
@@ -243,7 +243,7 @@
         <p>Flatten a list recursively into an atomic vector of the widest type, composing names the way R does: list(a = 1, b = list(2, 3)) unlists to names a, b1, b2.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-attributes-and-metadata">
+    <section class="tutorial-section" id="ch-Attributes-and-metadata">
       <h2>Attributes and metadata</h2>
       <p class="chapter-meta">19 entries</p>
       <article class="doc-entry" id="doc-length">
@@ -264,8 +264,8 @@
 </code></pre>
         <p>The `names` attribute, or NULL when x has none.</p>
       </article>
-      <article class="doc-entry" id="doc-setnames">
-        <h3><a class="doc-anchor" href="#doc-setnames">#</a> <code>setNames</code></h3>
+      <article class="doc-entry" id="doc-setNames">
+        <h3><a class="doc-anchor" href="#doc-setNames">#</a> <code>setNames</code></h3>
         <pre><code class="lang-r r">setNames(object, nm)
 </code></pre>
         <p>A copy of `object` carrying `nm` as its names. Assigning all-NA names removes the attribute.</p>
@@ -361,17 +361,23 @@
         <p>The `dimnames` attribute — a list of one label vector per dimension — or NULL. Assignable through dimnames(x) &lt;- list(...), rownames(x) &lt;- and colnames(x) &lt;-, and also produced by matrix(dimnames = ) and the cbind/rbind seam labels.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-output-and-the-inlineminusrust-ffi">
+    <section class="tutorial-section" id="ch-Output-and-the-inlineminusRust-FFI">
       <h2>Output and the inline-Rust FFI</h2>
-      <p class="chapter-meta">24 entries</p>
+      <p class="chapter-meta">25 entries</p>
+      <article class="doc-entry" id="doc-writeLines">
+        <h3><a class="doc-anchor" href="#doc-writeLines">#</a> <code>writeLines</code></h3>
+        <pre><code class="lang-r r">writeLines(text, con, sep = "\n")
+</code></pre>
+        <p>Write each string of the character vector text followed by sep, returning NULL invisibly. A missing string is written as NA. A character con is a file path, truncated and written; without one the text goes to stdout. A non-character text is an error, as in R.</p>
+      </article>
       <article class="doc-entry" id="doc-rust">
         <h3><a class="doc-anchor" href="#doc-rust">#</a> <code>.rust</code></h3>
         <pre><code class="lang-r r">.rust(code)
 </code></pre>
         <p>Compile a self-contained inline Rust block — its `pub extern "C"` exports — to a cached cdylib through fusevm's FFI bridge, and register the exports for .Call. Returns NULL invisibly; the compile happens once per distinct source hash.</p>
       </article>
-      <article class="doc-entry" id="doc-call">
-        <h3><a class="doc-anchor" href="#doc-call">#</a> <code>.Call</code></h3>
+      <article class="doc-entry" id="doc-Call">
+        <h3><a class="doc-anchor" href="#doc-Call">#</a> <code>.Call</code></h3>
         <pre><code class="lang-r r">.Call(.NAME, ...)
 </code></pre>
         <p>Invoke a routine registered by .rust(). Arguments must be length-1 numeric, integer or character and are marshalled to f64, i64 and string; the returned scalar is marshalled back to a length-1 vector.</p>
@@ -430,8 +436,8 @@
 </code></pre>
         <p>Return the argument, having evaluated it. Written for its effect inside a closure factory, where it forces a promise that would otherwise be evaluated after the loop variable had moved on. Like identity it passes the argument's visibility through, so force(invisible(1)) prints nothing.</p>
       </article>
-      <article class="doc-entry" id="doc-withvisible">
-        <h3><a class="doc-anchor" href="#doc-withvisible">#</a> <code>withVisible</code></h3>
+      <article class="doc-entry" id="doc-withVisible">
+        <h3><a class="doc-anchor" href="#doc-withVisible">#</a> <code>withVisible</code></h3>
         <pre><code class="lang-r r">withVisible(x)
 </code></pre>
         <p>Evaluate x and report whether its value would auto-print, as a list with elements `value` and `visible`. withVisible(invisible(1))$visible is FALSE; the list itself prints.</p>
@@ -448,8 +454,8 @@
 </code></pre>
         <p>paste with an empty separator: the arguments are joined elementwise with nothing between them.</p>
       </article>
-      <article class="doc-entry" id="doc-tostring">
-        <h3><a class="doc-anchor" href="#doc-tostring">#</a> <code>toString</code></h3>
+      <article class="doc-entry" id="doc-toString">
+        <h3><a class="doc-anchor" href="#doc-toString">#</a> <code>toString</code></h3>
         <pre><code class="lang-r r">toString(x)
 </code></pre>
         <p>A single string of x's elements joined by ", " — the inline form R uses when a vector has to fit in one line.</p>
@@ -484,20 +490,20 @@
 </code></pre>
         <p>Set, query or restore global options. A tagged argument sets one and the call returns the previous values as a named list, invisibly, so `old &lt;- options(digits = 3)` then `options(old)` restores. An untagged string queries without setting and returns visibly; an untagged list restores every named element. `digits` (significant digits for printing, 1..22, default 7) and `scipen` (the penalty added to a scientific rendering's width before it is compared with the fixed one, so positive favours fixed; clamped below at -9, default 0) are the two the printing code reads; any other name is stored and read back but has no effect. A digits outside 1..22 is an error, as in R. Unlike R, options() with no arguments does not enumerate a full default set.</p>
       </article>
-      <article class="doc-entry" id="doc-getoption">
-        <h3><a class="doc-anchor" href="#doc-getoption">#</a> <code>getOption</code></h3>
+      <article class="doc-entry" id="doc-getOption">
+        <h3><a class="doc-anchor" href="#doc-getOption">#</a> <code>getOption</code></h3>
         <pre><code class="lang-r r">getOption(x, default = NULL)
 </code></pre>
         <p>The value of option x, or default when it has never been set.</p>
       </article>
-      <article class="doc-entry" id="doc-formatc">
-        <h3><a class="doc-anchor" href="#doc-formatc">#</a> <code>formatC</code></h3>
+      <article class="doc-entry" id="doc-formatC">
+        <h3><a class="doc-anchor" href="#doc-formatC">#</a> <code>formatC</code></h3>
         <pre><code class="lang-r r">formatC(x, width, digits, format, flag)
 </code></pre>
         <p>Build the equivalent printf spec and route it through sprintf, so sign, zero-padding and exponent rules are shared. `format` defaults to "d" for integer input and "g" for real.</p>
       </article>
-      <article class="doc-entry" id="doc-prettynum">
-        <h3><a class="doc-anchor" href="#doc-prettynum">#</a> <code>prettyNum</code></h3>
+      <article class="doc-entry" id="doc-prettyNum">
+        <h3><a class="doc-anchor" href="#doc-prettyNum">#</a> <code>prettyNum</code></h3>
         <pre><code class="lang-r r">prettyNum(x, big.mark = "")
 </code></pre>
         <p>Insert `big.mark` between every third digit of the integer part of each formatted number, preserving sign and fraction.</p>
@@ -509,7 +515,7 @@
         <p>C-style formatting, vectorized over both the format and the arguments. Supports %d %i %s %f %e %E %g %G %a %A %x %X %o and %%, with the flags, field width and precision — including zero-padding after the sign, as C does. NA, NaN and Inf are printed through %s as R does, so the width and the - and 0 flags still apply to them. A `*` takes the width (or precision) from the preceding argument.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-sequences">
+    <section class="tutorial-section" id="ch-Sequences">
       <h2>Sequences</h2>
       <p class="chapter-meta">12 entries</p>
       <article class="doc-entry" id="doc-seq-len">
@@ -585,7 +591,7 @@
         <p>Concatenate values onto the end of x, with c()'s type promotion. R's `after` argument is accepted and ignored — insertion is always at the end.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-ordering-and-sets">
+    <section class="tutorial-section" id="ch-Ordering-and-sets">
       <h2>Ordering and sets</h2>
       <p class="chapter-meta">15 entries</p>
       <article class="doc-entry" id="doc-sort">
@@ -679,9 +685,15 @@
         <p>The position of the first minimum, ignoring NA.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-numeric-summaries">
+    <section class="tutorial-section" id="ch-Numeric-summaries">
       <h2>Numeric summaries</h2>
-      <p class="chapter-meta">16 entries</p>
+      <p class="chapter-meta">17 entries</p>
+      <article class="doc-entry" id="doc-weighted-mean">
+        <h3><a class="doc-anchor" href="#doc-weighted-mean">#</a> <code>weighted.mean</code></h3>
+        <pre><code class="lang-r r">weighted.mean(x, w, na.rm = FALSE)
+</code></pre>
+        <p>stats' default method: sum((x * w)[w != 0]) / sum(w), so a missing x under a zero weight drops out, and a missing weight makes the result NA. Without w every weight is 1. With na.rm the missing x and their weights are dropped first. x and w of different lengths is an error.</p>
+      </article>
       <article class="doc-entry" id="doc-sum">
         <h3><a class="doc-anchor" href="#doc-sum">#</a> <code>sum</code></h3>
         <pre><code class="lang-r r">sum(..., na.rm = FALSE)
@@ -779,7 +791,7 @@
         <p>The lag-`lag` differences, applied `differences` times. Integer input stays integer; a vector shorter than the lag yields an empty result.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-elementwise-math">
+    <section class="tutorial-section" id="ch-Elementwise-math">
       <h2>Elementwise math</h2>
       <p class="chapter-meta">37 entries</p>
       <article class="doc-entry" id="doc-abs">
@@ -998,16 +1010,22 @@
 </code></pre>
         <p>The count of each integer 1..nbins occurring in `bin`. Values outside the range are ignored.</p>
       </article>
-      <article class="doc-entry" id="doc-findinterval">
-        <h3><a class="doc-anchor" href="#doc-findinterval">#</a> <code>findInterval</code></h3>
+      <article class="doc-entry" id="doc-findInterval">
+        <h3><a class="doc-anchor" href="#doc-findInterval">#</a> <code>findInterval</code></h3>
         <pre><code class="lang-r r">findInterval(x, vec)
 </code></pre>
         <p>For each element of x, how many breakpoints in `vec` are less than or equal to it — the index of the interval it falls in.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-predicates">
+    <section class="tutorial-section" id="ch-Predicates">
       <h2>Predicates</h2>
-      <p class="chapter-meta">28 entries</p>
+      <p class="chapter-meta">29 entries</p>
+      <article class="doc-entry" id="doc-is-atomic">
+        <h3><a class="doc-anchor" href="#doc-is-atomic">#</a> <code>is.atomic</code></h3>
+        <pre><code class="lang-r r">is.atomic(x)
+</code></pre>
+        <p>TRUE for a logical, integer, double or character vector. NULL is not atomic, as in R 4.4 and later, and neither is a list.</p>
+      </article>
       <article class="doc-entry" id="doc-is-null">
         <h3><a class="doc-anchor" href="#doc-is-null">#</a> <code>is.null</code></h3>
         <pre><code class="lang-r r">is.null(x)
@@ -1038,8 +1056,8 @@
 </code></pre>
         <p>TRUE at each Inf or -Inf; FALSE everywhere else, including NA.</p>
       </article>
-      <article class="doc-entry" id="doc-anyna">
-        <h3><a class="doc-anchor" href="#doc-anyna">#</a> <code>anyNA</code></h3>
+      <article class="doc-entry" id="doc-anyNA">
+        <h3><a class="doc-anchor" href="#doc-anyNA">#</a> <code>anyNA</code></h3>
         <pre><code class="lang-r r">anyNA(x)
 </code></pre>
         <p>TRUE when any element is NA or NaN, checked without building the full is.na vector.</p>
@@ -1110,14 +1128,14 @@
 </code></pre>
         <p>TRUE when no element is FALSE. An NA with no FALSE present gives NA unless na.rm is set.</p>
       </article>
-      <article class="doc-entry" id="doc-istrue">
-        <h3><a class="doc-anchor" href="#doc-istrue">#</a> <code>isTRUE</code></h3>
+      <article class="doc-entry" id="doc-isTRUE">
+        <h3><a class="doc-anchor" href="#doc-isTRUE">#</a> <code>isTRUE</code></h3>
         <pre><code class="lang-r r">isTRUE(x)
 </code></pre>
         <p>TRUE when x is a length-1 TRUE. The argument is coerced first, so isTRUE(1) answers TRUE here where GNU R — which demands an actual logical — answers FALSE.</p>
       </article>
-      <article class="doc-entry" id="doc-isfalse">
-        <h3><a class="doc-anchor" href="#doc-isfalse">#</a> <code>isFALSE</code></h3>
+      <article class="doc-entry" id="doc-isFALSE">
+        <h3><a class="doc-anchor" href="#doc-isFALSE">#</a> <code>isFALSE</code></h3>
         <pre><code class="lang-r r">isFALSE(x)
 </code></pre>
         <p>TRUE when x is a length-1 FALSE, with the same coercion caveat as isTRUE.</p>
@@ -1128,38 +1146,38 @@
 </code></pre>
         <p>Elementwise exclusive or, recycled to the longer argument; NA on either side gives NA.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwand">
-        <h3><a class="doc-anchor" href="#doc-bitwand">#</a> <code>bitwAnd</code></h3>
+      <article class="doc-entry" id="doc-bitwAnd">
+        <h3><a class="doc-anchor" href="#doc-bitwAnd">#</a> <code>bitwAnd</code></h3>
         <pre><code class="lang-r r">bitwAnd(a, b)
 </code></pre>
         <p>Bitwise AND, recycled. rlang computes on 64-bit integers, so values beyond R's 32-bit range keep their bits instead of becoming NA.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwor">
-        <h3><a class="doc-anchor" href="#doc-bitwor">#</a> <code>bitwOr</code></h3>
+      <article class="doc-entry" id="doc-bitwOr">
+        <h3><a class="doc-anchor" href="#doc-bitwOr">#</a> <code>bitwOr</code></h3>
         <pre><code class="lang-r r">bitwOr(a, b)
 </code></pre>
         <p>Bitwise OR of each pair, with the arguments recycled to the longer one.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwxor">
-        <h3><a class="doc-anchor" href="#doc-bitwxor">#</a> <code>bitwXor</code></h3>
+      <article class="doc-entry" id="doc-bitwXor">
+        <h3><a class="doc-anchor" href="#doc-bitwXor">#</a> <code>bitwXor</code></h3>
         <pre><code class="lang-r r">bitwXor(a, b)
 </code></pre>
         <p>Bitwise exclusive OR, recycled over both arguments.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwnot">
-        <h3><a class="doc-anchor" href="#doc-bitwnot">#</a> <code>bitwNot</code></h3>
+      <article class="doc-entry" id="doc-bitwNot">
+        <h3><a class="doc-anchor" href="#doc-bitwNot">#</a> <code>bitwNot</code></h3>
         <pre><code class="lang-r r">bitwNot(a)
 </code></pre>
         <p>The bitwise complement of each element, computed on 64-bit integers.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwshiftl">
-        <h3><a class="doc-anchor" href="#doc-bitwshiftl">#</a> <code>bitwShiftL</code></h3>
+      <article class="doc-entry" id="doc-bitwShiftL">
+        <h3><a class="doc-anchor" href="#doc-bitwShiftL">#</a> <code>bitwShiftL</code></h3>
         <pre><code class="lang-r r">bitwShiftL(a, b)
 </code></pre>
         <p>Shift each element left by b bits, on 64-bit integers rather than R 32-bit ones.</p>
       </article>
-      <article class="doc-entry" id="doc-bitwshiftr">
-        <h3><a class="doc-anchor" href="#doc-bitwshiftr">#</a> <code>bitwShiftR</code></h3>
+      <article class="doc-entry" id="doc-bitwShiftR">
+        <h3><a class="doc-anchor" href="#doc-bitwShiftR">#</a> <code>bitwShiftR</code></h3>
         <pre><code class="lang-r r">bitwShiftR(a, b)
 </code></pre>
         <p>Shift each element right by b bits — an arithmetic shift, so the sign bit is preserved.</p>
@@ -1177,9 +1195,45 @@
         <p>Elementwise selection: the matching element of `yes` where test is TRUE, of `no` where it is FALSE, and NA where test is NA. Both branches recycle.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-strings-and-regular-expressions">
+    <section class="tutorial-section" id="ch-Strings-and-regular-expressions">
       <h2>Strings and regular expressions</h2>
-      <p class="chapter-meta">30 entries</p>
+      <p class="chapter-meta">36 entries</p>
+      <article class="doc-entry" id="doc-file-path">
+        <h3><a class="doc-anchor" href="#doc-file-path">#</a> <code>file.path</code></h3>
+        <pre><code class="lang-r r">file.path(..., fsep = "/")
+</code></pre>
+        <p>Join the parts element-wise with fsep, recycling to the longest part. Any zero-length part, or no parts at all, gives character(0).</p>
+      </article>
+      <article class="doc-entry" id="doc-basename">
+        <h3><a class="doc-anchor" href="#doc-basename">#</a> <code>basename</code></h3>
+        <pre><code class="lang-r r">basename(path)
+</code></pre>
+        <p>The part of each path after its last /, ignoring trailing separators: basename("/a/b/") is "b", and the root and the empty path give "".</p>
+      </article>
+      <article class="doc-entry" id="doc-dirname">
+        <h3><a class="doc-anchor" href="#doc-dirname">#</a> <code>dirname</code></h3>
+        <pre><code class="lang-r r">dirname(path)
+</code></pre>
+        <p>Each path up to its last /, ignoring trailing separators and collapsing the run of separators before the last component. A path with no / is ".", the root stays "/", and the empty path stays "".</p>
+      </article>
+      <article class="doc-entry" id="doc-sQuote">
+        <h3><a class="doc-anchor" href="#doc-sQuote">#</a> <code>sQuote</code></h3>
+        <pre><code class="lang-r r">sQuote(x, q = TRUE)
+</code></pre>
+        <p>Each string wrapped in single quotes. q = TRUE gives the typographic pair R uses in a UTF-8 locale; q = FALSE gives plain ASCII apostrophes. The result keeps x's names and shape.</p>
+      </article>
+      <article class="doc-entry" id="doc-dQuote">
+        <h3><a class="doc-anchor" href="#doc-dQuote">#</a> <code>dQuote</code></h3>
+        <pre><code class="lang-r r">dQuote(x, q = TRUE)
+</code></pre>
+        <p>Each string wrapped in double quotes: the typographic pair by default, plain ASCII quotes with q = FALSE. The result keeps x's names and shape.</p>
+      </article>
+      <article class="doc-entry" id="doc-shQuote">
+        <h3><a class="doc-anchor" href="#doc-shQuote">#</a> <code>shQuote</code></h3>
+        <pre><code class="lang-r r">shQuote(string)
+</code></pre>
+        <p>Quote each string for a POSIX shell (R's type = "sh"): single quotes, unless any element holds a single quote, in which case every element is double-quoted with ", $, ` and \ escaped. The type argument is not read.</p>
+      </article>
       <article class="doc-entry" id="doc-nchar">
         <h3><a class="doc-anchor" href="#doc-nchar">#</a> <code>nchar</code></h3>
         <pre><code class="lang-r r">nchar(x, type = "chars")
@@ -1192,14 +1246,14 @@
 </code></pre>
         <p>The longest prefix of each string that fits in `width` terminal columns, recycling `width`. A double-width character is dropped whole rather than split.</p>
       </article>
-      <article class="doc-entry" id="doc-utf8toint">
-        <h3><a class="doc-anchor" href="#doc-utf8toint">#</a> <code>utf8ToInt</code></h3>
+      <article class="doc-entry" id="doc-utf8ToInt">
+        <h3><a class="doc-anchor" href="#doc-utf8ToInt">#</a> <code>utf8ToInt</code></h3>
         <pre><code class="lang-r r">utf8ToInt(x)
 </code></pre>
         <p>The Unicode code points of one string, as an integer vector. NA for anything that is not a string.</p>
       </article>
-      <article class="doc-entry" id="doc-inttoutf8">
-        <h3><a class="doc-anchor" href="#doc-inttoutf8">#</a> <code>intToUtf8</code></h3>
+      <article class="doc-entry" id="doc-intToUtf8">
+        <h3><a class="doc-anchor" href="#doc-intToUtf8">#</a> <code>intToUtf8</code></h3>
         <pre><code class="lang-r r">intToUtf8(x, multiple = FALSE)
 </code></pre>
         <p>The inverse of utf8ToInt: one string built from all the code points, or — with multiple = TRUE — one string per code point. A 0 is dropped.</p>
@@ -1252,8 +1306,8 @@
 </code></pre>
         <p>Repeat each string `times` times, with both arguments recycled.</p>
       </article>
-      <article class="doc-entry" id="doc-encodestring">
-        <h3><a class="doc-anchor" href="#doc-encodestring">#</a> <code>encodeString</code></h3>
+      <article class="doc-entry" id="doc-encodeString">
+        <h3><a class="doc-anchor" href="#doc-encodeString">#</a> <code>encodeString</code></h3>
         <pre><code class="lang-r r">encodeString(x)
 </code></pre>
         <p>Escape each string the way R prints it — backslash escapes for quotes, tabs and newlines.</p>
@@ -1324,8 +1378,8 @@
 </code></pre>
         <p>A path under the temporary directory that no file occupies yet — naming one does not create it.</p>
       </article>
-      <article class="doc-entry" id="doc-readlines">
-        <h3><a class="doc-anchor" href="#doc-readlines">#</a> <code>readLines</code></h3>
+      <article class="doc-entry" id="doc-readLines">
+        <h3><a class="doc-anchor" href="#doc-readLines">#</a> <code>readLines</code></h3>
         <pre><code class="lang-r r">readLines(con)
 </code></pre>
         <p>The lines of a file as a character vector, without their newlines; a final line with no newline is still a line.</p>
@@ -1348,20 +1402,20 @@
 </code></pre>
         <p>Strip whitespace from both ends, or only the left or right end.</p>
       </article>
-      <article class="doc-entry" id="doc-startswith">
-        <h3><a class="doc-anchor" href="#doc-startswith">#</a> <code>startsWith</code></h3>
+      <article class="doc-entry" id="doc-startsWith">
+        <h3><a class="doc-anchor" href="#doc-startsWith">#</a> <code>startsWith</code></h3>
         <pre><code class="lang-r r">startsWith(x, prefix)
 </code></pre>
         <p>TRUE where the element begins with the prefix; both arguments recycle.</p>
       </article>
-      <article class="doc-entry" id="doc-endswith">
-        <h3><a class="doc-anchor" href="#doc-endswith">#</a> <code>endsWith</code></h3>
+      <article class="doc-entry" id="doc-endsWith">
+        <h3><a class="doc-anchor" href="#doc-endsWith">#</a> <code>endsWith</code></h3>
         <pre><code class="lang-r r">endsWith(x, suffix)
 </code></pre>
         <p>TRUE where the element ends with the suffix; both arguments recycle.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-the-apply-family">
+    <section class="tutorial-section" id="ch-The-apply-family">
       <h2>The apply family</h2>
       <p class="chapter-meta">16 entries</p>
       <article class="doc-entry" id="doc-lapply">
@@ -1382,8 +1436,8 @@
 </code></pre>
         <p>Apply FUN to each element and simplify like sapply. FUN.VALUE is accepted but the result is not type-checked against it, and extra arguments are not forwarded to FUN.</p>
       </article>
-      <article class="doc-entry" id="doc-map">
-        <h3><a class="doc-anchor" href="#doc-map">#</a> <code>Map</code></h3>
+      <article class="doc-entry" id="doc-Map">
+        <h3><a class="doc-anchor" href="#doc-Map">#</a> <code>Map</code></h3>
         <pre><code class="lang-r r">Map(f, ...)
 </code></pre>
         <p>Apply f elementwise across several lists, stopping at the shortest, and return a list.</p>
@@ -1394,26 +1448,26 @@
 </code></pre>
         <p>Like Map, but the arguments recycle to the longest and the result is simplified, matching R's default SIMPLIFY = TRUE.</p>
       </article>
-      <article class="doc-entry" id="doc-reduce">
-        <h3><a class="doc-anchor" href="#doc-reduce">#</a> <code>Reduce</code></h3>
+      <article class="doc-entry" id="doc-Reduce">
+        <h3><a class="doc-anchor" href="#doc-Reduce">#</a> <code>Reduce</code></h3>
         <pre><code class="lang-r r">Reduce(f, x, init, right = FALSE, accumulate = FALSE)
 </code></pre>
         <p>Fold x with the binary function f, left to right by default. `init` seeds the accumulator, `right = TRUE` folds as f(element, acc), and `accumulate = TRUE` returns every intermediate value in original order.</p>
       </article>
-      <article class="doc-entry" id="doc-filter">
-        <h3><a class="doc-anchor" href="#doc-filter">#</a> <code>Filter</code></h3>
+      <article class="doc-entry" id="doc-Filter">
+        <h3><a class="doc-anchor" href="#doc-Filter">#</a> <code>Filter</code></h3>
         <pre><code class="lang-r r">Filter(f, x)
 </code></pre>
         <p>The elements of x for which f returns TRUE, keeping the corresponding names.</p>
       </article>
-      <article class="doc-entry" id="doc-find">
-        <h3><a class="doc-anchor" href="#doc-find">#</a> <code>Find</code></h3>
+      <article class="doc-entry" id="doc-Find">
+        <h3><a class="doc-anchor" href="#doc-Find">#</a> <code>Find</code></h3>
         <pre><code class="lang-r r">Find(f, x)
 </code></pre>
         <p>The first element for which f returns TRUE, or NULL when none does.</p>
       </article>
-      <article class="doc-entry" id="doc-position">
-        <h3><a class="doc-anchor" href="#doc-position">#</a> <code>Position</code></h3>
+      <article class="doc-entry" id="doc-Position">
+        <h3><a class="doc-anchor" href="#doc-Position">#</a> <code>Position</code></h3>
         <pre><code class="lang-r r">Position(f, x)
 </code></pre>
         <p>The 1-based position of the first element for which f returns TRUE, or integer NA.</p>
@@ -1430,8 +1484,8 @@
 </code></pre>
         <p>Apply FUN to each group of X defined by INDEX, returning one simplified value per level, named by level.</p>
       </article>
-      <article class="doc-entry" id="doc-modifylist">
-        <h3><a class="doc-anchor" href="#doc-modifylist">#</a> <code>modifyList</code></h3>
+      <article class="doc-entry" id="doc-modifyList">
+        <h3><a class="doc-anchor" href="#doc-modifyList">#</a> <code>modifyList</code></h3>
         <pre><code class="lang-r r">modifyList(x, val)
 </code></pre>
         <p>Replace the elements of x whose names appear in `val` and append the names that do not.</p>
@@ -1448,22 +1502,46 @@
 </code></pre>
         <p>Call a function — given as a value or as a name — with the elements of `args` as its arguments; the list's names become argument tags.</p>
       </article>
-      <article class="doc-entry" id="doc-negate">
-        <h3><a class="doc-anchor" href="#doc-negate">#</a> <code>Negate</code></h3>
+      <article class="doc-entry" id="doc-Negate">
+        <h3><a class="doc-anchor" href="#doc-Negate">#</a> <code>Negate</code></h3>
         <pre><code class="lang-r r">Negate(f)
 </code></pre>
         <p>A new function returning the logical negation of f's result. It is a runtime combinator, not a closure, so it has no body to print.</p>
       </article>
-      <article class="doc-entry" id="doc-vectorize">
-        <h3><a class="doc-anchor" href="#doc-vectorize">#</a> <code>Vectorize</code></h3>
+      <article class="doc-entry" id="doc-Vectorize">
+        <h3><a class="doc-anchor" href="#doc-Vectorize">#</a> <code>Vectorize</code></h3>
         <pre><code class="lang-r r">Vectorize(FUN)
 </code></pre>
         <p>A new function that applies FUN elementwise over its recycled arguments and simplifies the result.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-matrices-and-arrays">
+    <section class="tutorial-section" id="ch-Matrices-and-arrays">
       <h2>Matrices and arrays</h2>
-      <p class="chapter-meta">22 entries</p>
+      <p class="chapter-meta">26 entries</p>
+      <article class="doc-entry" id="doc-NROW">
+        <h3><a class="doc-anchor" href="#doc-NROW">#</a> <code>NROW</code></h3>
+        <pre><code class="lang-r r">NROW(x)
+</code></pre>
+        <p>The number of rows: dim(x)[1] for an array, else length(x), so a vector counts as one column.</p>
+      </article>
+      <article class="doc-entry" id="doc-NCOL">
+        <h3><a class="doc-anchor" href="#doc-NCOL">#</a> <code>NCOL</code></h3>
+        <pre><code class="lang-r r">NCOL(x)
+</code></pre>
+        <p>The number of columns: dim(x)[2] for a matrix, 0 for NULL, and 1 for any other vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-prop-table">
+        <h3><a class="doc-anchor" href="#doc-prop-table">#</a> <code>prop.table</code></h3>
+        <pre><code class="lang-r r">prop.table(x, margin = NULL)
+</code></pre>
+        <p>x divided by its total, keeping names, dim and the other attributes. With margin = 1 each entry of a matrix is divided by its row total, with margin = 2 by its column total; margins of a higher-dimensional array are not supported.</p>
+      </article>
+      <article class="doc-entry" id="doc-proportions">
+        <h3><a class="doc-anchor" href="#doc-proportions">#</a> <code>proportions</code></h3>
+        <pre><code class="lang-r r">proportions(x, margin = NULL)
+</code></pre>
+        <p>The same function as prop.table, under its newer name.</p>
+      </article>
       <article class="doc-entry" id="doc-matrix">
         <h3><a class="doc-anchor" href="#doc-matrix">#</a> <code>matrix</code></h3>
         <pre><code class="lang-r r">matrix(data = NA, nrow, ncol, dimnames = NULL, byrow = FALSE)
@@ -1536,8 +1614,8 @@
 </code></pre>
         <p>The modulus (as its log by default, carrying a logarithm attribute) and sign of the determinant, returned as a list of class "det".</p>
       </article>
-      <article class="doc-entry" id="doc-arrayind">
-        <h3><a class="doc-anchor" href="#doc-arrayind">#</a> <code>arrayInd</code></h3>
+      <article class="doc-entry" id="doc-arrayInd">
+        <h3><a class="doc-anchor" href="#doc-arrayInd">#</a> <code>arrayInd</code></h3>
         <pre><code class="lang-r r">arrayInd(ind, .dim, .dimnames = NULL, useNames = FALSE)
 </code></pre>
         <p>Linear indices as an integer matrix of per-dimension subscripts; useNames labels the rows from the first margin's names and the columns row/col or dim1, dim2, ….</p>
@@ -1572,34 +1650,52 @@
 </code></pre>
         <p>Bind the arguments as rows, with the same recycling, promotion and naming rules as cbind — so rbind(x, x) carries the rownames "x", "x". The deparsed labels come from the call site, so they are unavailable when the arguments arrive through `...`.</p>
       </article>
-      <article class="doc-entry" id="doc-rowsums">
-        <h3><a class="doc-anchor" href="#doc-rowsums">#</a> <code>rowSums</code></h3>
+      <article class="doc-entry" id="doc-rowSums">
+        <h3><a class="doc-anchor" href="#doc-rowSums">#</a> <code>rowSums</code></h3>
         <pre><code class="lang-r r">rowSums(x)
 </code></pre>
         <p>Sum along every dimension but the first, keeping the first. A 1-D result takes that margin's dimnames as its names.</p>
       </article>
-      <article class="doc-entry" id="doc-colsums">
-        <h3><a class="doc-anchor" href="#doc-colsums">#</a> <code>colSums</code></h3>
+      <article class="doc-entry" id="doc-colSums">
+        <h3><a class="doc-anchor" href="#doc-colSums">#</a> <code>colSums</code></h3>
         <pre><code class="lang-r r">colSums(x)
 </code></pre>
         <p>Sum along the first dimension, keeping the rest — a vector for a matrix, a matrix for a 3-D array.</p>
       </article>
-      <article class="doc-entry" id="doc-rowmeans">
-        <h3><a class="doc-anchor" href="#doc-rowmeans">#</a> <code>rowMeans</code></h3>
+      <article class="doc-entry" id="doc-rowMeans">
+        <h3><a class="doc-anchor" href="#doc-rowMeans">#</a> <code>rowMeans</code></h3>
         <pre><code class="lang-r r">rowMeans(x)
 </code></pre>
         <p>The mean along every dimension but the first — one value per row of a matrix.</p>
       </article>
-      <article class="doc-entry" id="doc-colmeans">
-        <h3><a class="doc-anchor" href="#doc-colmeans">#</a> <code>colMeans</code></h3>
+      <article class="doc-entry" id="doc-colMeans">
+        <h3><a class="doc-anchor" href="#doc-colMeans">#</a> <code>colMeans</code></h3>
         <pre><code class="lang-r r">colMeans(x)
 </code></pre>
         <p>The mean along the first dimension — one value per column of a matrix.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-environments-and-dispatch">
+    <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">65 entries</p>
+      <p class="chapter-meta">68 entries</p>
+      <article class="doc-entry" id="doc-mget">
+        <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
+        <pre><code class="lang-r r">mget(x, envir)
+</code></pre>
+        <p>A list holding the value bound to each name in x, named by x, looked up in envir (with its enclosures) or the current environment chain. An unbound name is an error. R's mode, ifnotfound and inherits arguments are not read.</p>
+      </article>
+      <article class="doc-entry" id="doc-Sys-getenv">
+        <h3><a class="doc-anchor" href="#doc-Sys-getenv">#</a> <code>Sys.getenv</code></h3>
+        <pre><code class="lang-r r">Sys.getenv(x, unset = "", names = NA)
+</code></pre>
+        <p>The value of each environment variable named in x, or unset for one that is not set. The result is named by x when x has more than one element or names = TRUE. Calling it with no x, which lists the whole environment in R, is an error here.</p>
+      </article>
+      <article class="doc-entry" id="doc-Sys-setenv">
+        <h3><a class="doc-anchor" href="#doc-Sys-setenv">#</a> <code>Sys.setenv</code></h3>
+        <pre><code class="lang-r r">Sys.setenv(...)
+</code></pre>
+        <p>Set each named argument as an environment variable of the running process, its value converted to a string. Every argument must be named. Returns a logical vector of TRUE, one per variable, invisibly.</p>
+      </article>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x)
@@ -1648,26 +1744,26 @@
 </code></pre>
         <p>Signal a return from the enclosing closure with the given value.</p>
       </article>
-      <article class="doc-entry" id="doc-usemethod">
-        <h3><a class="doc-anchor" href="#doc-usemethod">#</a> <code>UseMethod</code></h3>
+      <article class="doc-entry" id="doc-UseMethod">
+        <h3><a class="doc-anchor" href="#doc-UseMethod">#</a> <code>UseMethod</code></h3>
         <pre><code class="lang-r r">UseMethod(generic, object)
 </code></pre>
         <p>S3 dispatch: look for generic.class for each class of the object — the current call's first argument when none is given — then generic.default, and return what it returns.</p>
       </article>
-      <article class="doc-entry" id="doc-nextmethod">
-        <h3><a class="doc-anchor" href="#doc-nextmethod">#</a> <code>NextMethod</code></h3>
+      <article class="doc-entry" id="doc-NextMethod">
+        <h3><a class="doc-anchor" href="#doc-NextMethod">#</a> <code>NextMethod</code></h3>
         <pre><code class="lang-r r">NextMethod()
 </code></pre>
         <p>Continue S3 dispatch from inside a method: run the method for the next class in the vector UseMethod was dispatching on, falling back to the primitive behind the generic when no further method is defined.</p>
       </article>
-      <article class="doc-entry" id="doc-trycatch">
-        <h3><a class="doc-anchor" href="#doc-trycatch">#</a> <code>tryCatch</code></h3>
+      <article class="doc-entry" id="doc-tryCatch">
+        <h3><a class="doc-anchor" href="#doc-tryCatch">#</a> <code>tryCatch</code></h3>
         <pre><code class="lang-r r">tryCatch(expr, ..., finally)
 </code></pre>
         <p>Evaluate expr with handlers installed. Each named argument other than finally is a handler for the condition class of that name (error, warning, message, condition); if expr signals a matching condition, that handler is called with the condition object and its value becomes the result. finally is evaluated on the way out either way.</p>
       </article>
-      <article class="doc-entry" id="doc-withcallinghandlers">
-        <h3><a class="doc-anchor" href="#doc-withcallinghandlers">#</a> <code>withCallingHandlers</code></h3>
+      <article class="doc-entry" id="doc-withCallingHandlers">
+        <h3><a class="doc-anchor" href="#doc-withCallingHandlers">#</a> <code>withCallingHandlers</code></h3>
         <pre><code class="lang-r r">withCallingHandlers(expr, ...)
 </code></pre>
         <p>Evaluate expr with handlers installed, spelled as tryCatch is, but without unwinding: a matching handler runs at the point the condition was signalled, and when it returns the search continues outward and evaluation resumes there. A handler ends the search by transferring to a restart, which is what invokeRestart("muffleWarning") does.</p>
@@ -1684,80 +1780,80 @@
 </code></pre>
         <p>Register expr to be evaluated when the enclosing closure exits, whether it returns normally or unwinds with an error. Without add = TRUE a later on.exit replaces the registered expression instead of joining it.</p>
       </article>
-      <article class="doc-entry" id="doc-conditionmessage">
-        <h3><a class="doc-anchor" href="#doc-conditionmessage">#</a> <code>conditionMessage</code></h3>
+      <article class="doc-entry" id="doc-conditionMessage">
+        <h3><a class="doc-anchor" href="#doc-conditionMessage">#</a> <code>conditionMessage</code></h3>
         <pre><code class="lang-r r">conditionMessage(c)
 </code></pre>
         <p>The message string carried by a condition object.</p>
       </article>
-      <article class="doc-entry" id="doc-conditioncall">
-        <h3><a class="doc-anchor" href="#doc-conditioncall">#</a> <code>conditionCall</code></h3>
+      <article class="doc-entry" id="doc-conditionCall">
+        <h3><a class="doc-anchor" href="#doc-conditionCall">#</a> <code>conditionCall</code></h3>
         <pre><code class="lang-r r">conditionCall(c)
 </code></pre>
         <p>The call a condition was signalled from. rlang records no call, so this is always NULL.</p>
       </article>
-      <article class="doc-entry" id="doc-simpleerror">
-        <h3><a class="doc-anchor" href="#doc-simpleerror">#</a> <code>simpleError</code></h3>
+      <article class="doc-entry" id="doc-simpleError">
+        <h3><a class="doc-anchor" href="#doc-simpleError">#</a> <code>simpleError</code></h3>
         <pre><code class="lang-r r">simpleError(message)
 </code></pre>
         <p>Build a condition object of class c("simpleError", "error", "condition").</p>
       </article>
-      <article class="doc-entry" id="doc-simplewarning">
-        <h3><a class="doc-anchor" href="#doc-simplewarning">#</a> <code>simpleWarning</code></h3>
+      <article class="doc-entry" id="doc-simpleWarning">
+        <h3><a class="doc-anchor" href="#doc-simpleWarning">#</a> <code>simpleWarning</code></h3>
         <pre><code class="lang-r r">simpleWarning(message)
 </code></pre>
         <p>Build a condition object of class c("simpleWarning", "warning", "condition").</p>
       </article>
-      <article class="doc-entry" id="doc-simplemessage">
-        <h3><a class="doc-anchor" href="#doc-simplemessage">#</a> <code>simpleMessage</code></h3>
+      <article class="doc-entry" id="doc-simpleMessage">
+        <h3><a class="doc-anchor" href="#doc-simpleMessage">#</a> <code>simpleMessage</code></h3>
         <pre><code class="lang-r r">simpleMessage(message)
 </code></pre>
         <p>Build a condition object of class c("simpleMessage", "message", "condition").</p>
       </article>
-      <article class="doc-entry" id="doc-simplecondition">
-        <h3><a class="doc-anchor" href="#doc-simplecondition">#</a> <code>simpleCondition</code></h3>
+      <article class="doc-entry" id="doc-simpleCondition">
+        <h3><a class="doc-anchor" href="#doc-simpleCondition">#</a> <code>simpleCondition</code></h3>
         <pre><code class="lang-r r">simpleCondition(message)
 </code></pre>
         <p>Build a condition object of class c("simpleCondition", "condition").</p>
       </article>
-      <article class="doc-entry" id="doc-signalcondition">
-        <h3><a class="doc-anchor" href="#doc-signalcondition">#</a> <code>signalCondition</code></h3>
+      <article class="doc-entry" id="doc-signalCondition">
+        <h3><a class="doc-anchor" href="#doc-signalCondition">#</a> <code>signalCondition</code></h3>
         <pre><code class="lang-r r">signalCondition(cond)
 </code></pre>
         <p>Signal a condition object: every enclosing calling handler for one of its classes runs in place, an enclosing tryCatch for one of them unwinds, and with nothing in scope the call returns NULL and evaluation continues.</p>
       </article>
-      <article class="doc-entry" id="doc-withrestarts">
-        <h3><a class="doc-anchor" href="#doc-withrestarts">#</a> <code>withRestarts</code></h3>
+      <article class="doc-entry" id="doc-withRestarts">
+        <h3><a class="doc-anchor" href="#doc-withRestarts">#</a> <code>withRestarts</code></h3>
         <pre><code class="lang-r r">withRestarts(expr, ...)
 </code></pre>
         <p>Evaluate expr with restarts established. Each named argument is a restart: a handler function, a list(handler =, description =), or a description string. If invokeRestart transfers to one, its handler's value becomes the value of this call.</p>
       </article>
-      <article class="doc-entry" id="doc-invokerestart">
-        <h3><a class="doc-anchor" href="#doc-invokerestart">#</a> <code>invokeRestart</code></h3>
+      <article class="doc-entry" id="doc-invokeRestart">
+        <h3><a class="doc-anchor" href="#doc-invokeRestart">#</a> <code>invokeRestart</code></h3>
         <pre><code class="lang-r r">invokeRestart(r, ...)
 </code></pre>
         <p>Transfer control to the restart named (or held) by r, passing the remaining arguments to its handler. Does not return: cleanups registered with on.exit and tryCatch's finally still run on the way out, but no handler catches the transfer.</p>
       </article>
-      <article class="doc-entry" id="doc-computerestarts">
-        <h3><a class="doc-anchor" href="#doc-computerestarts">#</a> <code>computeRestarts</code></h3>
+      <article class="doc-entry" id="doc-computeRestarts">
+        <h3><a class="doc-anchor" href="#doc-computeRestarts">#</a> <code>computeRestarts</code></h3>
         <pre><code class="lang-r r">computeRestarts(cond = NULL)
 </code></pre>
         <p>The restarts currently established, innermost first, ending with the abort restart the evaluator always provides. warning() establishes muffleWarning around itself and message() establishes muffleMessage.</p>
       </article>
-      <article class="doc-entry" id="doc-restartdescription">
-        <h3><a class="doc-anchor" href="#doc-restartdescription">#</a> <code>restartDescription</code></h3>
+      <article class="doc-entry" id="doc-restartDescription">
+        <h3><a class="doc-anchor" href="#doc-restartDescription">#</a> <code>restartDescription</code></h3>
         <pre><code class="lang-r r">restartDescription(r)
 </code></pre>
         <p>The description string a restart was established with, or NULL when it carries none.</p>
       </article>
-      <article class="doc-entry" id="doc-isrestart">
-        <h3><a class="doc-anchor" href="#doc-isrestart">#</a> <code>isRestart</code></h3>
+      <article class="doc-entry" id="doc-isRestart">
+        <h3><a class="doc-anchor" href="#doc-isRestart">#</a> <code>isRestart</code></h3>
         <pre><code class="lang-r r">isRestart(x)
 </code></pre>
         <p>Whether x is a restart object, i.e. inherits from class "restart".</p>
       </article>
-      <article class="doc-entry" id="doc-recall">
-        <h3><a class="doc-anchor" href="#doc-recall">#</a> <code>Recall</code></h3>
+      <article class="doc-entry" id="doc-Recall">
+        <h3><a class="doc-anchor" href="#doc-Recall">#</a> <code>Recall</code></h3>
         <pre><code class="lang-r r">Recall(...)
 </code></pre>
         <p>Re-invoke the closure currently executing, which lets an anonymous recursive function call itself.</p>
@@ -1810,32 +1906,32 @@
 </code></pre>
         <p>Load a package like library, returning a logical rather than loading invisibly.</p>
       </article>
-      <article class="doc-entry" id="doc-requirenamespace">
-        <h3><a class="doc-anchor" href="#doc-requirenamespace">#</a> <code>requireNamespace</code></h3>
+      <article class="doc-entry" id="doc-requireNamespace">
+        <h3><a class="doc-anchor" href="#doc-requireNamespace">#</a> <code>requireNamespace</code></h3>
         <pre><code class="lang-r r">requireNamespace(package)
 </code></pre>
         <p>Load the package's namespace in the embedded R, returning a logical.</p>
       </article>
-      <article class="doc-entry" id="doc-loadnamespace">
-        <h3><a class="doc-anchor" href="#doc-loadnamespace">#</a> <code>loadNamespace</code></h3>
+      <article class="doc-entry" id="doc-loadNamespace">
+        <h3><a class="doc-anchor" href="#doc-loadNamespace">#</a> <code>loadNamespace</code></h3>
         <pre><code class="lang-r r">loadNamespace(package)
 </code></pre>
         <p>Load the package's namespace in the embedded R.</p>
       </article>
-      <article class="doc-entry" id="doc-suppressmessages">
-        <h3><a class="doc-anchor" href="#doc-suppressmessages">#</a> <code>suppressMessages</code></h3>
+      <article class="doc-entry" id="doc-suppressMessages">
+        <h3><a class="doc-anchor" href="#doc-suppressMessages">#</a> <code>suppressMessages</code></h3>
         <pre><code class="lang-r r">suppressMessages(expr)
 </code></pre>
         <p>Evaluate expr with every message discarded, and return its value. The message is muffled at the point it is signalled, so expr carries on from there.</p>
       </article>
-      <article class="doc-entry" id="doc-suppresswarnings">
-        <h3><a class="doc-anchor" href="#doc-suppresswarnings">#</a> <code>suppressWarnings</code></h3>
+      <article class="doc-entry" id="doc-suppressWarnings">
+        <h3><a class="doc-anchor" href="#doc-suppressWarnings">#</a> <code>suppressWarnings</code></h3>
         <pre><code class="lang-r r">suppressWarnings(expr)
 </code></pre>
         <p>Evaluate expr with every warning discarded, and return its value. The warning is muffled at the point it is signalled, so expr carries on from there.</p>
       </article>
-      <article class="doc-entry" id="doc-suppresspackagestartupmessages">
-        <h3><a class="doc-anchor" href="#doc-suppresspackagestartupmessages">#</a> <code>suppressPackageStartupMessages</code></h3>
+      <article class="doc-entry" id="doc-suppressPackageStartupMessages">
+        <h3><a class="doc-anchor" href="#doc-suppressPackageStartupMessages">#</a> <code>suppressPackageStartupMessages</code></h3>
         <pre><code class="lang-r r">suppressPackageStartupMessages(expr)
 </code></pre>
         <p>Return expr; package startup output is suppressed by the bridge's own suppressMessages wrapper around the load.</p>
@@ -1848,9 +1944,9 @@
       </article>
       <article class="doc-entry" id="doc-rlang-quote">
         <h3><a class="doc-anchor" href="#doc-rlang-quote">#</a> <code>.rlang_quote</code></h3>
-        <pre><code class="lang-r r">.rlang_quote(src)
+        <pre><code class="lang-r r">.rlang_quote(src, splice)
 </code></pre>
-        <p>Internal, not user surface: what the compiler emits for quote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote.</p>
+        <p>Internal, not user surface: what the compiler emits for quote(x) and bquote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote. splice = TRUE (bquote) replaces each `.(e)` with the value of e in the caller's frame.</p>
       </article>
       <article class="doc-entry" id="doc-quote">
         <h3><a class="doc-anchor" href="#doc-quote">#</a> <code>quote</code></h3>
@@ -1862,7 +1958,7 @@
         <h3><a class="doc-anchor" href="#doc-bquote">#</a> <code>bquote</code></h3>
         <pre><code class="lang-r r">bquote(expr)
 </code></pre>
-        <p>The expression itself, unevaluated, like quote. R's `.()` substitution inside the expression is not performed.</p>
+        <p>The expression, unevaluated like quote, except that each `.(e)` inside it is replaced by the value of e evaluated in the calling frame: y &lt;- 5; bquote(a + .(y)) is a + 5. A spliced call keeps its own grouping, so splicing a + b into .(z) * 2 prints (a + b) * 2, as R's deparser does. The where and splice arguments are not read.</p>
       </article>
       <article class="doc-entry" id="doc-as-name">
         <h3><a class="doc-anchor" href="#doc-as-name">#</a> <code>as.name</code></h3>
@@ -1918,8 +2014,8 @@
 </code></pre>
         <p>The formals of a closure as a named list: each default as the expression written, and the empty symbol for a formal without one. Without fun, the calling function's; a string names the function; a primitive has none (NULL).</p>
       </article>
-      <article class="doc-entry" id="doc-formalargs">
-        <h3><a class="doc-anchor" href="#doc-formalargs">#</a> <code>formalArgs</code></h3>
+      <article class="doc-entry" id="doc-formalArgs">
+        <h3><a class="doc-anchor" href="#doc-formalArgs">#</a> <code>formalArgs</code></h3>
         <pre><code class="lang-r r">formalArgs(def)
 </code></pre>
         <p>The names of a closure's formals, ... included.</p>
@@ -1978,8 +2074,8 @@
 </code></pre>
         <p>The first environment up envir's enclosure chain that is matchThisEnv or a top level. envir defaults to the calling environment; rlang's one top level is the global environment.</p>
       </article>
-      <article class="doc-entry" id="doc-environmentname">
-        <h3><a class="doc-anchor" href="#doc-environmentname">#</a> <code>environmentName</code></h3>
+      <article class="doc-entry" id="doc-environmentName">
+        <h3><a class="doc-anchor" href="#doc-environmentName">#</a> <code>environmentName</code></h3>
         <pre><code class="lang-r r">environmentName(env)
 </code></pre>
         <p>"R_GlobalEnv" for the global environment and the empty string for any other, which is what R answers for an anonymous frame.</p>
@@ -1991,7 +2087,7 @@
         <p>Run an expression, identical to eval here: rlang's arguments are eager, so there is nothing left to quote against by the time either is called.</p>
       </article>
     </section>
-    <section class="tutorial-section" id="ch-operators">
+    <section class="tutorial-section" id="ch-Operators">
       <h2>Operators</h2>
       <p class="chapter-meta">20 entries</p>
       <article class="doc-entry" id="doc-plus">

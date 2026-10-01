@@ -221,6 +221,40 @@ fn inline_call_text(f: &Value) -> String {
     }
 }
 
+/// `path` without its trailing separators — but a path that is nothing but
+/// separators keeps its first, as R's `do_basename`/`do_dirname` loop does.
+fn trim_trailing_seps(path: &str) -> &str {
+    let t = path.trim_end_matches('/');
+    if t.is_empty() && !path.is_empty() {
+        &path[..1]
+    } else {
+        t
+    }
+}
+
+/// R's `basename`: the part after the last `/`, ignoring trailing ones.
+fn r_basename(path: &str) -> String {
+    let p = trim_trailing_seps(path);
+    p.rfind('/').map_or(p, |i| &p[i + 1..]).to_string()
+}
+
+/// R's `dirname`: everything before the last `/` (ignoring trailing ones and
+/// collapsing the run of separators before it), `.` when there is none, `/`
+/// for the root, and `""` for the empty path.
+fn r_dirname(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let p = trim_trailing_seps(path);
+    match p.rfind('/') {
+        None => ".".into(),
+        Some(i) => {
+            let head = p[..i].trim_end_matches('/');
+            if head.is_empty() { "/".into() } else { head.to_string() }
+        }
+    }
+}
+
 /// Write `text` to `path`, truncating or appending. The error is R's own
 /// wording for a path it cannot open.
 fn write_text(path: &str, text: &str, append: bool) -> Result<(), String> {
@@ -457,6 +491,75 @@ fn substitute_in(e: &Expr, map: &[(String, Expr)], by_value: bool) -> Expr {
         },
         other => other.clone(),
     }
+}
+
+/// `bquote`'s walk: every `.(x)` in `e` is replaced by the value of `x`,
+/// evaluated in the caller's frame and written back as an expression; the rest
+/// of the tree is kept as written. R's `unquote` inside `bquote`.
+fn bquote_in(e: &Expr) -> Result<Expr, String> {
+    let boxed = |x: &Expr| bquote_in(x).map(Box::new);
+    let args = |xs: &[Arg]| -> Result<Vec<Arg>, String> {
+        xs.iter()
+            .map(|a| {
+                Ok(Arg {
+                    name: a.name.clone(),
+                    value: a.value.as_ref().map(bquote_in).transpose()?,
+                })
+            })
+            .collect()
+    };
+    Ok(match e {
+        Expr::Call { fun, args: xs } => match (fun.as_ref(), xs.as_slice()) {
+            (Expr::Ident(f), [Arg { name: None, value: Some(x) }]) if f == "." => {
+                let v = eval_expr(x)?;
+                match lang_of(&v) {
+                    Some(l) => l,
+                    None => value_as_expr(&v)
+                        .ok_or_else(|| format!("cannot splice {} into bquote", deparse_value(&v)))?,
+                }
+            }
+            _ => Expr::Call {
+                fun: boxed(fun)?,
+                args: args(xs)?,
+            },
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: boxed(lhs)?,
+            rhs: boxed(rhs)?,
+        },
+        Expr::Special { name, lhs, rhs } => Expr::Special {
+            name: name.clone(),
+            lhs: boxed(lhs)?,
+            rhs: boxed(rhs)?,
+        },
+        Expr::Unary { op, operand } => Expr::Unary {
+            op: op.clone(),
+            operand: boxed(operand)?,
+        },
+        Expr::Paren(x) => Expr::Paren(boxed(x)?),
+        Expr::Block(xs) => Expr::Block(xs.iter().map(bquote_in).collect::<Result<_, _>>()?),
+        Expr::If { cond, then, els } => Expr::If {
+            cond: boxed(cond)?,
+            then: boxed(then)?,
+            els: els.as_deref().map(boxed).transpose()?,
+        },
+        Expr::Assign {
+            target,
+            value,
+            super_assign,
+        } => Expr::Assign {
+            target: boxed(target)?,
+            value: boxed(value)?,
+            super_assign: *super_assign,
+        },
+        Expr::Index { kind, obj, args: xs } => Expr::Index {
+            kind: *kind,
+            obj: boxed(obj)?,
+            args: args(xs)?,
+        },
+        other => other.clone(),
+    })
 }
 
 /// An argument list with `...` spliced back into the arguments it stands for.
@@ -722,9 +825,77 @@ fn factor_labels(v: &Value) -> Vec<Option<String>> {
 fn as_str_labels(v: &Value) -> Vec<Option<String>> {
     if is_factor(v) {
         factor_labels(v)
+    } else if kind(v) == RKind::List {
+        elements(v).iter().map(|e| Some(list_elt_text(e))).collect()
     } else {
         as_str(v)
     }
+}
+
+/// How `as.character` writes one element of a list — R's `coerceVectorList`:
+/// a single string is itself, and anything else is deparsed onto one line
+/// under `SIMPLEDEPARSE`, so integers lose their `L` and only names survive
+/// of the attributes (a non-syntactic one backquoted, since `deparse1line`
+/// deparses with `backtick = TRUE`): `list(1:2, "b", c(x = 1.5))` gives `"1:2"`, `"b"`,
+/// `"c(x = 1.5)"`.
+fn list_elt_text(v: &Value) -> String {
+    let x = data(v);
+    let one = |x: &RData| -> Option<Vec<String>> {
+        let quote = |s: &Option<String>| match s {
+            Some(s) => format!("\"{}\"", encode_string(s)),
+            None => "NA".into(),
+        };
+        let na = |s: Option<String>| s.unwrap_or_else(|| "NA".into());
+        Some(match x {
+            RData::Str(xs) => xs.iter().map(quote).collect(),
+            RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) => crate::host::with_print_digits(
+                crate::host::AS_CHARACTER_DIGITS,
+                || as_str(v),
+            )
+            .into_iter()
+            .map(na)
+            .collect(),
+            _ => return None,
+        })
+    };
+    if let RData::Str(xs) = &x {
+        if let [Some(s)] = xs.as_slice() {
+            return s.clone();
+        }
+    }
+    let Some(items) = one(&x) else {
+        return deparse_value(v);
+    };
+    let names = nice_names(v);
+    if names.is_none() {
+        if let RData::Int(xs) = &x {
+            if let Some(seq) = int_colon(xs) {
+                return seq;
+            }
+        }
+        match items.len() {
+            0 => {
+                return match x {
+                    RData::Str(_) => "character(0)",
+                    RData::Int(_) => "integer(0)",
+                    RData::Lgl(_) => "logical(0)",
+                    _ => "numeric(0)",
+                }
+                .into()
+            }
+            1 => return items[0].clone(),
+            _ => {}
+        }
+    }
+    let parts: Vec<String> = items
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| match names.as_ref().and_then(|ns| ns[i].as_deref()) {
+            Some(n) if !n.is_empty() => format!("{} = {s}", crate::deparse::quote_name(n)),
+            _ => s,
+        })
+        .collect();
+    format!("c({})", parts.join(", "))
 }
 /// Build a factor from 1-based `codes` into `levels`. The one constructor
 /// `factor`, `droplevels`, `cut` and the factor-preserving primitives share.
@@ -1303,6 +1474,15 @@ fn unop(op: &str, x: &Value, dispatch: bool) -> Result<Value, String> {
     if let Some(r) = ops_factor(op, x, None) {
         return r;
     }
+    // Only numbers (and, for `!`, logicals) have a sign or a negation: R
+    // rejects NULL, text, lists, functions and language objects up front.
+    if !matches!(kind(x), RKind::Lgl | RKind::Int | RKind::Dbl) {
+        return Err(match op {
+            "!" => "invalid argument type",
+            _ => "invalid argument to unary operator",
+        }
+        .into());
+    }
     // `-x` and `!x` are element-wise, so they keep the operand's names/dim/
     // dimnames the same way the binary operators do via `carry_attrs`.
     let out = match op {
@@ -1677,9 +1857,34 @@ fn binop_internal(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     if let Some(r) = ops_factor(op, lhs, Some(rhs)) {
         return r;
     }
+    let not_data = |v: &Value| {
+        matches!(
+            kind(v),
+            RKind::Closure | RKind::Builtin | RKind::Combinator | RKind::Environment
+        )
+    };
     match op {
-        "+" | "-" | "*" | "/" | "^" | "%%" | "%/%" => arith(op, lhs, rhs),
-        "==" | "!=" | "<" | ">" | "<=" | ">=" => compare(op, lhs, rhs),
+        "+" | "-" | "*" | "/" | "^" | "%%" | "%/%" => {
+            // R's arithmetic takes numbers only: a list, a function, an
+            // environment or a language object is rejected outright.
+            let non_numeric = |v: &Value| not_data(v) || matches!(kind(v), RKind::List | RKind::Lang | RKind::Sym);
+            if non_numeric(lhs) || non_numeric(rhs) {
+                return Err("non-numeric argument to binary operator".into());
+            }
+            arith(op, lhs, rhs)
+        }
+        "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+            if not_data(lhs) || not_data(rhs) {
+                return Err(format!("comparison ({op}) is possible only for atomic and list types"));
+            }
+            // `relop` compares a symbol by its name and a call by its deparse,
+            // so `quote(f(x)) == "f(x)"` is TRUE.
+            let as_text = |v: &Value| match lang_of(v) {
+                Some(e) => scalar_str(crate::deparse::deparse_lines(&e)),
+                None => v.clone(),
+            };
+            compare(op, &as_text(lhs), &as_text(rhs))
+        }
         "&" | "|" => logic(op, lhs, rhs),
         ":" => Ok(colon(lhs, rhs)),
         other => Err(format!("invalid operator '{other}'")),
@@ -3300,6 +3505,22 @@ pub const PRIMITIVES: &[&str] = &[
     "structure",
     "print",
     "cat",
+    "writeLines",
+    "file.path",
+    "basename",
+    "dirname",
+    "sQuote",
+    "dQuote",
+    "shQuote",
+    "Sys.getenv",
+    "Sys.setenv",
+    "mget",
+    "is.atomic",
+    "NROW",
+    "NCOL",
+    "weighted.mean",
+    "prop.table",
+    "proportions",
     "str",
     "tempfile",
     "readLines",
@@ -3746,6 +3967,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if let Some(e) = lang_of(&x) {
                 return Ok(mk_str(lang_text(&e).into_iter().map(Some).collect()));
             }
+            // A list element becomes one string each — see `list_elt_text`.
+            if kind(&x) == RKind::List {
+                return Ok(mk_str(elements(&x).iter().map(|e| Some(list_elt_text(e))).collect()));
+            }
             // `as.character(factor)` yields the level labels, not the codes.
             if class_of(&x).iter().any(|c| c == "factor") {
                 let levels = with_host(|h| h.attr(&x, "levels"))
@@ -4173,6 +4398,238 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             with_host(|h| h.visible = false);
             Ok(null())
+        }
+        // `writeLines(text, con = stdout(), sep = "\n")`: each string followed
+        // by `sep`. A character `con` is a file path R opens for writing.
+        "writeLines" => {
+            let text = a.get(0, "text").unwrap_or_else(|| mk_str(Vec::new()));
+            if kind(&text) != RKind::Str {
+                return Err("can only write character objects".into());
+            }
+            let sep = a.get(2, "sep").and_then(|v| str1(&v)).unwrap_or_else(|| "\n".into());
+            let out: String = as_str(&text)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()) + &sep)
+                .collect();
+            match a.get(1, "con").and_then(|v| str1(&v)) {
+                Some(path) => write_text(&path, &out, false)?,
+                None => crate::host::emit(&out),
+            }
+            with_host(|h| h.visible = false);
+            Ok(null())
+        }
+        // `file.path(..., fsep = "/")`: the parts joined element-wise, recycled
+        // to the longest; any zero-length part makes the result empty.
+        "file.path" => {
+            let fsep = a.named("fsep").and_then(|v| str1(&v)).unwrap_or_else(|| "/".into());
+            let parts: Vec<Vec<Option<String>>> = a
+                .all
+                .iter()
+                .filter(|(t, _)| t.as_deref() != Some("fsep"))
+                .map(|(_, v)| as_str(v))
+                .collect();
+            if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+                return Ok(mk_str(Vec::new()));
+            }
+            let n = parts.iter().map(Vec::len).max().unwrap_or(0);
+            Ok(mk_str(
+                (0..n)
+                    .map(|i| {
+                        let pieces: Vec<String> = parts
+                            .iter()
+                            .map(|p| p[i % p.len()].clone().unwrap_or_else(|| "NA".into()))
+                            .collect();
+                        Some(pieces.join(&fsep))
+                    })
+                    .collect(),
+            ))
+        }
+        "basename" | "dirname" => {
+            let base = name == "basename";
+            Ok(mk_str(
+                as_str(&a.req(0, "path")?)
+                    .into_iter()
+                    .map(|p| p.map(|p| if base { r_basename(&p) } else { r_dirname(&p) }))
+                    .collect(),
+            ))
+        }
+        // `sQuote(x, q = TRUE)` / `dQuote`: Rscript runs in a UTF-8 locale,
+        // where R's default `useFancyQuotes` gives the typographic pair.
+        "sQuote" | "dQuote" => {
+            let x = a.req(0, "x")?;
+            let fancy = a.get(1, "q").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let (open, close) = match (name == "sQuote", fancy) {
+                (true, true) => ("\u{2018}", "\u{2019}"),
+                (true, false) => ("'", "'"),
+                (false, true) => ("\u{201c}", "\u{201d}"),
+                (false, false) => ("\"", "\""),
+            };
+            let out = mk_str(
+                as_str(&x)
+                    .into_iter()
+                    .map(|s| Some(format!("{open}{}{close}", s.unwrap_or_else(|| "NA".into()))))
+                    .collect(),
+            );
+            shaped_like(out, &x)
+        }
+        // `shQuote(x, type = "sh")`: single quotes, unless any element holds
+        // one — then R double-quotes every element, escaping `"`, `$`, `` ` ``
+        // and `\`.
+        "shQuote" => {
+            let xs = as_str(&a.req(0, "string")?);
+            let has_single = xs.iter().flatten().any(|s| s.contains('\''));
+            Ok(mk_str(
+                xs.into_iter()
+                    .map(|s| {
+                        let s = s.unwrap_or_else(|| "NA".into());
+                        Some(if !has_single {
+                            format!("'{s}'")
+                        } else {
+                            let mut q = String::from("\"");
+                            for c in s.chars() {
+                                if matches!(c, '"' | '$' | '`' | '\\') {
+                                    q.push('\\');
+                                }
+                                q.push(c);
+                            }
+                            q + "\""
+                        })
+                    })
+                    .collect(),
+            ))
+        }
+        // `Sys.getenv(x, unset = "", names = NA)`: names are attached when
+        // more than one variable is asked for, or when `names = TRUE`.
+        "Sys.getenv" => {
+            let Some(x) = a.get(0, "x") else {
+                return Err("Sys.getenv() with no arguments is not supported".into());
+            };
+            let unset = a.get(1, "unset").map(|v| as_str(&v)).and_then(|v| v.into_iter().next()).unwrap_or(Some(String::new()));
+            let keys = as_str(&x);
+            let out = mk_str(
+                keys.iter()
+                    .map(|k| k.as_deref().and_then(|k| std::env::var(k).ok()).or_else(|| unset.clone()))
+                    .collect(),
+            );
+            let names = a.get(2, "names").and_then(|v| lgl1(&v));
+            if names == Some(true) || (keys.len() > 1 && names != Some(false)) {
+                set_names(&out, keys);
+            }
+            Ok(out)
+        }
+        "Sys.setenv" => {
+            if a.all.iter().any(|(t, _)| t.as_deref().is_none_or(str::is_empty)) {
+                return Err("all arguments must be named".into());
+            }
+            let set: Vec<Option<bool>> = a
+                .all
+                .iter()
+                .map(|(t, v)| {
+                    let val = str1(v).unwrap_or_else(|| "NA".into());
+                    // SAFETY: the R program runs on one interpreter thread; no
+                    // other thread reads the environment concurrently.
+                    unsafe { std::env::set_var(t.as_deref().unwrap_or_default(), val) };
+                    Some(true)
+                })
+                .collect();
+            with_host(|h| h.visible = false);
+            Ok(mk_lgl(set))
+        }
+        // `mget(x, envir)`: a named list of each name's value.
+        "mget" => {
+            let keys = as_str(&a.req(0, "x")?);
+            let env = a.get(1, "envir").and_then(|v| env_of(&v));
+            let vals = keys
+                .iter()
+                .map(|k| {
+                    let k = k.clone().unwrap_or_default();
+                    match &env {
+                        Some(e) => with_host(|h| h.lookup_from(e.clone(), &k)),
+                        None => with_host(|h| h.lookup(&k)),
+                    }
+                    .ok_or_else(|| format!("value for \u{2018}{k}\u{2019} not found"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let out = mk_list(vals);
+            set_names(&out, keys);
+            Ok(out)
+        }
+        // R 4.4+: only the atomic vector types — not NULL.
+        "is.atomic" => Ok(scalar_lgl(matches!(
+            kind(&a.req(0, "x")?),
+            RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str
+        ))),
+        // `NROW`/`NCOL`: a vector counts as one column of `length(x)` rows.
+        "NROW" | "NCOL" => {
+            let x = a.req(0, "x")?;
+            let dim = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d)).unwrap_or_default();
+            let n = if name == "NROW" {
+                dim.first().copied().flatten().unwrap_or(len(&x) as i64)
+            } else if is_null(&x) {
+                0
+            } else if dim.len() > 1 {
+                dim[1].unwrap_or(0)
+            } else {
+                1
+            };
+            Ok(scalar_int(n))
+        }
+        // `weighted.mean(x, w, na.rm = FALSE)`, stats' default method:
+        // `sum((x * w)[w != 0]) / sum(w)`, so a missing `x` under zero weight
+        // drops out.
+        "weighted.mean" => {
+            let xs = as_dbl(&a.req(0, "x")?);
+            let na_rm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let ws = match a.get(1, "w") {
+                Some(w) => as_dbl(&w),
+                None => vec![Some(1.0); xs.len()],
+            };
+            if ws.len() != xs.len() {
+                return Err("'x' and 'w' must have the same length".into());
+            }
+            let pairs = xs.iter().zip(&ws).filter(|(x, _)| !(na_rm && x.is_none()));
+            let (mut num, mut den) = (Some(0.0), Some(0.0));
+            for (x, w) in pairs {
+                den = den.zip(*w).map(|(d, w)| d + w);
+                if *w != Some(0.0) {
+                    num = num.zip(x.zip(*w)).map(|(n, (x, w))| n + x * w);
+                }
+            }
+            Ok(mk_dbl(vec![num.zip(den).map(|(n, d)| n / d)]))
+        }
+        // `prop.table(x, margin = NULL)`: `x / sum(x)`, or for a matrix each
+        // entry over its row's (`margin = 1`) or column's (`2`) total.
+        "prop.table" | "proportions" => {
+            let x = a.req(0, "x")?;
+            let total = |xs: &[Option<f64>]| xs.iter().try_fold(0.0, |s, v| v.map(|v| s + v));
+            let margin = a.get(1, "margin").filter(|m| !is_null(m)).and_then(|m| num1(&m));
+            let Some(margin) = margin else {
+                let t = total(&as_dbl(&x));
+                return binop_internal("/", &x, &mk_dbl(vec![t]));
+            };
+            let dim = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d)).unwrap_or_default();
+            let (Some(Some(nr)), Some(Some(nc)), 2) = (dim.first(), dim.get(1), dim.len()) else {
+                return Err("'x' is not an array".into());
+            };
+            let (nr, nc) = (*nr as usize, *nc as usize);
+            let xs = as_dbl(&x);
+            let by_row = margin == 1.0;
+            let sums: Vec<Option<f64>> = if by_row {
+                (0..nr).map(|i| total(&(0..nc).map(|j| xs[i + j * nr]).collect::<Vec<_>>())).collect()
+            } else {
+                (0..nc).map(|j| total(&xs[j * nr..(j + 1) * nr])).collect()
+            };
+            let out = mk_dbl(
+                (0..nr * nc)
+                    .map(|k| {
+                        let s = if by_row { sums[k % nr] } else { sums[k / nr] };
+                        xs[k].zip(s).map(|(v, s)| v / s)
+                    })
+                    .collect(),
+            );
+            carry_attrs(&out, &x, &x);
+            copy_most_attrs(&out, &x);
+            Ok(out)
         }
         "message" | "warning" => {
             let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
@@ -6344,6 +6801,54 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .take(len.max(0) as usize)
                     .collect()
             };
+            // `invert = TRUE`: per element, the text *between* the matches —
+            // one more piece than there are matches — as a list.
+            if a.named("invert").and_then(|v| lgl1(&v)).unwrap_or(false) {
+                let per_elem: Vec<Value> = match data(&m) {
+                    RData::List(items) => items,
+                    _ => {
+                        let lens = with_host(|h| h.attr(&m, "match.length"));
+                        as_int(&m)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, st)| {
+                                let one = mk_int(vec![st]);
+                                let ln = lens.as_ref().and_then(|l| as_int(l).get(i).copied().flatten());
+                                let lv = mk_int(vec![ln]);
+                                with_host(|h| h.set_attr(&one, "match.length", lv));
+                                one
+                            })
+                            .collect()
+                    }
+                };
+                let out: Vec<Value> = per_elem
+                    .iter()
+                    .enumerate()
+                    .map(|(i, mi)| {
+                        let Some(s) = x.get(i).cloned().flatten() else {
+                            return mk_str(vec![None]);
+                        };
+                        let lens = with_host(|h| h.attr(mi, "match.length"))
+                            .map(|v| as_int(&v))
+                            .unwrap_or_default();
+                        let chars: Vec<char> = s.chars().collect();
+                        let mut pieces = Vec::new();
+                        let mut at = 0usize;
+                        for (st, ln) in as_int(mi).iter().zip(&lens) {
+                            let (Some(st), Some(ln)) = (st, ln) else { continue };
+                            if *st < 1 {
+                                continue;
+                            }
+                            let from = (*st as usize - 1).min(chars.len());
+                            pieces.push(Some(chars[at.min(from)..from].iter().collect()));
+                            at = (from + (*ln).max(0) as usize).min(chars.len());
+                        }
+                        pieces.push(Some(chars[at..].iter().collect()));
+                        mk_str(pieces)
+                    })
+                    .collect();
+                return Ok(mk_list(out));
+            }
             match data(&m) {
                 // `gregexpr` result: one character vector of all matches per
                 // element, returned as a list.
@@ -6436,10 +6941,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let nm = names_of(&x);
             if !nm.is_empty() {
                 set_names(&res, nm.clone());
-            } else if kind(&x) == RKind::Str && name == "sapply" {
+            } else if kind(&x) == RKind::Str && name == "sapply" && use_names(&a) {
                 set_names(&res, as_str(&x));
             }
-            Ok(if name == "sapply" {
+            let simplify_it = a.named("simplify").and_then(|v| lgl1(&v)).unwrap_or(true);
+            Ok(if name == "sapply" && simplify_it {
                 simplify(&res)
             } else {
                 res
@@ -6466,17 +6972,25 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 return Ok(out);
             }
+            // Arguments after `FUN.VALUE` go to `FUN`, as they do for `sapply`.
+            let extra: Vec<(Option<String>, Value)> = a
+                .rest(if a.named("FUN.VALUE").is_some() { 2 } else { 3 })
+                .into_iter()
+                .filter(|(t, _)| !matches!(t.as_deref(), Some("FUN.VALUE") | Some("USE.NAMES")))
+                .collect();
             let mut out = Vec::with_capacity(items.len());
             for it in items {
-                out.push(call_fun(&f, vec![(None, it)], FUN_CALL)?);
+                let mut call_args = vec![(None, it)];
+                call_args.extend(extra.clone());
+                out.push(call_fun(&f, call_args, FUN_CALL)?);
             }
             // `vapply` carries names exactly as `sapply` does — from `X`, or from
             // a character `X` used as its own labels (`USE.NAMES`).
             let res = mk_list(out);
             let nm = names_of(&x);
-            if !nm.is_empty() {
+            if use_names(&a) && !nm.is_empty() {
                 set_names(&res, nm);
-            } else if kind(&x) == RKind::Str {
+            } else if use_names(&a) && kind(&x) == RKind::Str {
                 set_names(&res, as_str(&x));
             }
             Ok(simplify(&res))
@@ -7602,7 +8116,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         ".rlang_quote" | "quote" | "bquote" => {
             let src = str1(&a.req(0, "expr")?).unwrap_or_default();
             let mut exprs = crate::parser::parse(&src)?;
+            let splice = a.get(1, "splice").and_then(|v| lgl1(&v)).unwrap_or(false);
             match exprs.len() {
+                1 if splice => Ok(mk_lang(bquote_in(&exprs[0])?)),
                 1 => Ok(mk_lang(exprs.remove(0))),
                 _ => Err(format!("invalid expression in quote: {src}")),
             }
@@ -7856,6 +8372,11 @@ fn call_operator(
         (_, true) => binop(name, &first, &vals[1]),
         (_, false) => binop_internal(name, &first, &vals[1]),
     }
+}
+
+/// `USE.NAMES` (default TRUE) of `sapply`/`vapply`.
+fn use_names(a: &Args) -> bool {
+    a.named("USE.NAMES").and_then(|v| lgl1(&v)).unwrap_or(true)
 }
 
 /// Positional/named argument access for primitives.
@@ -9532,6 +10053,11 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
 fn sprintf(a: &Args) -> Result<Value, String> {
     let fmts = as_str(&a.req(0, "fmt")?);
     let rest = a.rest(1);
+    // A zero-length argument makes the whole result zero-length, as in R's C
+    // `do_sprintf` (`maxlen = 0` once any argument is empty).
+    if fmts.is_empty() || rest.iter().any(|(_, v)| len(v) == 0) {
+        return Ok(mk_str(Vec::new()));
+    }
     let n = rest
         .iter()
         .map(|(_, v)| len(v))
@@ -9566,6 +10092,19 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 }
             }
             let conv = spec.pop().unwrap_or('s');
+            // `%n$…` names its argument by 1-based position instead of taking
+            // the next one; R allows the same argument to be reused.
+            let mut position = None;
+            if let Some(d) = spec.find('$') {
+                if d > 0 && spec[..d].bytes().all(|b| b.is_ascii_digit()) {
+                    let p: usize = spec[..d].parse().unwrap_or(0);
+                    if p == 0 || p > rest.len() {
+                        return Err(format!("reference to non-existent argument {p}"));
+                    }
+                    position = Some(p - 1);
+                    spec.replace_range(..=d, "");
+                }
+            }
             // `%*d` / `%.*f` read the field width (or the precision) from the
             // next argument, ahead of the value it formats. R allows at most one
             // `*` per specification, so one substitution is enough.
@@ -9588,8 +10127,13 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 spec.replace_range(pos..pos + 1, &repl);
             }
             let (flags, width, precision) = parse_spec(&spec);
-            let arg = rest.get(argi).map(|(_, v)| v.clone());
-            argi += 1;
+            let arg = match position {
+                Some(p) => rest.get(p).map(|(_, v)| v.clone()),
+                None => {
+                    argi += 1;
+                    rest.get(argi - 1).map(|(_, v)| v.clone())
+                }
+            };
             let Some(arg) = arg else {
                 return Err("too few arguments for sprintf format".into());
             };
@@ -9633,11 +10177,21 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                         'X' => format!("{v:X}"),
                         _ => format!("{v:o}"),
                     };
+                    // C's `#` alternate form prefixes a nonzero value with its
+                    // radix marker: `0x`/`0X`, or a leading `0` for octal.
+                    let mag = match (flags.contains('#') && v != 0, conv) {
+                        (true, 'x') => format!("0x{mag}"),
+                        (true, 'X') => format!("0X{mag}"),
+                        (true, _) => format!("0{mag}"),
+                        (false, _) => mag,
+                    };
                     // Radix conversions take the `0` flag but no sign flag here.
                     num_field(false, mag, width, &flags.replace(['+', ' '], ""))
                 }
                 _ => {
-                    let v = as_str(&arg)
+                    // `%s` coerces the way `as.character` does: a double keeps
+                    // 15 significant digits, not the 7 `print` shows.
+                    let v = crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || as_str(&arg))
                         .get(k)
                         .cloned()
                         .flatten()

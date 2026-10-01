@@ -745,7 +745,7 @@ impl Compiler {
                     // `.rlang_quote` parses it back into a language object.
                     if matches!(name.as_str(), "quote" | "bquote") && args.len() == 1 {
                         if let Some(inner) = args[0].value.clone() {
-                            return self.expr(b, &quote_call(&inner));
+                            return self.expr(b, &quote_call(&inner, name == "bquote"));
                         }
                     }
                     // `missing(x)` asks about the *name*, so its argument must
@@ -1852,14 +1852,23 @@ fn call_thunk(body: Expr) -> Expr {
 /// body argument the same way.
 /// `.rlang_quote("<source>")` — the eager call that stands in for a quoted
 /// expression. The deparse is the whole tree, newline-separated, so the
-/// primitive parses back the call that was written.
-fn quote_call(inner: &Expr) -> Expr {
+/// primitive parses back the call that was written. `bquote` adds a second
+/// argument, `TRUE`, asking the primitive to splice each `.(x)` with the value
+/// of `x` in the caller's frame.
+fn quote_call(inner: &Expr, splice: bool) -> Expr {
+    let mut args = vec![Arg {
+        name: None,
+        value: Some(Expr::Str(deparse_lines(inner))),
+    }];
+    if splice {
+        args.push(Arg {
+            name: None,
+            value: Some(Expr::Bool(true)),
+        });
+    }
     Expr::Call {
         fun: Box::new(Expr::Ident(".rlang_quote".into())),
-        args: vec![Arg {
-            name: None,
-            value: Some(Expr::Str(deparse_lines(inner))),
-        }],
+        args,
     }
 }
 

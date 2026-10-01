@@ -22,9 +22,12 @@
 //!   Binary operators and argument lists break there and indent the
 //!   continuation one extra level.
 //!
-//! Parentheses are *preserved*, never re-derived: `Expr::Paren` keeps the `(`
-//! the source wrote, exactly as R keeps a `(` call in its parse tree. So no
-//! precedence table is needed and no parenthesis can be invented or lost.
+//! Parentheses the source wrote are *preserved*: `Expr::Paren` keeps the `(`
+//! exactly as R keeps a `(` call in its parse tree. A tree built at run time
+//! (`bquote`, `substitute`) can nest a looser operator under a tighter one with
+//! no `(` at all, and for that the deparser carries R's precedence table and
+//! `needsparens` rule, which add the parentheses R prints. For parsed source
+//! they never fire.
 
 use crate::ast::{Arg, BinOp, Expr, IndexKind, NaKind, Param, UnOp};
 use crate::host::{fixed_decimals, render_fixed, render_sci, sci_decimals};
@@ -170,24 +173,36 @@ impl Deparser {
     }
 
     /// `PP_BINARY`: a space each side, with a wrap point after the operator.
-    fn binary(&mut self, lhs: &Expr, op: &str, rhs: &Expr) {
+    fn binary(&mut self, lhs: &Expr, op: &str, rhs: &Expr, main: Prec) {
         let mut lbreak = false;
-        self.expr(lhs);
+        self.operand(lhs, main, true);
         self.print(" ");
         self.print(op);
         self.print(" ");
         self.linebreak(&mut lbreak);
-        self.expr(rhs);
+        self.operand(rhs, main, false);
         if lbreak {
             self.indent -= 1;
         }
     }
 
     /// `PP_BINARY2`: no space, no wrap point (`x/2`, `x^2`, `1:10`, `x%%3`).
-    fn binary2(&mut self, lhs: &Expr, op: &str, rhs: &Expr) {
-        self.expr(lhs);
+    fn binary2(&mut self, lhs: &Expr, op: &str, rhs: &Expr, main: Prec) {
+        self.operand(lhs, main, true);
         self.print(op);
-        self.expr(rhs);
+        self.operand(rhs, main, false);
+    }
+
+    /// An operand of an operator, parenthesized when `needsparens` says the
+    /// tree would not read back as written without them.
+    fn operand(&mut self, e: &Expr, main: Prec, left: bool) {
+        if needs_parens(main, e, left) {
+            self.print("(");
+            self.expr(e);
+            self.print(")");
+        } else {
+            self.expr(e);
+        }
     }
 
     pub(crate) fn expr(&mut self, e: &Expr) {
@@ -324,17 +339,17 @@ impl Deparser {
             // two as an infix one (`y ~ x`) — R downgrades `PP_BINARY` to
             // `PP_UNARY` when the call has a single argument.
             Expr::Formula { lhs, rhs } => match lhs {
-                Some(l) => self.binary(l, "~", rhs),
+                Some(l) => self.binary(l, "~", rhs, Prec::left(PREC_TILDE)),
                 None => {
                     self.print("~");
-                    self.expr(rhs);
+                    self.operand(rhs, Prec::left(PREC_TILDE), false);
                 }
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 // The `PP_BINARY2` operators: `/`, `^` and `:` print tight.
-                BinOp::Div => self.binary2(lhs, "/", rhs),
-                BinOp::Pow => self.binary2(lhs, "^", rhs),
-                BinOp::Colon => self.binary2(lhs, ":", rhs),
+                BinOp::Div => self.binary2(lhs, "/", rhs, Prec::left(PREC_PROD)),
+                BinOp::Pow => self.binary2(lhs, "^", rhs, Prec::right(PREC_POWER)),
+                BinOp::Colon => self.binary2(lhs, ":", rhs, Prec::left(PREC_COLON)),
                 _ => {
                     let name = match op {
                         BinOp::Add => "+",
@@ -352,7 +367,7 @@ impl Deparser {
                         BinOp::Or2 => "||",
                         BinOp::Div | BinOp::Pow | BinOp::Colon => unreachable!(),
                     };
-                    self.binary(lhs, name, rhs)
+                    self.binary(lhs, name, rhs, Prec::left(binop_prec(op)))
                 }
             },
             // `%%` and `%/%` are primitives (`PP_BINARY2`, tight); every other
@@ -360,9 +375,9 @@ impl Deparser {
             Expr::Special { name, lhs, rhs } => {
                 let op = format!("%{name}%");
                 if name.is_empty() || name == "/" {
-                    self.binary2(lhs, &op, rhs)
+                    self.binary2(lhs, &op, rhs, Prec::left(PREC_PERCENT))
                 } else {
-                    self.binary(lhs, &op, rhs)
+                    self.binary(lhs, &op, rhs, Prec::left(PREC_PERCENT))
                 }
             }
             Expr::Unary { op, operand } => {
@@ -371,10 +386,14 @@ impl Deparser {
                     UnOp::Plus => "+",
                     UnOp::Not => "!",
                 });
-                self.expr(operand);
+                let main = match op {
+                    UnOp::Not => PREC_NOT,
+                    UnOp::Neg | UnOp::Plus => PREC_SIGN,
+                };
+                self.operand(operand, Prec::left(main), false);
             }
             Expr::Index { kind, obj, args } => {
-                self.expr(obj);
+                self.operand(obj, Prec::left(PREC_SUBSET), true);
                 match kind {
                     IndexKind::Single => {
                         self.print("[");
@@ -482,6 +501,94 @@ pub fn deparse_lines(e: &Expr) -> String {
     d.finish().join("\n")
 }
 
+// R's operator precedences (`PREC_*` in `Defn.h`), lowest binding first —
+// only the ones an operand's parenthesization depends on.
+const PREC_LEFT: u8 = 2;
+const PREC_TILDE: u8 = 4;
+const PREC_OR: u8 = 5;
+const PREC_AND: u8 = 6;
+const PREC_NOT: u8 = 7;
+const PREC_COMPARE: u8 = 8;
+const PREC_SUM: u8 = 9;
+const PREC_PROD: u8 = 10;
+const PREC_PERCENT: u8 = 11;
+const PREC_COLON: u8 = 12;
+const PREC_SIGN: u8 = 13;
+const PREC_POWER: u8 = 14;
+const PREC_SUBSET: u8 = 15;
+
+/// The `PPinfo` of the operator an operand sits under: its precedence and
+/// whether it groups to the right (`^`).
+#[derive(Clone, Copy)]
+struct Prec {
+    prec: u8,
+    right_assoc: bool,
+}
+
+impl Prec {
+    fn left(prec: u8) -> Self {
+        Prec {
+            prec,
+            right_assoc: false,
+        }
+    }
+    fn right(prec: u8) -> Self {
+        Prec {
+            prec,
+            right_assoc: true,
+        }
+    }
+}
+
+fn binop_prec(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Or | BinOp::Or2 => PREC_OR,
+        BinOp::And | BinOp::And2 => PREC_AND,
+        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne => PREC_COMPARE,
+        BinOp::Add | BinOp::Sub => PREC_SUM,
+        BinOp::Mul | BinOp::Div => PREC_PROD,
+        BinOp::Colon => PREC_COLON,
+        BinOp::Pow => PREC_POWER,
+    }
+}
+
+/// `deparse.c`'s `needsparens`: whether operand `arg` of an operator with
+/// `main`'s precedence must be parenthesized to read back as the same tree —
+/// `left` says which side it is on.
+///
+/// Source parentheses are kept as `Expr::Paren`, so for parsed code this never
+/// fires; it matters for trees built at run time, such as `bquote(.(z) * 2)`
+/// with `z` holding `a + b`, which R prints as `(a + b) * 2`.
+fn needs_parens(main: Prec, arg: &Expr, left: bool) -> bool {
+    let outranks = |p: u8| main.prec > p || (main.prec == p && left == main.right_assoc);
+    match arg {
+        Expr::Binary { op, .. } => {
+            let p = binop_prec(op);
+            // `a < b < c` is not legal syntax, so a comparison under one is
+            // always wrapped.
+            (main.prec == PREC_COMPARE && p == PREC_COMPARE) || outranks(p)
+        }
+        Expr::Special { .. } => outranks(PREC_PERCENT),
+        Expr::Formula { lhs: Some(_), .. } => outranks(PREC_TILDE),
+        // A prefix operator never needs parentheses on the right (`b - -a`);
+        // on the left a sign binds as `PREC_SIGN`, not as the binary `-`.
+        Expr::Formula { lhs: None, .. } => left && outranks(PREC_TILDE),
+        Expr::Unary { op, .. } => {
+            let p = match op {
+                UnOp::Not => PREC_NOT,
+                UnOp::Neg | UnOp::Plus => PREC_SIGN,
+            };
+            left && outranks(p)
+        }
+        Expr::Assign { .. } => outranks(PREC_LEFT),
+        Expr::Index { .. } => outranks(PREC_SUBSET),
+        // `(if (p) q) + 1`, but `1 + if (p) q`: a trailing control flow
+        // construct swallows nothing after it.
+        Expr::If { .. } | Expr::For { .. } | Expr::While { .. } | Expr::Repeat(_) => left,
+        _ => false,
+    }
+}
+
 /// A numeric literal as R writes it: the same fixed-vs-scientific choice
 /// `print` makes for a length-one double, so `100000` deparses to `1e+05`.
 fn num_literal(x: f64) -> String {
@@ -551,7 +658,7 @@ pub(crate) fn quote_tag(s: &str) -> String {
     }
 }
 
-fn quote_name(s: &str) -> String {
+pub(crate) fn quote_name(s: &str) -> String {
     if is_syntactic_name(s) {
         s.to_string()
     } else {

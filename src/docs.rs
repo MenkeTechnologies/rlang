@@ -45,12 +45,14 @@ pub fn find(name: &str) -> Option<&'static Entry> {
 /// A stable HTML anchor for a callable name. Operator names are all
 /// punctuation, so each punctuation character maps to a word rather than being
 /// dropped — otherwise `%*%`, `[` and `$` would all anchor to the empty string.
+/// Letters keep their case, since R names are case-sensitive and HTML ids are
+/// too: `NROW` and `nrow` are different functions and need different anchors.
 pub fn slug(name: &str) -> String {
     let mut out = String::with_capacity(name.len() * 4);
     for ch in name.chars() {
         let piece = match ch {
             c if c.is_ascii_alphanumeric() => {
-                out.push(c.to_ascii_lowercase());
+                out.push(c);
                 continue;
             }
             '.' | '_' | ' ' => "-",
@@ -253,6 +255,11 @@ const ATTRIBUTES: &[Entry] = &[
 ];
 
 const OUTPUT: &[Entry] = &[
+    (
+        "writeLines",
+        "writeLines(text, con, sep = \"\\n\")",
+        "Write each string of the character vector text followed by sep, returning NULL invisibly. A missing string is written as NA. A character con is a file path, truncated and written; without one the text goes to stdout. A non-character text is an error, as in R.",
+    ),
     (
         ".rust",
         ".rust(code)",
@@ -518,6 +525,11 @@ const ORDERING: &[Entry] = &[
 
 const SUMMARIES: &[Entry] = &[
     (
+        "weighted.mean",
+        "weighted.mean(x, w, na.rm = FALSE)",
+        "stats' default method: sum((x * w)[w != 0]) / sum(w), so a missing x under a zero weight drops out, and a missing weight makes the result NA. Without w every weight is 1. With na.rm the missing x and their weights are dropped first. x and w of different lengths is an error.",
+    ),
+    (
         "sum",
         "sum(..., na.rm = FALSE)",
         "The total over every element of every argument. The result stays integer when all arguments are integer or logical, otherwise it is a double. A missing value propagates, NA outranking NaN. Integer overflow widens to a double instead of producing NA.",
@@ -728,6 +740,7 @@ const MATH: &[Entry] = &[
 ];
 
 const PREDICATES: &[Entry] = &[
+    ("is.atomic", "is.atomic(x)", "TRUE for a logical, integer, double or character vector. NULL is not atomic, as in R 4.4 and later, and neither is a list."),
     ("is.null", "is.null(x)", "TRUE when x is NULL. A zero-length vector is not NULL and answers FALSE."),
     (
         "is.na",
@@ -835,6 +848,36 @@ const PREDICATES: &[Entry] = &[
 ];
 
 const STRINGS: &[Entry] = &[
+    (
+        "file.path",
+        "file.path(..., fsep = \"/\")",
+        "Join the parts element-wise with fsep, recycling to the longest part. Any zero-length part, or no parts at all, gives character(0).",
+    ),
+    (
+        "basename",
+        "basename(path)",
+        "The part of each path after its last /, ignoring trailing separators: basename(\"/a/b/\") is \"b\", and the root and the empty path give \"\".",
+    ),
+    (
+        "dirname",
+        "dirname(path)",
+        "Each path up to its last /, ignoring trailing separators and collapsing the run of separators before the last component. A path with no / is \".\", the root stays \"/\", and the empty path stays \"\".",
+    ),
+    (
+        "sQuote",
+        "sQuote(x, q = TRUE)",
+        "Each string wrapped in single quotes. q = TRUE gives the typographic pair R uses in a UTF-8 locale; q = FALSE gives plain ASCII apostrophes. The result keeps x's names and shape.",
+    ),
+    (
+        "dQuote",
+        "dQuote(x, q = TRUE)",
+        "Each string wrapped in double quotes: the typographic pair by default, plain ASCII quotes with q = FALSE. The result keeps x's names and shape.",
+    ),
+    (
+        "shQuote",
+        "shQuote(string)",
+        "Quote each string for a POSIX shell (R's type = \"sh\"): single quotes, unless any element holds a single quote, in which case every element is double-quoted with \", $, ` and \\ escaped. The type argument is not read.",
+    ),
     (
         "nchar",
         "nchar(x, type = \"chars\")",
@@ -1064,6 +1107,26 @@ const APPLY: &[Entry] = &[
 
 const MATRICES: &[Entry] = &[
     (
+        "NROW",
+        "NROW(x)",
+        "The number of rows: dim(x)[1] for an array, else length(x), so a vector counts as one column.",
+    ),
+    (
+        "NCOL",
+        "NCOL(x)",
+        "The number of columns: dim(x)[2] for a matrix, 0 for NULL, and 1 for any other vector.",
+    ),
+    (
+        "prop.table",
+        "prop.table(x, margin = NULL)",
+        "x divided by its total, keeping names, dim and the other attributes. With margin = 1 each entry of a matrix is divided by its row total, with margin = 2 by its column total; margins of a higher-dimensional array are not supported.",
+    ),
+    (
+        "proportions",
+        "proportions(x, margin = NULL)",
+        "The same function as prop.table, under its newer name.",
+    ),
+    (
         "matrix",
         "matrix(data = NA, nrow, ncol, dimnames = NULL, byrow = FALSE)",
         "Build a matrix, filling column-major and recycling `data` to nrow*ncol. Only one of nrow and ncol is needed. `byrow` must be passed by name — a fourth positional argument is not read as byrow.",
@@ -1176,6 +1239,21 @@ const MATRICES: &[Entry] = &[
 ];
 
 const ENVIRONMENTS: &[Entry] = &[
+    (
+        "mget",
+        "mget(x, envir)",
+        "A list holding the value bound to each name in x, named by x, looked up in envir (with its enclosures) or the current environment chain. An unbound name is an error. R's mode, ifnotfound and inherits arguments are not read.",
+    ),
+    (
+        "Sys.getenv",
+        "Sys.getenv(x, unset = \"\", names = NA)",
+        "The value of each environment variable named in x, or unset for one that is not set. The result is named by x when x has more than one element or names = TRUE. Calling it with no x, which lists the whole environment in R, is an error here.",
+    ),
+    (
+        "Sys.setenv",
+        "Sys.setenv(...)",
+        "Set each named argument as an environment variable of the running process, its value converted to a string. Every argument must be named. Returns a logical vector of TRUE, one per variable, invisibly.",
+    ),
     (
         "exists",
         "exists(x)",
@@ -1379,8 +1457,8 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         ".rlang_quote",
-        ".rlang_quote(src)",
-        "Internal, not user surface: what the compiler emits for quote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote.",
+        ".rlang_quote(src, splice)",
+        "Internal, not user surface: what the compiler emits for quote(x) and bquote(x). The argument is never compiled; its deparse rides across as a string and this parses it back into the expression the caller wrote. splice = TRUE (bquote) replaces each `.(e)` with the value of e in the caller's frame.",
     ),
     (
         "quote",
@@ -1390,7 +1468,7 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "bquote",
         "bquote(expr)",
-        "The expression itself, unevaluated, like quote. R's `.()` substitution inside the expression is not performed.",
+        "The expression, unevaluated like quote, except that each `.(e)` inside it is replaced by the value of e evaluated in the calling frame: y <- 5; bquote(a + .(y)) is a + 5. A spliced call keeps its own grouping, so splicing a + b into .(z) * 2 prints (a + b) * 2, as R's deparser does. The where and splice arguments are not read.",
     ),
     (
         "as.name",
