@@ -3456,6 +3456,9 @@ fn replacement(
                         .collect(),
                 )
             };
+            if let Some(nm) = with_host(|h| h.attr(value, "names")) {
+                with_host(|h| h.set_attr(&dn, "names", nm));
+            }
             with_host(|h| h.set_attr(&out, "dimnames", dn));
             Ok(out)
         }
@@ -3899,6 +3902,7 @@ pub const PRIMITIVES: &[&str] = &[
     "match.arg",
     "formals",
     "formalArgs",
+    "body",
     "sys.function",
     "eval",
     "evalq",
@@ -6606,7 +6610,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_lgl(identical(&x, &y)))
         }
         "ifelse" => {
-            let test = as_lgl(&a.req(0, "test")?);
+            let test_v = a.req(0, "test")?;
+            let test = as_lgl(&test_v);
             let yes = a.req(1, "yes")?;
             let no = a.req(2, "no")?;
             let pos_yes: Vec<Option<usize>> = (0..len(&yes)).map(Some).collect();
@@ -6620,7 +6625,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 };
                 parts.push((None, v));
             }
-            Ok(concat(&Args::new(parts)))
+            // R fills `ans <- test` in place, so the answer keeps the test's
+            // names, `dim` and `dimnames`.
+            shaped_like(concat(&Args::new(parts)), &test_v)
         }
 
         // ── strings ─────────────────────────────────────────────────────
@@ -6636,9 +6643,24 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 "width" => |s: &str| crate::strwidth::display_width(s) as i64,
                 _ => |s: &str| s.chars().count() as i64,
             };
+            // `keepNA = NA` (the default) answers NA for a missing string except
+            // under `type = "width"`, where it is 2 — the width of "NA"; FALSE
+            // always counts it as "NA", TRUE never does.
+            let keep_na = a
+                .named("keepNA")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(ty != "width");
             let x = a.req(0, "x")?;
             shaped_like(
-                mk_int(as_str(&x).iter().map(|s| s.as_deref().map(count)).collect()),
+                mk_int(
+                    as_str(&x)
+                        .iter()
+                        .map(|s| match s {
+                            Some(s) => Some(count(s)),
+                            None => (!keep_na).then_some(2),
+                        })
+                        .collect(),
+                ),
                 &x,
             )
         }
@@ -7213,11 +7235,25 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .into_iter()
                 .filter(|(t, _)| !matches!(t.as_deref(), Some("FUN.VALUE") | Some("USE.NAMES")))
                 .collect();
+            // `FUN.VALUE` is a contract (R's `do_vapply`): every result must have
+            // its length, and its type or one that coerces up to it — logical
+            // to integer to double — and is then stored as that type.
+            let proto = a.req(2, "FUN.VALUE")?;
+            let want_len = len(&proto);
+            let want = kind(&proto);
             let mut out = Vec::with_capacity(items.len());
-            for it in items {
+            for (i, it) in items.into_iter().enumerate() {
                 let mut call_args = vec![(None, it)];
                 call_args.extend(extra.clone());
-                out.push(call_fun(&f, call_args, FUN_CALL)?);
+                let val = call_fun(&f, call_args, FUN_CALL)?;
+                if len(&val) != want_len {
+                    return Err(format!(
+                        "values must be length {want_len},\n but FUN(X[[{}]]) result is length {}",
+                        i + 1,
+                        len(&val)
+                    ));
+                }
+                out.push(vapply_coerce(val, want, &proto, i)?);
             }
             // `vapply` carries names exactly as `sapply` does — from `X`, or from
             // a character `X` used as its own labels (`USE.NAMES`).
@@ -7533,6 +7569,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     parts.get(i).filter(|e| kind(e) != RKind::Null).map(as_str)
                 };
                 set_dimnames(&out, pick(0), pick(1));
+                // The list's own names name the margins (`table`-style headers).
+                carry_dimnames_names(&out, &dn);
             }
             Ok(out)
         }
@@ -7574,6 +7612,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             if rn.is_some() || cn.is_some() {
                 set_dimnames(&out, rn, cn);
+            }
+            // The margins' own names swap with them (`t(table(a, b))`).
+            let dnn = with_host(|h| h.attr(&x, "dimnames"))
+                .and_then(|d| with_host(|h| h.attr(&d, "names")))
+                .map(|n| as_str(&n));
+            if let (Some(mut dnn), [Some(_), Some(_)]) = (dnn, d.as_slice()) {
+                if let Some(dn) = with_host(|h| h.attr(&out, "dimnames")) {
+                    dnn.reverse();
+                    set_names(&dn, dnn);
+                }
             }
             Ok(out)
         }
@@ -8282,40 +8330,94 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "droplevels" => Ok(drop_unused_levels(&a.req(0, "x")?)),
         "cut" => cut(&a),
         "table" => {
-            let x = a.req(0, "x")?;
-            let is_factor = class_of(&x).iter().any(|c| c == "factor");
-            let levels: Vec<String> = if is_factor {
-                with_host(|h| h.attr(&x, "levels"))
-                    .map(|l| as_str(&l).into_iter().flatten().collect())
-                    .unwrap_or_default()
-            } else {
-                factor_levels(&x)
-            };
-            // The observed labels, dropping NA the way R's `table` does.
-            let obs: Vec<String> = if is_factor {
-                let codes = as_int(&x);
-                codes
-                    .iter()
-                    .filter_map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned()))
-                    .collect()
-            } else {
-                as_str(&x).into_iter().flatten().collect()
-            };
-            let counts: Vec<Option<i64>> = levels
+            // Every argument but the options is one factor to cross-classify.
+            let factors: Vec<(Option<String>, Value)> = a
+                .all
                 .iter()
-                .map(|l| Some(obs.iter().filter(|o| *o == l).count() as i64))
+                .filter(|(t, _)| {
+                    !matches!(
+                        t.as_deref(),
+                        Some(".dnn" | "dnn" | "useNA" | "exclude" | "deparse.level")
+                    )
+                })
+                .cloned()
                 .collect();
-            let out = mk_int(counts);
-            // R's `table` is a 1-D array: the labels live in `dimnames`, and the
-            // name OF that dimnames element is the deparsed argument, which is
-            // the header `print` puts above the counts (`table(z)` heads `z`).
-            // The compiler passes that symbol as `.dnn`; a non-symbol argument
-            // has none and R heads the table with a blank line.
-            let dim = mk_int(vec![Some(levels.len() as i64)]);
-            let labels = mk_str(levels.into_iter().map(Some).collect());
-            let dn = mk_list(vec![labels]);
-            if let Some(sym) = a.named(".dnn").and_then(|v| str1(&v)) {
-                set_names(&dn, vec![Some(sym)]);
+            if factors.is_empty() {
+                return Err("nothing to tabulate".into());
+            }
+            // Each factor's level labels and every element's 0-based level,
+            // `None` for a missing value, which R's `table` drops.
+            let classified: Vec<(Vec<String>, Vec<Option<usize>>)> = factors
+                .iter()
+                .map(|(_, x)| {
+                    let levels = if is_factor(x) {
+                        with_host(|h| h.attr(x, "levels"))
+                            .map(|l| as_str(&l).into_iter().flatten().collect())
+                            .unwrap_or_default()
+                    } else {
+                        factor_levels(x)
+                    };
+                    let codes = if is_factor(x) {
+                        as_int(x)
+                            .iter()
+                            .map(|c| c.map(|i| (i - 1) as usize).filter(|&i| i < levels.len()))
+                            .collect()
+                    } else {
+                        as_str(x)
+                            .iter()
+                            .map(|s| s.as_ref().and_then(|s| levels.iter().position(|l| l == s)))
+                            .collect()
+                    };
+                    (levels, codes)
+                })
+                .collect();
+            let n = classified[0].1.len();
+            if classified.iter().any(|(_, c)| c.len() != n) {
+                return Err("all arguments must have the same length".into());
+            }
+            // Column-major counts: the first factor varies fastest.
+            let dims: Vec<usize> = classified.iter().map(|(l, _)| l.len()).collect();
+            let mut counts = vec![0i64; dims.iter().product()];
+            'obs: for i in 0..n {
+                let (mut at, mut stride) = (0, 1);
+                for ((_, codes), d) in classified.iter().zip(&dims) {
+                    let Some(c) = codes[i] else { continue 'obs };
+                    at += c * stride;
+                    stride *= d;
+                }
+                counts[at] += 1;
+            }
+            let out = mk_int(counts.into_iter().map(Some).collect());
+            // The labels live in `dimnames`, and the names OF its elements head
+            // the margins when printed: an argument's tag, else (R's
+            // `deparse.level = 1`) the symbol the compiler passes in `.dnn` —
+            // one per unnamed argument when there are several, "" for any
+            // expression that is not a bare name. A single unnamed non-symbol
+            // argument has no name and R heads the table with a blank line.
+            let dnn: Vec<Option<String>> = a.named(".dnn").map(|v| as_str(&v)).unwrap_or_default();
+            let mut unnamed = dnn.into_iter();
+            let names: Vec<Option<String>> = factors
+                .iter()
+                .map(|(t, _)| match t {
+                    Some(t) => Some(t.clone()),
+                    None => unnamed.next().flatten(),
+                })
+                .collect();
+            let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
+            let dn = mk_list(
+                classified
+                    .into_iter()
+                    .map(|(levels, _)| mk_str(levels.into_iter().map(Some).collect()))
+                    .collect(),
+            );
+            if factors.len() > 1 || names.iter().any(Option::is_some) {
+                set_names(
+                    &dn,
+                    names
+                        .into_iter()
+                        .map(|n| Some(n.unwrap_or_default()))
+                        .collect(),
+                );
             }
             let cls = scalar_str("table");
             with_host(|h| {
@@ -8512,6 +8614,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 RData::Combinator { .. } => cran_call(name, &a.all),
                 _ => Ok(null()),
             }
+        }
+        // `body(f)`: the closure's body as the language object it was written
+        // as (read back from its source, as `formals` is); NULL for a primitive.
+        "body" => {
+            let f = match a.get(0, "fun") {
+                Some(f) if kind(&f) == RKind::Str => {
+                    let n = str1(&f).unwrap_or_default();
+                    with_host(|h| h.lookup_function(&n))
+                        .ok_or_else(|| format!("could not find function \"{n}\""))?
+                }
+                Some(f) => f,
+                None => calling_closure(),
+            };
+            let RData::Closure { id, .. } = data(&f) else {
+                return Ok(null());
+            };
+            let src = with_host(|h| h.closures.get(id).map(|c| c.src.join("\n")));
+            Ok(
+                match src.and_then(|s| crate::parser::parse(&s).ok()).as_deref() {
+                    Some([Expr::Function { body, .. }]) => mk_lang((**body).clone()),
+                    _ => null(),
+                },
+            )
         }
         "formalArgs" => {
             let f = a.req(0, "def")?;
@@ -9633,6 +9758,17 @@ fn dimnames_of(x: &Value) -> Vec<Option<Vec<Option<String>>>> {
     }
 }
 
+/// Give `out`'s `dimnames` the names `src` (the list it was built from)
+/// carries, which name the margins: `dimnames = list(r = …, c = …)`.
+fn carry_dimnames_names(out: &Value, src: &Value) {
+    let Some(nm) = with_host(|h| h.attr(src, "names")) else {
+        return;
+    };
+    if let Some(dn) = with_host(|h| h.attr(out, "dimnames")) {
+        with_host(|h| h.set_attr(&dn, "names", nm));
+    }
+}
+
 /// Store row/column labels as a `dimnames` list (a `NULL` element for a
 /// dimension with no labels). Setting nothing leaves the attribute absent.
 fn set_dimnames(v: &Value, rn: Option<Vec<Option<String>>>, cn: Option<Vec<Option<String>>>) {
@@ -10332,6 +10468,36 @@ fn expand_replacement(pieces: &[RepPiece], caps: &regex::Captures) -> String {
     out
 }
 
+/// One `vapply` result checked against, and coerced to, the `FUN.VALUE`
+/// type `want`; `i` is its 0-based position, for the error R raises.
+fn vapply_coerce(val: Value, want: RKind, proto: &Value, i: usize) -> Result<Value, String> {
+    let have = kind(&val);
+    if have == want {
+        return Ok(val);
+    }
+    let okay = match want {
+        RKind::Dbl => matches!(have, RKind::Int | RKind::Lgl),
+        RKind::Int => have == RKind::Lgl,
+        _ => false,
+    };
+    if !okay {
+        let (w, h) = with_host(|h| (h.type_of(proto), h.type_of(&val)));
+        return Err(format!(
+            "values must be type '{w}',\n but FUN(X[[{}]]) result is type '{h}'",
+            i + 1
+        ));
+    }
+    let out = match want {
+        RKind::Dbl => mk_dbl(as_dbl(&val)),
+        _ => mk_int(as_int(&val)),
+    };
+    let nm = names_of(&val);
+    if !nm.is_empty() {
+        set_names(&out, nm);
+    }
+    Ok(out)
+}
+
 /// `sprintf(fmt, ...)` — vectorized over the arguments, with R's `%d %i %s %f
 /// %e %g %a %x %%` plus width/precision/flags.
 fn sprintf(a: &Args) -> Result<Value, String> {
@@ -10444,10 +10610,19 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                         }
                         Some(v) => {
                             let p = precision.unwrap_or(6);
+                            // C's `#` alternate form always writes the decimal
+                            // point (`%#.0f` of 3 is `3.`, `%#.0e` is `3.e+00`)
+                            // and keeps `%g`'s trailing zeros.
+                            let alt = flags.contains('#');
+                            let point = |s: String| match (alt && p == 0, s.find(['e', 'E'])) {
+                                (false, _) => s,
+                                (true, Some(at)) => format!("{}.{}", &s[..at], &s[at..]),
+                                (true, None) => format!("{s}."),
+                            };
                             let mag = match conv {
-                                'f' => format!("{:.p$}", v.abs()),
-                                'e' | 'E' => fmt_exp(v.abs(), p, conv == 'E'),
-                                _ => fmt_g(v.abs(), p, conv == 'G'),
+                                'f' => point(format!("{:.p$}", v.abs())),
+                                'e' | 'E' => point(fmt_exp(v.abs(), p, conv == 'E')),
+                                _ => fmt_g(v.abs(), p, conv == 'G', alt),
                             };
                             num_field(v < 0.0, mag, width, &flags)
                         }
@@ -11262,19 +11437,30 @@ fn fmt_exp(v: f64, p: usize, upper: bool) -> String {
     }
 }
 
-/// C's `%g`: pick `%e` when the decimal exponent is `< -4` or `>= p`, else
-/// `%f`, with `p` significant digits (min 1), then strip trailing zeros (and a
-/// trailing `.`). `v` is the non-negative magnitude.
-fn fmt_g(v: f64, p: usize, upper: bool) -> String {
+/// C's `%g`: pick `%e` when the exponent `X` of the `%e` form (after its
+/// rounding to `p` significant digits) is `< -4` or `>= p`, else `%f` with
+/// `p - 1 - X` decimals; then strip trailing zeros (and a trailing `.`) unless
+/// `alt` — the `#` flag — keeps them, point included. `v` is the
+/// non-negative magnitude.
+fn fmt_g(v: f64, p: usize, upper: bool, alt: bool) -> String {
     let p = p.max(1);
+    let strip = |s: &str| match (alt, s.contains('.')) {
+        (true, true) => s.to_string(),
+        (true, false) => format!("{s}."),
+        (false, _) => strip_g_zeros(s),
+    };
     if v == 0.0 {
-        return "0".to_string();
+        return strip(&format!("{:.*}", p - 1, 0.0));
     }
-    let exp = v.log10().floor() as i32;
+    let e_form = fmt_exp(v, p - 1, upper);
+    let exp: i32 = e_form
+        .rsplit_once(['e', 'E'])
+        .and_then(|(_, x)| x.parse().ok())
+        .unwrap_or(0);
     if exp < -4 || exp >= p as i32 {
-        let s = fmt_exp(v, p - 1, upper);
+        let s = e_form;
         let (mant, rest) = s.split_once(['e', 'E']).unwrap_or((&s, ""));
-        let mant = strip_g_zeros(mant);
+        let mant = strip(mant);
         let e = if upper { 'E' } else { 'e' };
         if rest.is_empty() {
             mant
@@ -11283,7 +11469,7 @@ fn fmt_g(v: f64, p: usize, upper: bool) -> String {
         }
     } else {
         let prec = (p as i32 - 1 - exp).max(0) as usize;
-        strip_g_zeros(&format!("{v:.prec$}"))
+        strip(&format!("{v:.prec$}"))
     }
 }
 
@@ -12134,7 +12320,7 @@ fn solve_default(a: &Args) -> Result<Value, String> {
         }
         crate::linalg::SolveError::IllConditioned(r) => format!(
             "system is computationally singular: reciprocal condition number = {}",
-            fmt_g(r, 6, false)
+            fmt_g(r, 6, false, false)
         ),
     })?;
     let out = from_lapack(bvals);
@@ -12354,7 +12540,8 @@ fn format_value_body(v: &Value) -> Vec<String> {
     if classes.iter().any(|c| c == "factor") {
         return format_factor(v);
     }
-    if classes.iter().any(|c| c == "table") {
+    let rank = with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d));
+    if rank <= 1 && classes.iter().any(|c| c == "table") {
         // R heads a 1-D table with the name of its `dimnames` element — the
         // deparsed argument, e.g. `z` for `table(z)` — then the named-vector
         // body. A table built from a non-symbol argument has no such name and
@@ -12888,10 +13075,32 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
     // gutter, and R fixes that gutter at the width of `[1,]` regardless of what
     // the dimnames would have been — `matrix(1:4, 2)[0, ]` is `     [,1] [,2]`.
     // Deriving the width from the (empty) label list collapsed it to zero.
-    let label_w = match nr {
+    let mut label_w = match nr {
         0 => "[1,]".len(),
         _ => row_labels.iter().map(|s| dw(s)).max().unwrap_or(0),
     };
+    // Named dimnames (`table(a, b)`, `dimnames = list(r = …, c = …)`): R's
+    // `printMatrix` heads the columns with the column dimension's name on a
+    // line of its own, puts the row dimension's name where the header's label
+    // gutter was, and widens that gutter by `lbloff` — at least
+    // `R_MIN_LBLOFF` (2), more when the row name is wider — indenting each row
+    // label by it.
+    let dim_names: Option<Vec<String>> = with_host(|h| h.attr(v, "dimnames"))
+        .and_then(|d| with_host(|h| h.attr(&d, "names")))
+        .map(|n| {
+            as_str(&n)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect()
+        });
+    let rn = dim_names.as_ref().and_then(|n| n.first().cloned());
+    let cn = dim_names.as_ref().and_then(|n| n.get(1).cloned());
+    let mut lbloff = 0;
+    if let Some(rn) = &rn {
+        let rnw = dw(rn);
+        lbloff = if rnw < label_w + 2 { 2 } else { rnw - label_w };
+        label_w += lbloff;
+    }
     let widths: Vec<usize> = (0..nc)
         .map(|c| {
             (0..nr)
@@ -12915,8 +13124,23 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
             .map(|c| just(&col_labels[c], widths[c]))
             .collect::<Vec<_>>()
             .join(" ");
-        out.push(format!("{:w$}{sep}{header}", "", w = label_w));
+        if let Some(cn) = &cn {
+            out.push(format!("{:w$}{cn}", "", w = label_w));
+        }
+        let gutter = match &rn {
+            Some(rn) => crate::strwidth::pad_display(rn, label_w, true),
+            None => " ".repeat(label_w),
+        };
+        out.push(format!("{gutter}{sep}{header}"));
         for (r, label) in row_labels.iter().enumerate() {
+            let label = match row_names {
+                true => format!(
+                    "{:lbloff$}{}",
+                    "",
+                    crate::strwidth::pad_display(label, label_w - lbloff, true)
+                ),
+                false => crate::strwidth::pad_display(label, label_w, false),
+            };
             let row = (first..last)
                 .map(|c| {
                     just(
@@ -12926,10 +13150,7 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            out.push(format!(
-                "{}{sep}{row}",
-                crate::strwidth::pad_display(label, label_w, row_names)
-            ));
+            out.push(format!("{label}{sep}{row}"));
         }
     }
     out

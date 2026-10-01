@@ -1526,6 +1526,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "The names of a closure's formals, ... included.",
     ),
     (
+        "body",
+        "body(fun)",
+        "The body of a closure as the language object written: a call, a symbol or a constant. Without fun, the calling function's; a string names the function; a primitive has none (NULL).",
+    ),
+    (
         "sys.function",
         "sys.function()",
         "The closure being executed — the function itself, not its call.",

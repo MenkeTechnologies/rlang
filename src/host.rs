@@ -1268,7 +1268,20 @@ impl RHost {
             Some(RData::Args(_)) => "list",
             // An unevaluated expression's implicit class is what it *is*: a
             // call, or the name of one thing.
-            Some(RData::Lang(_)) => "call",
+            // R's `lang2str` names the syntactic forms after their function:
+            // `class(quote({}))` is "{", `class(quote(if (a) b))` is "if".
+            Some(RData::Lang(e)) => match e {
+                crate::ast::Expr::Block(_) => "{",
+                crate::ast::Expr::Paren(_) => "(",
+                crate::ast::Expr::If { .. } => "if",
+                crate::ast::Expr::For { .. } => "for",
+                crate::ast::Expr::While { .. } => "while",
+                crate::ast::Expr::Assign {
+                    super_assign: false,
+                    ..
+                } => "<-",
+                _ => "call",
+            },
             Some(RData::Sym(_)) => "name",
             // A foreign R object's real class is only known to R.
             Some(RData::RForeign(_)) => "R_object",

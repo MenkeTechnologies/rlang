@@ -803,6 +803,25 @@ impl Compiler {
                     _ => None,
                 };
                 let args: &[Arg] = thunked.as_deref().unwrap_or(args);
+                // `table`'s dimension names are its arguments as written, so they
+                // are read here, before the promise rewrite below wraps them.
+                let table_dnn: Option<Vec<String>> = match fun.as_ref() {
+                    Expr::Ident(n)
+                        if n == "table"
+                            && !args.iter().any(|a| matches!(a.value, Some(Expr::Dots))) =>
+                    {
+                        Some(
+                            args.iter()
+                                .filter(|a| a.name.is_none())
+                                .map(|a| match &a.value {
+                                    Some(Expr::Ident(sym)) => sym.clone(),
+                                    _ => String::new(),
+                                })
+                                .collect(),
+                        )
+                    }
+                    _ => None,
+                };
                 // R binds a CLOSURE's arguments as promises: the expression is
                 // evaluated on first read, in the caller's environment, and not
                 // at all if the formal is never read. `f <- function(x) 42;
@@ -889,25 +908,36 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                // `table(z)` labels its dimension with the deparsed argument, so
-                // a bare symbol is passed along as `.dnn` (R's `deparse.level =
-                // 1`, which names the dimension only for symbol arguments).
-                let is_table = matches!(fun.as_ref(), Expr::Ident(n) if n == "table");
-                if is_table {
-                    if let Some(Arg {
-                        name: None,
-                        value: Some(Expr::Ident(sym)),
-                    }) = args.first()
-                    {
-                        let mut rewritten = args.to_vec();
+                // `table(z)` labels its dimension with the deparsed argument
+                // (R's `deparse.level = 1`: a bare symbol names it, anything
+                // else leaves it ""). The names were read before the promise
+                // rewrite wrapped the symbols, and ride along as `.dnn`, one
+                // per unnamed argument; a lone non-symbol argument passes none.
+                if let Some(names) = table_dnn {
+                    let mut rewritten = args.to_vec();
+                    let dnn = match names.len() {
+                        1 if names[0].is_empty() => None,
+                        1 => Some(Expr::Str(names[0].clone())),
+                        _ => Some(Expr::Call {
+                            fun: Box::new(Expr::Ident("c".into())),
+                            args: names
+                                .into_iter()
+                                .map(|n| Arg {
+                                    name: None,
+                                    value: Some(Expr::Str(n)),
+                                })
+                                .collect(),
+                        }),
+                    };
+                    if let Some(dnn) = dnn {
                         rewritten.push(Arg {
                             name: Some(".dnn".into()),
-                            value: Some(Expr::Str(sym.clone())),
+                            value: Some(dnn),
                         });
-                        self.args(b, &rewritten)?;
-                        b.emit(Op::CallBuiltin(call_op, 3), 0);
-                        return Ok(());
                     }
+                    self.args(b, &rewritten)?;
+                    b.emit(Op::CallBuiltin(call_op, 3), 0);
+                    return Ok(());
                 }
                 // `rbind`/`cbind` label the binding seam with the deparsed
                 // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
