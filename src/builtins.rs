@@ -2079,6 +2079,10 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
                 "%%" => r_mod(x, y),
                 _ => r_idiv(x, y),
             }),
+            // `NaN + NA` is NaN and `NA + NaN` is NA: R computes the C
+            // expression and the left NaN's payload survives (see
+            // `lhs_missing_first`). `%%` is the exception — `NaN %% NA` is NA.
+            (Some(x), None) if x.is_nan() && op != "%%" => Some(x),
             _ => None,
         });
     }
@@ -2105,6 +2109,19 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     copy_most_attrs(&v, rhs);
     copy_most_attrs(&v, lhs);
     Ok(v)
+}
+
+/// `f(x, y)` on doubles where `None` is R's `NA`, with the propagation R gets
+/// from the hardware when it evaluates the C expression: a missing left
+/// operand wins (its NA or NaN payload is what comes out), else a missing
+/// right one. So a fold `s = f(s, x)` keeps the first missing value it met.
+fn lhs_missing_first(x: Option<f64>, y: Option<f64>, f: impl Fn(f64, f64) -> f64) -> Option<f64> {
+    match (x, y) {
+        (None, _) => None,
+        (Some(p), _) if p.is_nan() => Some(p),
+        (_, None) => None,
+        (Some(p), Some(q)) => Some(f(p, q)),
+    }
 }
 
 fn compare(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
@@ -4518,7 +4535,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "Sys.setenv" => {
-            if a.all.iter().any(|(t, _)| t.as_deref().is_none_or(str::is_empty)) {
+            if a.all.iter().any(|(t, _)| t.as_deref().map_or(true, str::is_empty)) {
                 return Err("all arguments must be named".into());
             }
             let set: Vec<Option<bool>> = a
@@ -5549,45 +5566,56 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         // ── numeric summaries ───────────────────────────────────────────
         "sum" | "prod" => {
-            let mut acc = if name == "sum" { 0.0 } else { 1.0 };
-            // Missing values propagate, and `NA` outranks `NaN`: R answers NA
-            // for `sum(c(1, NaN, NA))` whichever order they appear in, but NaN
-            // for `sum(c(1, NaN))`.
-            let (mut na, mut nan) = (false, false);
+            // R's `do_summary`: each argument is reduced on its own (`rsum` /
+            // `rprod` / `iprod`), then folded into the running total, all as
+            // sequential C `s += x` / `s *= x`. A missing value therefore
+            // propagates the way the hardware does for that expression — the
+            // left operand's NaN payload wins — so `sum(c(1, NaN, NA))` is NaN
+            // and `sum(c(1, NA, NaN))` is NA. An integer or logical `NA` in
+            // `sum` is different: it jumps straight to R's `na_answer`.
+            let is_sum = name == "sum";
+            let unit = if is_sum { 0.0 } else { 1.0 };
+            let step = |acc: Option<f64>, x: Option<f64>| {
+                lhs_missing_first(acc, x, |p, q| if is_sum { p + q } else { p * q })
+            };
             let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
-            let all_int = a
+            let args: Vec<&Value> = a
                 .all
                 .iter()
                 .filter(|(t, _)| t.as_deref() != Some("na.rm"))
-                .all(|(_, v)| matches!(kind(v), RKind::Int | RKind::Lgl));
-            for (tag, v) in a.all.iter() {
-                if tag.as_deref() == Some("na.rm") {
-                    continue;
-                }
+                .map(|(_, v)| v)
+                .collect();
+            let all_int = args
+                .iter()
+                .all(|v| matches!(kind(v), RKind::Int | RKind::Lgl));
+            let mut acc = Some(unit);
+            for v in args {
+                let int_arg = matches!(kind(v), RKind::Int | RKind::Lgl);
+                let mut tmp = Some(unit);
                 for e in as_dbl(v) {
                     match e {
-                        // NaN counts as missing, just like NA, for `na.rm`.
-                        Some(x) if !x.is_nan() => {
-                            if name == "sum" {
-                                acc += x
-                            } else {
-                                acc *= x
+                        None if int_arg && !narm => {
+                            if is_sum {
+                                return Ok(if all_int {
+                                    mk_int(vec![None])
+                                } else {
+                                    mk_dbl(vec![None])
+                                });
                             }
+                            tmp = None;
+                            break;
                         }
-                        Some(_) if !narm => nan = true,
-                        None if !narm => na = true,
-                        _ => {}
+                        // NaN counts as missing, just like NA, for `na.rm`.
+                        Some(x) if x.is_nan() && narm => {}
+                        None if narm => {}
+                        e => tmp = step(tmp, e),
                     }
                 }
+                acc = step(acc, tmp);
             }
-            Ok(if na {
-                mk_dbl(vec![None])
-            } else if nan {
-                scalar_dbl(f64::NAN)
-            } else if all_int && name == "sum" {
-                scalar_int(acc as i64)
-            } else {
-                scalar_dbl(acc)
+            Ok(match acc {
+                Some(x) if all_int && is_sum && !x.is_nan() => scalar_int(x as i64),
+                acc => mk_dbl(vec![acc]),
             })
         }
         "mean" => {
@@ -8446,17 +8474,20 @@ impl Args {
 /// when `x` has none.
 ///
 /// R distinguishes `NA` from `NaN` here and the two summaries disagree on how.
-/// `mean` accumulates in IEEE arithmetic, so the *first* missing value met
-/// decides: `mean(c(1, NA, NaN))` is NA and `mean(c(1, NaN, NA))` is NaN — pass
-/// `first_kind = true` for that. `median` tests `is.na` up front and returns a
-/// typed `NA` whichever it found, so `median(c(NaN, 1, 2))` is NA.
-fn missing_result(a: &Args, x: &Value, first_kind: bool) -> Option<Value> {
+/// `mean` answers NaN only when every missing value is a NaN: one `NA`
+/// anywhere makes it NA, so `mean(c(1, NaN, NA))` and `mean(c(NaN, NA))` are
+/// both NA under R 4.6.1 — pass `nan_unless_na = true` for that. `median`
+/// tests `is.na` up front and returns a typed `NA` whichever it found, so
+/// `median(c(NaN, 1, 2))` is NA.
+fn missing_result(a: &Args, x: &Value, nan_unless_na: bool) -> Option<Value> {
     if a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false) {
         return None;
     }
     let xs = as_dbl(x);
-    let first = xs.iter().find(|e| e.map(f64::is_nan).unwrap_or(true))?;
-    Some(if first_kind && first.is_some() {
+    if !xs.iter().any(|e| e.map(f64::is_nan).unwrap_or(true)) {
+        return None;
+    }
+    Some(if nan_unless_na && xs.iter().all(Option::is_some) {
         scalar_dbl(f64::NAN)
     } else {
         mk_dbl(vec![None])

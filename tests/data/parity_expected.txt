@@ -826,7 +826,7 @@ y 6 14
 [1] NA
 [1] NaN
 [1] NA
-[1] NaN
+[1] NA
 [1] NA
 [1] NaN
 [1] NaN
@@ -2331,3 +2331,14 @@ r2 0.6666667 0.5714286
 [5] "c(`a b` = 1)"   
 [1] "1:2" "b"  
 [1] "x_1"   "x_2:3"
+#==#
+NA NaN NaN NaN NaN NaN NA NA 
+[1]  NA NaN  NA
+[1] NaN
+[1] NaN
+[1] NA
+[1] "integer"
+[1] NaN
+[1] NA
+[1] NA
+[1] NA
