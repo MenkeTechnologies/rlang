@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 317 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 321 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.9 &middot; 337 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.9 &middot; 341 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 317 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 321 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -144,8 +144,8 @@
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">30</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">36</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
-        <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">26</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">69</span></li>
+        <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">71</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -1523,7 +1523,7 @@
     </section>
     <section class="tutorial-section" id="ch-Matrices-and-arrays">
       <h2>Matrices and arrays</h2>
-      <p class="chapter-meta">26 entries</p>
+      <p class="chapter-meta">28 entries</p>
       <article class="doc-entry" id="doc-NROW">
         <h3><a class="doc-anchor" href="#doc-NROW">#</a> <code>NROW</code></h3>
         <pre><code class="lang-r r">NROW(x)
@@ -1583,6 +1583,18 @@
         <pre><code class="lang-r r">diag(x)
 </code></pre>
         <p>Three behaviours, as in R: the main diagonal of a matrix, the n-by-n identity for a length-1 number, and the diagonal matrix built from a longer vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-lower-tri">
+        <h3><a class="doc-anchor" href="#doc-lower-tri">#</a> <code>lower.tri</code></h3>
+        <pre><code class="lang-r r">lower.tri(x, diag = FALSE)
+</code></pre>
+        <p>A logical matrix the shape of x (a vector counts as one column), TRUE strictly below the diagonal, and on it too with diag = TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-upper-tri">
+        <h3><a class="doc-anchor" href="#doc-upper-tri">#</a> <code>upper.tri</code></h3>
+        <pre><code class="lang-r r">upper.tri(x, diag = FALSE)
+</code></pre>
+        <p>A logical matrix the shape of x, TRUE strictly above the diagonal, and on it too with diag = TRUE.</p>
       </article>
       <article class="doc-entry" id="doc-pctstarpct">
         <h3><a class="doc-anchor" href="#doc-pctstarpct">#</a> <code>%*%</code></h3>
@@ -1683,7 +1695,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">69 entries</p>
+      <p class="chapter-meta">71 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -1704,21 +1716,33 @@
       </article>
       <article class="doc-entry" id="doc-exists">
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
-        <pre><code class="lang-r r">exists(x)
+        <pre><code class="lang-r r">exists(x, where, envir, inherits = TRUE)
 </code></pre>
-        <p>TRUE when the name is bound in the current environment chain or names a primitive. R's `where`, `envir` and `inherits` arguments are not accepted.</p>
+        <p>TRUE when the name is bound in the current environment chain or names a primitive. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE.</p>
       </article>
       <article class="doc-entry" id="doc-get">
         <h3><a class="doc-anchor" href="#doc-get">#</a> <code>get</code></h3>
-        <pre><code class="lang-r r">get(x)
+        <pre><code class="lang-r r">get(x, pos, envir, inherits = TRUE)
 </code></pre>
-        <p>The value bound to the name, or the primitive of that name as a function value. An unbound name raises "object 'x' not found".</p>
+        <p>The value bound to the name, or the primitive of that name as a function value. An environment given as envir, or positionally as pos, is searched instead, together with its enclosures unless inherits = FALSE. An unbound name raises "object 'x' not found".</p>
       </article>
       <article class="doc-entry" id="doc-assign">
         <h3><a class="doc-anchor" href="#doc-assign">#</a> <code>assign</code></h3>
-        <pre><code class="lang-r r">assign(x, value)
+        <pre><code class="lang-r r">assign(x, value, pos, envir)
 </code></pre>
-        <p>Bind `value` to the name in the current environment and return it invisibly. Assignment into another environment is not supported.</p>
+        <p>Bind `value` to the name in the current environment, or in the environment given as envir or positionally as pos, and return it invisibly.</p>
+      </article>
+      <article class="doc-entry" id="doc-rm">
+        <h3><a class="doc-anchor" href="#doc-rm">#</a> <code>rm</code></h3>
+        <pre><code class="lang-r r">rm(..., list = character(), envir)
+</code></pre>
+        <p>Remove the bindings named by bare symbols or strings in ... and by list from the current environment, or from envir; enclosing environments are untouched. A name with no binding there warns "object 'x' not found". Returns NULL invisibly.</p>
+      </article>
+      <article class="doc-entry" id="doc-remove">
+        <h3><a class="doc-anchor" href="#doc-remove">#</a> <code>remove</code></h3>
+        <pre><code class="lang-r r">remove(..., list = character(), envir)
+</code></pre>
+        <p>The same function as rm.</p>
       </article>
       <article class="doc-entry" id="doc-environment">
         <h3><a class="doc-anchor" href="#doc-environment">#</a> <code>environment</code></h3>

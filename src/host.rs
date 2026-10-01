@@ -1351,8 +1351,6 @@ impl RHost {
         None
     }
 
-    /// Look up a name, skipping non-function bindings — R's function-position
-    /// rule, which lets `c <- 1; c(1, 2)` still call the concatenate function.
     /// Whether `name` is a formal of the closure running in the current frame
     /// that the call left unbound — omitted, with no default to fill it. A
     /// defaulted formal is bound by the prologue before any read, and `...`
@@ -1372,6 +1370,8 @@ impl RHost {
             .is_some_and(|c| c.params.iter().any(|p| p == name))
     }
 
+    /// Look up a name, skipping non-function bindings — R's function-position
+    /// rule, which lets `c <- 1; c(1, 2)` still call the concatenate function.
     pub fn lookup_function(&self, name: &str) -> Option<Value> {
         let mut e = Some(self.env());
         while let Some(cur) = e {

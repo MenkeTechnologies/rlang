@@ -2190,3 +2190,49 @@ print(tc(seq_len(NA)))
 print(numeric(length = 3))
 print(character(length = 2))
 print(vector("list", length = 1))
+#==#
+e <- new.env()
+assign("a", 1, e)
+print(get("a", e))
+print(exists("a", e))
+x <- 3
+print(exists("x", envir = e))
+print(exists("x", envir = e, inherits = FALSE))
+f <- function(y) get("y")
+print(f(4))
+g <- function() { z <- 1; h <- function() exists("z", inherits = FALSE); h() }
+print(g())
+print(tryCatch(get("x", e, inherits = FALSE), error = function(err) conditionMessage(err)))
+y <- 2
+z <- 3
+rm(x)
+print(exists("x"))
+rm("y", list = c("z"))
+print(c(exists("y"), exists("z")))
+f2 <- function() { a <- 1; rm(a); exists("a", inherits = FALSE) }
+print(f2())
+w <- 5
+g2 <- function() rm(w)
+suppressWarnings(g2())
+print(exists("w"))
+#==#
+print(Reduce(`+`, 1:4, accumulate = TRUE, simplify = FALSE))
+g <- function(...) ..1
+print(g(5, 6))
+g2 <- function(...) ..2
+print(g2("a", "b"))
+tc <- function(expr) tryCatch(expr, error = function(e) conditionMessage(e))
+print(tc(g2(1)))
+k <- function(a, ...) a + ..1
+print(k(1, 10))
+#==#
+for (s in list(seq(1, 3), seq(1, 3, by = 1), seq(1L, 3L, by = 1L), seq(1L, 3L, by = 1), seq(2, 11, 3), seq(5), seq(1, 10, length.out = 4), seq(1L, 10L, length.out = 4L), seq(1L, 10L, length.out = 4), seq(length.out = 3), seq(2L, length.out = 3L), seq(2, length.out = 3), seq(10, 1), seq(1.5, 4), seq(5, by = -2), seq(1L, 9L, by = 2L), seq(1L, 10L, length.out = 3L), seq(to = 5, length.out = 3), seq(1, 1, length.out = 3))) cat(typeof(s), ":", s, "\n")
+#==#
+m <- matrix(1:12, 3)
+print(upper.tri(m))
+print(lower.tri(m, diag = TRUE))
+print(m[upper.tri(m)])
+m2 <- matrix(1:9, 3)
+m2[lower.tri(m2)] <- 0
+print(m2)
+print(lower.tri(1:3))

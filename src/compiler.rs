@@ -803,6 +803,35 @@ impl Compiler {
                     _ => None,
                 };
                 let args: &[Arg] = thunked.as_deref().unwrap_or(args);
+                // Arguments taken as names, not values (NSE): the package of
+                // `library(pkg)` / `require(pkg)`, and every bare symbol of
+                // `rm(x, y)`. Each is compiled as its string name, here, before
+                // the promise rewrite below would wrap the symbol in a thunk.
+                let nse_names = match fun.as_ref() {
+                    Expr::Ident(n) => match n.as_str() {
+                        "library" | "require" | "requireNamespace" | "loadNamespace" => Some(1),
+                        "rm" | "remove" => Some(usize::MAX),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let named_args: Option<Vec<Arg>> = nse_names.map(|first_n| {
+                    args.iter()
+                        .enumerate()
+                        .map(|(i, a)| match &a.value {
+                            Some(Expr::Ident(sym))
+                                if i < first_n && (first_n == 1 || a.name.is_none()) =>
+                            {
+                                Arg {
+                                    name: a.name.clone(),
+                                    value: Some(Expr::Str(sym.clone())),
+                                }
+                            }
+                            _ => a.clone(),
+                        })
+                        .collect()
+                });
+                let args: &[Arg] = named_args.as_deref().unwrap_or(args);
                 // `table`'s dimension names are its arguments as written, so they
                 // are read here, before the promise rewrite below wraps them.
                 let table_dnn: Option<Vec<String>> = match fun.as_ref() {
@@ -884,30 +913,6 @@ impl Compiler {
                     true => ops::CALL_OPENED,
                     false => ops::CALL,
                 };
-                // `library(pkg)`/`require(pkg)` take the package name unevaluated
-                // (NSE); a bare symbol is compiled as its string name so the
-                // loader receives it instead of failing to find a variable.
-                let pkg_nse = matches!(
-                    fun.as_ref(),
-                    Expr::Ident(n) if matches!(n.as_str(),
-                        "library" | "require" | "requireNamespace" | "loadNamespace")
-                );
-                if pkg_nse {
-                    if let Some(Arg {
-                        name,
-                        value: Some(Expr::Ident(sym)),
-                    }) = args.first()
-                    {
-                        let mut rewritten = args.to_vec();
-                        rewritten[0] = Arg {
-                            name: name.clone(),
-                            value: Some(Expr::Str(sym.clone())),
-                        };
-                        self.args(b, &rewritten)?;
-                        b.emit(Op::CallBuiltin(call_op, 3), 0);
-                        return Ok(());
-                    }
-                }
                 // `table(z)` labels its dimension with the deparsed argument
                 // (R's `deparse.level = 1`: a bare symbol names it, anything
                 // else leaves it ""). The names were read before the promise

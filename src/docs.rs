@@ -1162,6 +1162,16 @@ const MATRICES: &[Entry] = &[
         "Three behaviours, as in R: the main diagonal of a matrix, the n-by-n identity for a length-1 number, and the diagonal matrix built from a longer vector.",
     ),
     (
+        "lower.tri",
+        "lower.tri(x, diag = FALSE)",
+        "A logical matrix the shape of x (a vector counts as one column), TRUE strictly below the diagonal, and on it too with diag = TRUE.",
+    ),
+    (
+        "upper.tri",
+        "upper.tri(x, diag = FALSE)",
+        "A logical matrix the shape of x, TRUE strictly above the diagonal, and on it too with diag = TRUE.",
+    ),
+    (
         "%*%",
         "x %*% y",
         "The matrix product, column-major, summed in the order the reference R's BLAS sums, so results agree with R to the last bit; NA propagates. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.",
@@ -1261,18 +1271,28 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         "exists",
-        "exists(x)",
-        "TRUE when the name is bound in the current environment chain or names a primitive. R's `where`, `envir` and `inherits` arguments are not accepted.",
+        "exists(x, where, envir, inherits = TRUE)",
+        "TRUE when the name is bound in the current environment chain or names a primitive. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE.",
     ),
     (
         "get",
-        "get(x)",
-        "The value bound to the name, or the primitive of that name as a function value. An unbound name raises \"object 'x' not found\".",
+        "get(x, pos, envir, inherits = TRUE)",
+        "The value bound to the name, or the primitive of that name as a function value. An environment given as envir, or positionally as pos, is searched instead, together with its enclosures unless inherits = FALSE. An unbound name raises \"object 'x' not found\".",
     ),
     (
         "assign",
-        "assign(x, value)",
-        "Bind `value` to the name in the current environment and return it invisibly. Assignment into another environment is not supported.",
+        "assign(x, value, pos, envir)",
+        "Bind `value` to the name in the current environment, or in the environment given as envir or positionally as pos, and return it invisibly.",
+    ),
+    (
+        "rm",
+        "rm(..., list = character(), envir)",
+        "Remove the bindings named by bare symbols or strings in ... and by list from the current environment, or from envir; enclosing environments are untouched. A name with no binding there warns \"object 'x' not found\". Returns NULL invisibly.",
+    ),
+    (
+        "remove",
+        "remove(..., list = character(), envir)",
+        "The same function as rm.",
     ),
     (
         "environment",

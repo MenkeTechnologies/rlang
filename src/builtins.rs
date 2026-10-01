@@ -1088,6 +1088,23 @@ fn b_getvar(vm: &mut VM, _: u8) -> Value {
             Ok(forced) => forced,
             Err(e) => abort(vm, e),
         },
+        // `..1`, `..2`, …: the n-th element of the enclosing `...`, forced.
+        None if dot_dot_index(&name).is_some() => {
+            let k = dot_dot_index(&name).unwrap_or(0);
+            let has_dots = with_host(|h| h.lookup("...").is_some());
+            let dots = with_host(|h| h.dots());
+            match dots.get(k - 1) {
+                Some((_, v)) => match crate::host::force_value(v) {
+                    Ok(forced) => forced,
+                    Err(e) => abort(vm, e),
+                },
+                None if !has_dots => abort(
+                    vm,
+                    format!("{name} used in an incorrect context, no ... to look in"),
+                ),
+                None => abort(vm, format!("the ... list contains fewer than {k} elements")),
+            }
+        }
         None => match primitive_value(&name) {
             Some(v) => v,
             // A bare name that is a function in a loaded CRAN package (used as a
@@ -1097,6 +1114,14 @@ fn b_getvar(vm: &mut VM, _: u8) -> Value {
             None => abort(vm, format!("object '{name}' not found")),
         },
     }
+}
+
+/// The `n` of a `..n` symbol (`..1`, `..12`), 1-based; `None` for any other name.
+fn dot_dot_index(name: &str) -> Option<usize> {
+    name.strip_prefix("..")
+        .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|d| d.parse().ok())
+        .filter(|&n| n > 0)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3873,6 +3898,8 @@ pub const PRIMITIVES: &[&str] = &[
     "colMeans",
     "apply",
     "diag",
+    "lower.tri",
+    "upper.tri",
     "%*%",
     "%o%",
     "outer",
@@ -3903,6 +3930,8 @@ pub const PRIMITIVES: &[&str] = &[
     "exists",
     "get",
     "assign",
+    "rm",
+    "remove",
     "environment",
     "new.env",
     "missing",
@@ -7482,7 +7511,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 if from_right {
                     steps.reverse();
                 }
-                Ok(simplify(&mk_list(steps)))
+                // `simplify = FALSE` keeps the steps as a list.
+                let steps = mk_list(steps);
+                Ok(match a.named("simplify").and_then(|v| lgl1(&v)) {
+                    Some(false) => steps,
+                    _ => simplify(&steps),
+                })
             } else {
                 Ok(acc)
             }
@@ -8079,6 +8113,25 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
+        // `lower.tri(x, diag = FALSE)` / `upper.tri`: a logical matrix the
+        // shape of `x` (a vector counts as one column), TRUE below / above the
+        // diagonal — R's `row(x) > col(x)`, `>=` with `diag = TRUE`.
+        "lower.tri" | "upper.tri" => {
+            let x = a.req(0, "x")?;
+            let (nr, nc) = mat_dim(&x);
+            let with_diag = a.get(1, "diag").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let mut cells = Vec::with_capacity(nr * nc);
+            for c in 0..nc {
+                for r in 0..nr {
+                    let (i, j) = if name == "lower.tri" { (r, c) } else { (c, r) };
+                    cells.push(Some(i > j || (with_diag && i == j)));
+                }
+            }
+            let out = mk_lgl(cells);
+            let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            Ok(out)
+        }
         "diag" => {
             let x = a.req(0, "x")?;
             let d = with_host(|h| h.attr(&x, "dim"));
@@ -8213,9 +8266,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── environments and dispatch ───────────────────────────────────
         "exists" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
-            // `envir = e` searches *that* environment and its enclosures.
-            if let Some(e) = a.named("envir").and_then(|v| env_of(&v)) {
-                return Ok(scalar_lgl(with_host(|h| h.lookup_from(e, &n)).is_some()));
+            // `envir = e`, or an environment passed as `where`, searches *that*
+            // environment and — unless `inherits = FALSE` — its enclosures.
+            let env = lookup_env_arg(&a, "where");
+            let inherits = a.named("inherits").and_then(|v| lgl1(&v)).unwrap_or(true);
+            if env.is_some() || !inherits {
+                let e = env.unwrap_or_else(|| with_host(|h| h.env()));
+                return Ok(scalar_lgl(lookup_in(e, &n, inherits).is_some()));
             }
             // The base constants (`pi`, `letters`, `month.name`, …) are bindings
             // in R's base environment just as the primitives are, so `exists`
@@ -8227,14 +8284,47 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "get" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
-            let env = a.named("envir").and_then(|v| env_of(&v));
-            let found = match env {
-                Some(e) => with_host(|h| h.lookup_from(e, &n)),
-                None => with_host(|h| h.lookup(&n)),
+            let env = lookup_env_arg(&a, "pos");
+            let inherits = a.named("inherits").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let found = match (env, inherits) {
+                (Some(e), _) => lookup_in(e, &n, inherits),
+                (None, false) => lookup_in(with_host(|h| h.env()), &n, false),
+                (None, true) => with_host(|h| h.lookup(&n)),
             };
+            // A formal not yet read is still a promise; `get` reads it.
+            let found = found.map(|v| crate::host::force_value(&v)).transpose()?;
             found
-                .or_else(|| primitive_value(&n))
+                .or_else(|| inherits.then(|| primitive_value(&n)).flatten())
                 .ok_or_else(|| format!("object '{n}' not found"))
+        }
+        // `rm(..., list = , envir = )`: drop bindings from one environment —
+        // the caller's unless `envir` names another — never its enclosures.
+        // The compiler hands bare symbols over as their names. A name with no
+        // binding there is R's "object 'x' not found" warning, not an error.
+        "rm" | "remove" => {
+            let mut names: Vec<String> = Vec::new();
+            for (t, v) in &a.all {
+                match t.as_deref() {
+                    None => match data(v) {
+                        RData::Str(s) if s.len() == 1 => names.extend(s.iter().flatten().cloned()),
+                        _ => return Err("... must contain names or character strings".into()),
+                    },
+                    Some("list") => names.extend(as_str(v).into_iter().flatten()),
+                    _ => {}
+                }
+            }
+            let env = a
+                .named("envir")
+                .and_then(|v| env_of(&v))
+                .unwrap_or_else(|| with_host(|h| h.env()));
+            for n in names {
+                let gone = env.borrow_mut().vars.shift_remove(&n);
+                if gone.is_none() {
+                    signal_warning(&format!("object '{n}' not found"))?;
+                }
+            }
+            with_host(|h| h.visible = false);
+            Ok(null())
         }
         "assign" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
@@ -8242,7 +8332,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `envir = e` binds in *that* environment, not the caller's:
             // `assign("v", 9, envir = e)` leaves `v` unbound where it was
             // written, which is the whole reason for passing one.
-            let env = a.named("envir").and_then(|e| env_of(&e));
+            let env = a
+                .named("envir")
+                .or_else(|| a.get(2, "pos"))
+                .and_then(|e| env_of(&e));
             with_host(|h| {
                 match &env {
                     Some(e) => h.bind(e, &n, v.clone()),
@@ -9182,6 +9275,11 @@ fn seq(a: &Args) -> Result<Value, String> {
     // and the one-argument form is `1:n` — which counts *down* when n < 1, so
     // `seq(0)` is `c(1, 0)` and not the empty sequence `seq_len(0)` gives.
     let (from, to) = match to {
+        // Only the end and the count: count back from `to`.
+        Some(t) if a.get(0, "from").is_none() && length_out.is_some() => {
+            let n = length_out.unwrap_or(1.0);
+            (t - by.unwrap_or(1.0) * (n - 1.0).max(0.0), t)
+        }
         Some(t) => (from, t),
         None => match (length_out, by) {
             (Some(n), _) => (from, from + by.unwrap_or(1.0) * (n - 1.0).max(0.0)),
@@ -9232,11 +9330,35 @@ fn seq(a: &Args) -> Result<Value, String> {
             out.push(Some(if step > 0.0 { v.min(to) } else { v.max(to) }));
         }
     }
-    let whole = out
-        .iter()
-        .flatten()
-        .all(|x| *x == x.trunc() && x.abs() < 1e15);
-    Ok(if whole && by.map(|b| b == b.trunc()).unwrap_or(true) {
+    // The result type is `seq.default`'s: with `by`, integer only when from,
+    // to and by are all integer-typed; with `length.out`, integer for the
+    // bare `seq_len` form, or when the given ends and the count are integers
+    // that split evenly; otherwise (`from:to`) integer when whole.
+    let typed_int = |v: Option<Value>| {
+        v.is_some_and(|v| matches!(kind(&v), RKind::Int | RKind::Lgl) && !is_factor(&v))
+    };
+    let (from_v, to_v) = (a.get(0, "from"), a.get(1, "to"));
+    let lo_int = typed_int(a.named("length.out"));
+    let integer = match (by, length_out) {
+        (Some(_), _) => typed_int(from_v) && typed_int(to_v) && typed_int(a.get(2, "by")),
+        // `length.out = 0` is `integer()` whatever else was given.
+        (None, Some(0.0)) => true,
+        (None, Some(n)) => match (from_v.is_some(), to_v.is_some()) {
+            (false, false) => true,
+            (true, false) => typed_int(from_v) && lo_int,
+            (false, true) => typed_int(to_v) && lo_int,
+            (true, true) => {
+                let ends = typed_int(from_v) && typed_int(to_v);
+                let n1 = (n - 1.0).max(1.0);
+                ends && (n <= 2.0 || from == to || (lo_int && (to - from) % n1 == 0.0))
+            }
+        },
+        (None, None) => out
+            .iter()
+            .flatten()
+            .all(|x| *x == x.trunc() && x.abs() < 1e15),
+    };
+    Ok(if integer {
         mk_int(out.into_iter().map(|e| e.map(|x| x as i64)).collect())
     } else {
         mk_dbl(out)
@@ -9893,6 +10015,23 @@ fn carry_dimnames_names(out: &Value, src: &Value) {
     };
     if let Some(dn) = with_host(|h| h.attr(out, "dimnames")) {
         with_host(|h| h.set_attr(&dn, "names", nm));
+    }
+}
+
+/// The environment `get` / `exists` read from: `envir = e`, else an
+/// environment passed as the second positional argument (`pos` / `where`),
+/// which R turns into one with `as.environment(pos)`.
+fn lookup_env_arg(a: &Args, pos: &str) -> Option<crate::host::Env> {
+    a.named("envir")
+        .or_else(|| a.get(1, pos))
+        .and_then(|v| env_of(&v))
+}
+
+/// A binding of `name` in `env`, or with `inherits` in it or an enclosure.
+fn lookup_in(env: crate::host::Env, name: &str, inherits: bool) -> Option<Value> {
+    match inherits {
+        true => with_host(|h| h.lookup_from(env, name)),
+        false => env.borrow().vars.get(name).cloned(),
     }
 }
 
