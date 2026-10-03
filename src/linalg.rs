@@ -8,7 +8,7 @@
 //! in the same operation order, so the pivots, the exact-singularity index and
 //! the reciprocal condition number R reports come out the same. The BLAS
 //! calls those routines make follow the reference R's OpenBLAS kernels (see
-//! the note above [`gemm_acc`]), which is what makes `solve` and
+//! the note above `gemm_acc`), which is what makes `solve` and
 //! `determinant` agree with R to the last bit rather than to a few ULPs.
 //!
 //! Matrices are column-major `f64` slices with a leading dimension, exactly
