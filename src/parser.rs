@@ -211,7 +211,10 @@ impl Parser {
     /// The right operand of an operator that binds tighter than `!`. R's grammar
     /// still accepts a `!` there, parsed at its own (low) precedence: `a + !b ==
     /// c` is `a + !(b == c)`, and `x * -!y` is `x * -(!y)`.
-    fn operand_or_not(&mut self, tighter: fn(&mut Self) -> Result<Expr, String>) -> Result<Expr, String> {
+    fn operand_or_not(
+        &mut self,
+        tighter: fn(&mut Self) -> Result<Expr, String>,
+    ) -> Result<Expr, String> {
         if self.peek() == &Tok::Bang {
             self.not_expr()
         } else {
