@@ -194,9 +194,10 @@ const ATTRIBUTES: &[Entry] = &[
     ),
     (
         "inherits",
-        "inherits(x, what)",
-        "TRUE when any string in `what` appears in class(x). R's `which` argument is accepted and ignored — the result is always a single logical.",
+        "inherits(x, what, which = FALSE)",
+        "TRUE when any string in `what` appears in class(x). With which = TRUE, an integer vector giving each `what`'s position in class(x), 0 where it is absent.",
     ),
+    ("oldClass", "oldClass(x)", "The `class` attribute of x, or NULL when x has only an implicit class."),
     (
         "unclass",
         "unclass(x)",
@@ -948,8 +949,18 @@ const STRINGS: &[Entry] = &[
     ),
     (
         "encodeString",
-        "encodeString(x)",
-        "Escape each string the way R prints it — backslash escapes for quotes, tabs and newlines.",
+        "encodeString(x, width = 0, quote = \"\", na.encode = TRUE, justify = \"left\")",
+        "Each string with its control characters escaped, wrapped in `quote` (whose own character is then escaped), and padded to `width` columns — the widest element for width = NA — by `justify`. NA becomes \"NA\" quoted or \"<NA>\" unquoted, or stays NA with na.encode = FALSE.",
+    ),
+    (
+        "make.unique",
+        "make.unique(names, sep = \".\")",
+        "names with every repeat of an earlier element suffixed by `sep` and the lowest count that names nothing else in the vector.",
+    ),
+    (
+        "make.names",
+        "make.names(names, unique = FALSE, allow_ = TRUE)",
+        "Syntactic names: an X prefixed where a name cannot start, every invalid character replaced by a dot, a dot appended to a reserved word; unique = TRUE then applies make.unique.",
     ),
     (
         "strsplit",

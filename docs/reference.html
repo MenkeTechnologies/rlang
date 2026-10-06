@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 325 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 328 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 345 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 348 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,19 +130,19 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 325 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 328 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
         <li><a href="#ch-Construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
-        <li><a href="#ch-Attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">19</span></li>
+        <li><a href="#ch-Attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">20</span></li>
         <li><a href="#ch-Output-and-the-inlineminusRust-FFI">Output and the inline-Rust FFI</a> <span class="chapter-count">25</span></li>
         <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">18</span></li>
         <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">31</span></li>
-        <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">36</span></li>
+        <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">38</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
         <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">72</span></li>
@@ -245,7 +245,7 @@
     </section>
     <section class="tutorial-section" id="ch-Attributes-and-metadata">
       <h2>Attributes and metadata</h2>
-      <p class="chapter-meta">19 entries</p>
+      <p class="chapter-meta">20 entries</p>
       <article class="doc-entry" id="doc-length">
         <h3><a class="doc-anchor" href="#doc-length">#</a> <code>length</code></h3>
         <pre><code class="lang-r r">length(x)
@@ -290,9 +290,15 @@
       </article>
       <article class="doc-entry" id="doc-inherits">
         <h3><a class="doc-anchor" href="#doc-inherits">#</a> <code>inherits</code></h3>
-        <pre><code class="lang-r r">inherits(x, what)
+        <pre><code class="lang-r r">inherits(x, what, which = FALSE)
 </code></pre>
-        <p>TRUE when any string in `what` appears in class(x). R's `which` argument is accepted and ignored — the result is always a single logical.</p>
+        <p>TRUE when any string in `what` appears in class(x). With which = TRUE, an integer vector giving each `what`'s position in class(x), 0 where it is absent.</p>
+      </article>
+      <article class="doc-entry" id="doc-oldClass">
+        <h3><a class="doc-anchor" href="#doc-oldClass">#</a> <code>oldClass</code></h3>
+        <pre><code class="lang-r r">oldClass(x)
+</code></pre>
+        <p>The `class` attribute of x, or NULL when x has only an implicit class.</p>
       </article>
       <article class="doc-entry" id="doc-unclass">
         <h3><a class="doc-anchor" href="#doc-unclass">#</a> <code>unclass</code></h3>
@@ -1221,7 +1227,7 @@
     </section>
     <section class="tutorial-section" id="ch-Strings-and-regular-expressions">
       <h2>Strings and regular expressions</h2>
-      <p class="chapter-meta">36 entries</p>
+      <p class="chapter-meta">38 entries</p>
       <article class="doc-entry" id="doc-file-path">
         <h3><a class="doc-anchor" href="#doc-file-path">#</a> <code>file.path</code></h3>
         <pre><code class="lang-r r">file.path(..., fsep = "/")
@@ -1332,9 +1338,21 @@
       </article>
       <article class="doc-entry" id="doc-encodeString">
         <h3><a class="doc-anchor" href="#doc-encodeString">#</a> <code>encodeString</code></h3>
-        <pre><code class="lang-r r">encodeString(x)
+        <pre><code class="lang-r r">encodeString(x, width = 0, quote = "", na.encode = TRUE, justify = "left")
 </code></pre>
-        <p>Escape each string the way R prints it — backslash escapes for quotes, tabs and newlines.</p>
+        <p>Each string with its control characters escaped, wrapped in `quote` (whose own character is then escaped), and padded to `width` columns — the widest element for width = NA — by `justify`. NA becomes "NA" quoted or "&lt;NA&gt;" unquoted, or stays NA with na.encode = FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-make-unique">
+        <h3><a class="doc-anchor" href="#doc-make-unique">#</a> <code>make.unique</code></h3>
+        <pre><code class="lang-r r">make.unique(names, sep = ".")
+</code></pre>
+        <p>names with every repeat of an earlier element suffixed by `sep` and the lowest count that names nothing else in the vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-make-names">
+        <h3><a class="doc-anchor" href="#doc-make-names">#</a> <code>make.names</code></h3>
+        <pre><code class="lang-r r">make.names(names, unique = FALSE, allow_ = TRUE)
+</code></pre>
+        <p>Syntactic names: an X prefixed where a name cannot start, every invalid character replaced by a dot, a dot appended to a reserved word; unique = TRUE then applies make.unique.</p>
       </article>
       <article class="doc-entry" id="doc-strsplit">
         <h3><a class="doc-anchor" href="#doc-strsplit">#</a> <code>strsplit</code></h3>

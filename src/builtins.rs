@@ -3861,6 +3861,7 @@ pub const PRIMITIVES: &[&str] = &[
     "class",
     "inherits",
     "unclass",
+    "oldClass",
     "structure",
     "print",
     "cat",
@@ -4030,6 +4031,8 @@ pub const PRIMITIVES: &[&str] = &[
     "strtoi",
     "strrep",
     "encodeString",
+    "make.unique",
+    "make.names",
     "strsplit",
     "sub",
     "gsub",
@@ -4469,6 +4472,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "x")?;
             let what: Vec<String> = as_str(&a.req(1, "what")?).into_iter().flatten().collect();
             let cls = class_of(&x);
+            // `which = TRUE`: each `what`'s 1-based position in the class, 0 when
+            // absent (`inherits3` in objects.c).
+            if a.get(2, "which").and_then(|v| lgl1(&v)).unwrap_or(false) {
+                return Ok(mk_int(
+                    what.iter()
+                        .map(|w| Some(cls.iter().position(|c| c == w).map_or(0, |i| i as i64 + 1)))
+                        .collect(),
+                ));
+            }
             Ok(scalar_lgl(what.iter().any(|w| cls.contains(w))))
         }
         // `noquote(obj)`: the object with `noquote` added to its class, once.
@@ -4485,6 +4497,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let cls = mk_str(classes.into_iter().map(Some).collect());
             with_host(|h| h.set_attr(&out, "class", cls));
             Ok(out)
+        }
+        // The `class` attribute itself — NULL for an implicit class.
+        "oldClass" => {
+            let x = a.req(0, "x")?;
+            Ok(with_host(|h| h.attr(&x, "class")).unwrap_or_else(null))
         }
         "unclass" => {
             let out = copy_of(&a.req(0, "x")?);
@@ -7159,12 +7176,86 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .collect(),
             ))
         }
-        "encodeString" => Ok(mk_str(
-            as_str(&a.req(0, "x")?)
-                .into_iter()
-                .map(|s| s.map(|s| encode_string(&s)))
-                .collect(),
-        )),
+        // `do_encodeString`: each element escaped as `EncodeString` writes it,
+        // wrapped in `quote`, then padded to `width` (NA: the widest) by
+        // `justify`. A missing element is `NA` quoted / `<NA>` unquoted, or
+        // stays missing under `na.encode = FALSE`.
+        "encodeString" => {
+            let x = as_str(&a.req(0, "x")?);
+            let width = a.get(1, "width").map(|v| num1(&v));
+            let quote = a
+                .get(2, "quote")
+                .and_then(|v| str1(&v))
+                .and_then(|q| q.chars().next());
+            let na_encode = a.get(3, "na.encode").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let justify = a
+                .get(4, "justify")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "left".into());
+            let just = ["left", "right", "centre", "none"]
+                .iter()
+                .position(|j| j.starts_with(justify.as_str()) && !justify.is_empty())
+                .ok_or_else(|| "invalid 'justify' value".to_string())?;
+            let enc: Vec<Option<String>> = x
+                .iter()
+                .map(|s| match s {
+                    Some(s) => Some(encode_string_quoted(s, quote)),
+                    None if !na_encode => None,
+                    None if quote.is_some() => Some("NA".into()),
+                    None => Some("<NA>".into()),
+                })
+                .collect();
+            let dw = |s: &str| crate::strwidth::display_width(s);
+            // `width = NA` measures a missing element as `Rstrlen` does its
+            // `CHAR`, "NA" (plus the quotes), not as the `<NA>` it is shown as.
+            let na_w = 2 + 2 * usize::from(quote.is_some());
+            let w = match width {
+                Some(None) => enc
+                    .iter()
+                    .zip(&x)
+                    .filter_map(|(e, s)| match (e, s) {
+                        (Some(e), Some(_)) => Some(dw(e)),
+                        (Some(_), None) => Some(na_w),
+                        (None, _) => None,
+                    })
+                    .max()
+                    .unwrap_or(0),
+                Some(Some(w)) => w.max(0.0) as usize,
+                None => 0,
+            };
+            Ok(mk_str(
+                enc.into_iter()
+                    .map(|s| {
+                        s.map(|s| {
+                            let pad = w.saturating_sub(dw(&s));
+                            match just {
+                                0 => format!("{s}{:pad$}", ""),
+                                1 => format!("{:pad$}{s}", ""),
+                                2 => format!("{:l$}{s}{:r$}", "", "", l = pad / 2, r = pad - pad / 2),
+                                _ => s,
+                            }
+                        })
+                    })
+                    .collect(),
+            ))
+        }
+        // `do_makeunique`: every repeat of an earlier name gets `sep` and the
+        // first count, from that name's last one, that names nothing yet.
+        "make.unique" => {
+            let names = as_str(&a.req(0, "names")?);
+            let sep = a.get(1, "sep").and_then(|v| str1(&v)).unwrap_or_else(|| ".".into());
+            Ok(mk_str(make_unique(&names, &sep)))
+        }
+        // `do_makenames`: an `X` before a name that cannot start one, `.` for
+        // every character a name cannot hold, `.` after a reserved word.
+        "make.names" => {
+            let names = as_str(&a.req(0, "names")?);
+            let unique = a.get(1, "unique").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let allow_ = a.get(2, "allow_").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let made: Vec<Option<String>> =
+                names.iter().map(|s| Some(make_name(s.as_deref(), allow_))).collect();
+            Ok(mk_str(if unique { make_unique(&made, ".") } else { made }))
+        }
         "startsWith" | "endsWith" => {
             // Both `x` and the prefix/suffix recycle to the longer length.
             let x = as_str(&a.req(0, "x")?);
@@ -8176,6 +8267,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let data = as_dbl(&x);
             let by_row = name.starts_with("row");
             let mean = name.ends_with("Means");
+            let na_rm = a.get(1, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
             // `row*` keeps the first dimension and reduces the rest; `col*`
             // reduces the first and keeps the rest (a matrix for 3-D+ input).
             let keep: Vec<usize> = if by_row {
@@ -8200,7 +8292,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .enumerate()
                     .map(|(i, &d)| kidx[i] * stride[d])
                     .sum();
-                let mut acc = 0.0;
+                // `do_colsum`: `na.rm` skips every NaN (NA included) and divides a
+                // mean by the count kept; without it an NA makes the answer NA.
+                let (mut acc, mut kept, mut missing) = (0.0, 0usize, false);
                 let mut ridx = vec![0usize; reduce.len()];
                 for _ in 0..rtotal {
                     let off: usize = reduce
@@ -8208,7 +8302,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         .enumerate()
                         .map(|(i, &d)| ridx[i] * stride[d])
                         .sum();
-                    acc += data.get(base + off).and_then(|e| *e).unwrap_or(f64::NAN);
+                    match data.get(base + off).copied().flatten() {
+                        Some(v) if na_rm && v.is_nan() => {}
+                        Some(v) => {
+                            acc += v;
+                            kept += 1;
+                        }
+                        None if na_rm => {}
+                        None => missing = true,
+                    }
                     for i in 0..reduce.len() {
                         ridx[i] += 1;
                         if ridx[i] < red_shape[i] {
@@ -8217,7 +8319,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         ridx[i] = 0;
                     }
                 }
-                out.push(Some(if mean { acc / rtotal as f64 } else { acc }));
+                out.push(match missing {
+                    true => None,
+                    false if mean => Some(acc / kept as f64),
+                    false => Some(acc),
+                });
                 for i in 0..keep.len() {
                     kidx[i] += 1;
                     if kidx[i] < keep_shape[i] {
@@ -8788,8 +8894,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             // Each factor's level labels and every element's 0-based level,
             // `None` for a missing value, which R's `table` drops.
-            let classified: Vec<(Vec<String>, Vec<Option<usize>>)> =
-                factors.iter().map(|(_, x)| classify_factor(x)).collect();
+            // `useNA`: "always" gives every factor an NA level, "ifany" only the
+            // ones holding a missing value, and the missing values then count
+            // there instead of being dropped.
+            let use_na = a.named("useNA").and_then(|v| str1(&v)).unwrap_or_else(|| "no".into());
+            let use_na = ["no", "ifany", "always"]
+                .into_iter()
+                .find(|o| !use_na.is_empty() && o.starts_with(use_na.as_str()))
+                .ok_or_else(|| "'arg' should be one of “no”, “ifany”, “always”".to_string())?;
+            let classified: Vec<(Vec<Option<String>>, Vec<Option<usize>>)> = factors
+                .iter()
+                .map(|(_, x)| {
+                    let (levels, mut codes) = classify_factor(x);
+                    let mut levels: Vec<Option<String>> = levels.into_iter().map(Some).collect();
+                    if use_na == "always" || (use_na == "ifany" && codes.contains(&None)) {
+                        let at = levels.len();
+                        levels.push(None);
+                        codes.iter_mut().for_each(|c| *c = Some(c.unwrap_or(at)));
+                    }
+                    (levels, codes)
+                })
+                .collect();
             let n = classified[0].1.len();
             if classified.iter().any(|(_, c)| c.len() != n) {
                 return Err("all arguments must have the same length".into());
@@ -8826,7 +8951,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let dn = mk_list(
                 classified
                     .into_iter()
-                    .map(|(levels, _)| mk_str(levels.into_iter().map(Some).collect()))
+                    .map(|(levels, _)| mk_str(levels))
                     .collect(),
             );
             if factors.len() > 1 || names.iter().any(Option::is_some) {
@@ -11191,7 +11316,12 @@ fn format_c(a: &Args) -> Result<Value, String> {
     let format = a
         .get(3, "format")
         .and_then(|v| str1(&v))
-        .unwrap_or_else(|| if is_int { "d".into() } else { "g".into() });
+        .unwrap_or_else(|| if kind(&x) == RKind::Int { "d".into() } else { "g".into() });
+    // A logical keeps its storage mode unless `format = "d"` coerces it to
+    // integer, and `.Internal(formatC)` has no logical case.
+    if kind(&x) == RKind::Lgl && !matches!(format.as_str(), "d" | "s") && len(&x) > 0 {
+        return Err("unsupported type ".into());
+    }
 
     // A character `x`, or an explicit `format = "s"`, is padded to a *display*
     // width and right-justified unless the `-` flag says otherwise — R's
@@ -13560,10 +13690,12 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
         _ => format_elements(v),
     };
     let dn = dimnames_of(v);
+    // A missing dimname is labelled `<NA>`, as `MatrixRowLabel` writes it.
     let dn_at = |dim: usize, k: usize| -> Option<String> {
         dn.get(dim)
             .and_then(|o| o.as_ref())
-            .and_then(|names| names.get(k).cloned().flatten())
+            .and_then(|names| names.get(k).cloned())
+            .map(|s| s.unwrap_or_else(|| "<NA>".into()))
     };
     let row_labels: Vec<String> = (0..nr)
         .map(|r| dn_at(0, r).unwrap_or_else(|| format!("[{},]", r + 1)))
@@ -14083,4 +14215,114 @@ fn list_cell_summary(x: &Value) -> String {
         RData::Lang(_) => "expression".into(),
         _ => "?".into(),
     }
+}
+
+/// R's `EncodeString` as `encodeString` reaches it: backslash and the C
+/// escapes for the control characters (`\001` octal for the unnamed ones), and
+/// the quote character escaped only when the string is being quoted with it.
+fn encode_string_quoted(s: &str, quote: Option<char>) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.extend(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x0b' => out.push_str("\\v"),
+            '\0'..='\x1f' | '\x7f' => out.push_str(&format!("\\{:03o}", c as u32)),
+            c if Some(c) == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.extend(quote);
+    out
+}
+
+/// `do_makeunique`. Every name already present (original or made) is taken; a
+/// repeat of an earlier name tries `name<sep><cnt>` from that name's cached
+/// count upward until one is free. A missing name reads as `NA` for the
+/// purpose, and only a repeat of it is renamed.
+fn make_unique(names: &[Option<String>], sep: &str) -> Vec<Option<String>> {
+    use std::collections::{HashMap, HashSet};
+    let key = |s: &Option<String>| s.clone().unwrap_or_else(|| "NA".into());
+    let mut taken: HashSet<String> = names.iter().map(key).collect();
+    let mut first: HashMap<Option<String>, usize> = HashMap::new();
+    let mut cnts: HashMap<usize, usize> = HashMap::new();
+    let n = names.len();
+    let mut out = names.to_vec();
+    for (i, s) in names.iter().enumerate() {
+        let dp = *first.entry(s.clone()).or_insert(i);
+        if dp == i {
+            continue;
+        }
+        let base = key(s);
+        let mut cnt = *cnts.get(&dp).unwrap_or(&1);
+        let mut cand = format!("{base}{sep}{cnt}");
+        while cnt < n && taken.contains(&cand) {
+            cnt += 1;
+            cand = format!("{base}{sep}{cnt}");
+        }
+        taken.insert(cand.clone());
+        out[i] = Some(cand);
+        cnts.insert(dp, cnt + 1);
+    }
+    out
+}
+
+/// One element of `do_makenames`.
+fn make_name(s: Option<&str>, allow_: bool) -> String {
+    let Some(s) = s else {
+        return "NA.".into();
+    };
+    let mut cs = s.chars();
+    let (c0, c1) = (cs.next(), cs.next());
+    let needs_x = match c0 {
+        None => true,
+        Some('.') => c1.is_some_and(|c| c.is_ascii_digit()),
+        Some(c) => !c.is_alphabetic(),
+    };
+    let mut out = String::with_capacity(s.len() + 1);
+    if needs_x {
+        out.push('X');
+    }
+    out.extend(s.chars().map(|c| match c {
+        c if c.is_alphanumeric() || c == '.' || (allow_ && c == '_') => c,
+        _ => '.',
+    }));
+    if is_reserved_word(&out) {
+        out.push('.');
+    }
+    out
+}
+
+/// R's reserved words (`?Reserved`), which `isValidName` rejects.
+fn is_reserved_word(s: &str) -> bool {
+    matches!(
+        s,
+        "if" | "else"
+            | "repeat"
+            | "while"
+            | "function"
+            | "for"
+            | "next"
+            | "break"
+            | "TRUE"
+            | "FALSE"
+            | "NULL"
+            | "Inf"
+            | "NaN"
+            | "NA"
+            | "NA_integer_"
+            | "NA_real_"
+            | "NA_character_"
+            | "NA_complex_"
+            | "in"
+    )
 }
