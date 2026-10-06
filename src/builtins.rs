@@ -5376,6 +5376,34 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if is_null(&x) {
                 return Ok(mk_str(vec![Some("NULL".into())]));
             }
+            // A list: `format.default` formats each element's `unlist` on its own,
+            // with `trim = TRUE` unless given, and joins the pieces with ", ". (Its
+            // `missing(justify)` default to "none" never fires: `match.arg` has
+            // already assigned `justify`.)
+            if kind(&x) == RKind::List {
+                let mut pass: Vec<(Option<String>, Value)> = a
+                    .all
+                    .iter()
+                    .filter(|(t, _)| t.is_some() && t.as_deref() != Some("x"))
+                    .cloned()
+                    .collect();
+                if !pass.iter().any(|(t, _)| t.as_deref() == Some("trim")) {
+                    pass.push((Some("trim".into()), scalar_lgl(true)));
+                }
+                let mut out = Vec::new();
+                for el in elements(&x) {
+                    let mut args = vec![(None, unlist(&el))];
+                    args.extend(pass.iter().cloned());
+                    let parts = call_primitive("format", args)?;
+                    out.push(Some(as_str(&parts).into_iter().flatten().collect::<Vec<_>>().join(", ")));
+                }
+                let res = mk_str(out);
+                let nm = names_of(&x);
+                if !nm.is_empty() {
+                    set_names(&res, nm);
+                }
+                return Ok(res);
+            }
             let nsmall = a.named("nsmall").and_then(|v| num1(&v)).unwrap_or(0.0) as usize;
             let digits = a.named("digits").and_then(|v| num1(&v)).map(|d| d as i32);
             let big = a
@@ -5478,17 +5506,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("justify")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| "left".into());
+            // `trim = TRUE` drops the common width of a non-character vector,
+            // leaving only `width`.
+            let trim = a.named("trim").and_then(|v| lgl1(&v)).unwrap_or(false);
             let is_str = kind(&x) == RKind::Str;
             let out = if is_str && justify == "none" {
                 out
             } else if out.len() > 1 || width > 0 {
-                let w = out
-                    .iter()
-                    .flatten()
-                    .map(|s| crate::strwidth::display_width(s))
-                    .max()
-                    .unwrap_or(0)
-                    .max(width);
+                let common = match trim && !is_str {
+                    true => 0,
+                    false => out
+                        .iter()
+                        .flatten()
+                        .map(|s| crate::strwidth::display_width(s))
+                        .max()
+                        .unwrap_or(0),
+                };
+                let w = common.max(width);
                 if is_str && justify == "centre" {
                     out.into_iter()
                         .map(|s| s.map(|s| centre_display(&s, w)))

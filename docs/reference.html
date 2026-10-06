@@ -486,9 +486,9 @@
       </article>
       <article class="doc-entry" id="doc-format">
         <h3><a class="doc-anchor" href="#doc-format">#</a> <code>format</code></h3>
-        <pre><code class="lang-r r">format(x, nsmall = 0, digits, big.mark = "", width = 0, scientific)
+        <pre><code class="lang-r r">format(x, trim = FALSE, nsmall = 0, digits, justify = "left", width = 0, scientific, big.mark = "")
 </code></pre>
-        <p>Format to character. A numeric vector takes fixed notation when its width is no greater than the scientific width plus getOption("scipen") — the same rule print uses, so format(1e6) is "1e+06" at the default scipen of 0 — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, defaulting to getOption("digits"); `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. A function formats to its deparsed source lines. R's `justify` is not implemented.</p>
+        <p>Format to character. A numeric vector takes fixed notation when its width is no greater than the scientific width plus getOption("scipen") — the same rule print uses, so format(1e6) is "1e+06" at the default scipen of 0 — with a common decimal count, then pads to a common width: numbers right-justified, strings left. `digits` is the significant-digit count, defaulting to getOption("digits"); `nsmall` the minimum decimals (fixed notation only), `scientific` forces one notation. `trim = TRUE` drops the common width of a non-character vector; `justify` (left, right, centre, none) steers a character vector's padding. A list formats each element's unlist on its own (trim = TRUE by default) and joins its pieces with ", ". A function formats to its deparsed source lines.</p>
       </article>
       <article class="doc-entry" id="doc-options">
         <h3><a class="doc-anchor" href="#doc-options">#</a> <code>options</code></h3>

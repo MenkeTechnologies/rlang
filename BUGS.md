@@ -307,9 +307,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   on `scipen`. Any other option name is stored and read back but has no effect,
   and a bare `options()` returns only what has been set rather than R's ~73
   defaults, so `getOption("width")` is `NULL` where R says 80.
-- **`format()` handles `nsmall`, `digits`, `big.mark`, `width`, `scientific`,
-  common decimals, and common-width justification** (and
-  `formatC`/`prettyNum`/`deparse` exist), but not the `justify` argument. The
+- **`format()` handles `trim`, `nsmall`, `digits`, `big.mark`, `width`,
+  `scientific`, `justify`, lists, common decimals, and common-width
+  justification** (and `formatC`/`prettyNum`/`deparse` exist). The
   fixed-versus-scientific choice is the same width rule `print` uses — fixed
   when its width is no wider than the scientific one plus `getOption("scipen")`
   — so `format(1e6)` is `"1e+06"` at the default `scipen` of 0, and `big.mark`
