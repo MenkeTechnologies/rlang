@@ -797,6 +797,7 @@ const PREDICATES: &[Entry] = &[
     ("is.character", "is.character(x)", "TRUE for a character vector, whatever attributes it carries."),
     ("is.logical", "is.logical(x)", "TRUE for a logical vector, whatever attributes it carries."),
     ("is.list", "is.list(x)", "TRUE for a list, including a list carrying a class attribute."),
+    ("is.environment", "is.environment(x)", "TRUE for an environment, FALSE for anything else."),
     (
         "is.function",
         "is.function(x)",
@@ -1274,6 +1275,7 @@ const ENVIRONMENTS: &[Entry] = &[
         "Sys.getenv(x, unset = \"\", names = NA)",
         "The value of each environment variable named in x, or unset for one that is not set. The result is named by x when x has more than one element or names = TRUE. Calling it with no x, which lists the whole environment in R, is an error here.",
     ),
+    ("getwd", "getwd()", "The absolute path of the working directory."),
     (
         "Sys.setenv",
         "Sys.setenv(...)",

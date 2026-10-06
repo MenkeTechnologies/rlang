@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 323 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 325 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 343 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 345 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 323 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 325 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -141,11 +141,11 @@
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">18</span></li>
         <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
-        <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">30</span></li>
+        <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">31</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">36</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">71</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">72</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">20</span></li>
       </ul>
     </section>
@@ -1031,7 +1031,7 @@
     </section>
     <section class="tutorial-section" id="ch-Predicates">
       <h2>Predicates</h2>
-      <p class="chapter-meta">30 entries</p>
+      <p class="chapter-meta">31 entries</p>
       <article class="doc-entry" id="doc-is-atomic">
         <h3><a class="doc-anchor" href="#doc-is-atomic">#</a> <code>is.atomic</code></h3>
         <pre><code class="lang-r r">is.atomic(x)
@@ -1121,6 +1121,12 @@
         <pre><code class="lang-r r">is.list(x)
 </code></pre>
         <p>TRUE for a list, including a list carrying a class attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-environment">
+        <h3><a class="doc-anchor" href="#doc-is-environment">#</a> <code>is.environment</code></h3>
+        <pre><code class="lang-r r">is.environment(x)
+</code></pre>
+        <p>TRUE for an environment, FALSE for anything else.</p>
       </article>
       <article class="doc-entry" id="doc-is-function">
         <h3><a class="doc-anchor" href="#doc-is-function">#</a> <code>is.function</code></h3>
@@ -1707,7 +1713,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">71 entries</p>
+      <p class="chapter-meta">72 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -1719,6 +1725,12 @@
         <pre><code class="lang-r r">Sys.getenv(x, unset = "", names = NA)
 </code></pre>
         <p>The value of each environment variable named in x, or unset for one that is not set. The result is named by x when x has more than one element or names = TRUE. Calling it with no x, which lists the whole environment in R, is an error here.</p>
+      </article>
+      <article class="doc-entry" id="doc-getwd">
+        <h3><a class="doc-anchor" href="#doc-getwd">#</a> <code>getwd</code></h3>
+        <pre><code class="lang-r r">getwd()
+</code></pre>
+        <p>The absolute path of the working directory.</p>
       </article>
       <article class="doc-entry" id="doc-Sys-setenv">
         <h3><a class="doc-anchor" href="#doc-Sys-setenv">#</a> <code>Sys.setenv</code></h3>

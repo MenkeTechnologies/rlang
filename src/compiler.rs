@@ -1072,7 +1072,9 @@ impl Compiler {
             }
             Expr::If { cond, then, els } => {
                 self.expr(b, cond)?;
-                b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+                // A condition R cannot read reports the `if` itself as its call.
+                self.kstr(b, &deparse_lines(e));
+                b.emit(Op::CallBuiltin(ops::TRUTHY, 2), 0);
                 let jf = b.emit(Op::JumpIfFalse(0), 0);
                 // Whichever branch runs *is* the statement's value, so each
                 // inherits the statement position the `if` itself was in.
@@ -1099,7 +1101,8 @@ impl Compiler {
                 });
                 let start = b.current_pos();
                 self.expr(b, cond)?;
-                b.emit(Op::CallBuiltin(ops::TRUTHY, 1), 0);
+                self.kstr(b, &deparse_lines(e));
+                b.emit(Op::CallBuiltin(ops::TRUTHY, 2), 0);
                 let jf = b.emit(Op::JumpIfFalse(0), 0);
                 self.stmt(b, body)?;
                 b.emit(Op::Jump(start), 0);

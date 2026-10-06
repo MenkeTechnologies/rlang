@@ -1115,9 +1115,14 @@ fn pop_n(vm: &mut VM, n: usize) -> Vec<Value> {
 
 /// Record an R error and stop this chunk.
 fn abort(vm: &mut VM, msg: String) -> Value {
+    let call = with_host(|h| h.current_call_source());
+    abort_in(vm, msg, call)
+}
+
+/// As [`abort`], naming `call` rather than the current context's.
+fn abort_in(vm: &mut VM, msg: String, call: Option<String>) -> Value {
     with_host(|h| {
         if h.error.is_none() {
-            let call = h.current_call_source();
             h.set_error_call(call);
             h.error = Some(msg);
         }
@@ -1697,6 +1702,54 @@ fn coercion_warning(msg: &str) -> Result<(), String> {
 /// every arithmetic op would cost the hot path the whole design exists to keep
 /// native. Reported with no call, which is the shape R uses when there is none,
 /// rather than with the enclosing call, which would name the wrong one.
+/// One element of R's `strtoi`: C `strtol(s, &endp, base)` (leading
+/// whitespace, an optional sign, base 0 sniffing `0x` → 16 and `0` → 8, base
+/// 16 accepting a `0x` prefix), `NA` for an empty string, unconsumed trailing
+/// text, a `long` overflow, or a result outside `int`.
+fn c_strtoi(s: &str, base: u32) -> Option<i64> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r') {
+        i += 1;
+    }
+    let neg = match b.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let hex_prefix = |i: usize| {
+        b.get(i) == Some(&b'0')
+            && matches!(b.get(i + 1), Some(b'x' | b'X'))
+            && b.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit())
+    };
+    let mut base = base;
+    if (base == 0 || base == 16) && hex_prefix(i) {
+        base = 16;
+        i += 2;
+    } else if base == 0 {
+        base = if b.get(i) == Some(&b'0') { 8 } else { 10 };
+    }
+    let start = i;
+    let mut acc: i128 = 0;
+    while let Some(d) = b.get(i).and_then(|&c| (c as char).to_digit(base)) {
+        acc = (acc * base as i128 + d as i128).min(i64::MAX as i128 + 1);
+        i += 1;
+    }
+    if s.is_empty() || i == start || i != b.len() {
+        return None;
+    }
+    let v = if neg { -acc } else { acc };
+    (i32::MIN as i128 + 1..=i32::MAX as i128)
+        .contains(&v)
+        .then_some(v as i64)
+}
+
 fn binop_warning(msg: &str) -> Result<(), String> {
     signal_warning_in(msg, None)
 }
@@ -2385,10 +2438,13 @@ fn colon(lhs: &Value, rhs: &Value) -> Value {
 /// an `NA`, an empty condition, or a value with no logical reading (`"yes"`, a
 /// list).
 fn b_truthy(vm: &mut VM, _: u8) -> Value {
+    let call = vm.pop();
     let v = vm.pop();
     if let Value::Bool(b) = v {
         return Value::Bool(b);
     }
+    // R reports the `if`/`while` call itself (`Error in if (x) 1 :`).
+    let abort = |vm: &mut VM, msg: String| abort_in(vm, msg, Some(crate::host::ctx_source(&call)));
     let n = len(&v);
     if n > 1 {
         return abort(vm, "the condition has length > 1".into());
@@ -3174,6 +3230,9 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
+    let Some(x) = null_target_as_list(x, &value) else {
+        return null();
+    };
     if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
     }
@@ -3184,10 +3243,23 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// `[[<-` and `$<-` on `NULL`, as R 4.6 does them: a `NULL` value leaves it
+/// `NULL` (`None`), anything else is written into an empty list.
+fn null_target_as_list(x: Value, value: &Value) -> Option<Value> {
+    match is_null(&x) {
+        false => Some(x),
+        true if is_null(value) => None,
+        true => Some(mk_list(Vec::new())),
+    }
+}
+
 fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let name = name_of(&vm.pop());
     let x = vm.pop();
+    let Some(mut x) = null_target_as_list(x, &value) else {
+        return null();
+    };
     if let RData::Environment(e) = data(&x) {
         with_host(|h| h.bind(&e, &name, value));
         return x;
@@ -3195,6 +3267,18 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     if kind(&x) == RKind::RForeign {
         // `df$n <- v` is `df[["n"]] <- v` in R.
         return foreign_index_set(vm, "[[<-", x, vec![(None, scalar_str(name))], value);
+    }
+    // R_subassign3_dflt: an atomic vector is coerced to a list (keeping its
+    // names) before `$<-` writes into it.
+    if matches!(data(&x), RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_)) {
+        if let Err(e) = signal_warning("Coercing LHS to a list") {
+            return abort(vm, e);
+        }
+        let nm = names_of(&x);
+        x = mk_list(elements(&x));
+        if !nm.is_empty() {
+            set_names(&x, nm);
+        }
     }
     let key = scalar_str(name);
     let args = vec![(None, key)];
@@ -3789,6 +3873,7 @@ pub const PRIMITIVES: &[&str] = &[
     "shQuote",
     "Sys.getenv",
     "Sys.setenv",
+    "getwd",
     "mget",
     "is.atomic",
     "NROW",
@@ -3906,6 +3991,7 @@ pub const PRIMITIVES: &[&str] = &[
     "is.character",
     "is.logical",
     "is.function",
+    "is.environment",
     "is.list",
     "is.vector",
     "as.numeric",
@@ -4358,10 +4444,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(mk_str(nm))
         }
         "setNames" => {
-            let x = copy_of(&a.req(0, "object")?);
-            let nm = a.req(1, "nm")?;
-            set_names(&x, as_str(&nm));
-            Ok(x)
+            // R: `names(object) <- nm; object`.
+            replacement("names", &a.req(0, "object")?, &[], &a.req(1, "nm")?)
         }
         "attr" => {
             let x = a.req(0, "x")?;
@@ -4818,6 +4902,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
+        // `do_getwd`: the process working directory as `getcwd` reports it,
+        // NULL when that fails.
+        "getwd" => Ok(std::env::current_dir()
+            .map(|p| scalar_str(p.to_string_lossy().into_owned()))
+            .unwrap_or_else(|_| null())),
         "Sys.setenv" => {
             if a.all
                 .iter()
@@ -6772,6 +6861,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.function" => Ok(scalar_lgl(with_host(|h| {
             h.is_function(&a.req(0, "x").unwrap_or(Value::Undef))
         }))),
+        "is.environment" => Ok(scalar_lgl(matches!(
+            data(&a.req(0, "x")?),
+            RData::Environment(_)
+        ))),
         // R's `is.vector` is not just a type test: an object carrying any
         // attribute other than `names` is not a vector, so a matrix, a factor
         // and anything with a stray `attr` all answer FALSE.
@@ -7160,24 +7253,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "strtoi" => {
             let x = as_str(&a.req(0, "x")?);
-            let base = a.get(1, "base").and_then(|v| num1(&v)).unwrap_or(10.0) as u32;
+            // R's `do_strtoi`: the default base is 0 (C's prefix-sniffing
+            // `strtol`), and a base outside 2..=36 other than 0 is an error.
+            let base = a.get(1, "base").and_then(|v| num1(&v)).unwrap_or(0.0) as i64;
+            if base != 0 && !(2..=36).contains(&base) {
+                return Err("invalid 'base' argument".into());
+            }
             Ok(mk_int(
                 x.iter()
-                    .map(|s| {
-                        s.as_ref().and_then(|s| {
-                            let t = s.trim();
-                            // C strtol semantics: base 16 accepts an optional
-                            // `0x`/`0X` prefix (which Rust's from_str_radix rejects).
-                            let t = if base == 16 {
-                                t.strip_prefix("0x")
-                                    .or_else(|| t.strip_prefix("0X"))
-                                    .unwrap_or(t)
-                            } else {
-                                t
-                            };
-                            i64::from_str_radix(t, base).ok()
-                        })
-                    })
+                    .map(|s| s.as_deref().and_then(|s| c_strtoi(s, base as u32)))
                     .collect(),
             ))
         }
@@ -7458,7 +7542,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if !nm.is_empty() {
                 set_names(&res, nm.clone());
             } else if kind(&x) == RKind::Str && name == "sapply" && use_names(&a) {
-                set_names(&res, as_str(&x));
+                // R: `names(answer) <- X`, which labels even an empty answer.
+                let res = replacement("names", &res, &[], &x)?;
+                let simplify_it = a.named("simplify").and_then(|v| lgl1(&v)).unwrap_or(true);
+                return Ok(if simplify_it { simplify(&res) } else { res });
             }
             let simplify_it = a.named("simplify").and_then(|v| lgl1(&v)).unwrap_or(true);
             Ok(if name == "sapply" && simplify_it {
@@ -11386,7 +11473,7 @@ fn str_indent(nest: usize) -> String {
 /// The `[1:n]` an atomic vector is labelled with — `[1:2, 1:3]` for a matrix,
 /// `[1:2(1d)]` for a one-dimensional array (a `table`), and nothing at all for
 /// the plain scalar that carries no label.
-fn str_dims(x: &Value, n: usize, has_names: bool, classed: bool) -> String {
+fn str_dims(x: &Value, n: usize) -> String {
     if let Some(d) = with_host(|h| h.attr(x, "dim")) {
         let dims: Vec<i64> = as_int(&d).into_iter().flatten().collect();
         if dims.len() == 1 {
@@ -11395,7 +11482,8 @@ fn str_dims(x: &Value, n: usize, has_names: bool, classed: bool) -> String {
         let inner: Vec<String> = dims.iter().map(|k| format!("1:{k}")).collect();
         return format!(" [{}]", inner.join(", "));
     }
-    if n == 1 && !has_names && !classed {
+    // `str.default`: `if (le == 1 && !is.array(object))` drops the length.
+    if n == 1 {
         String::new()
     } else {
         format!(" [1:{n}]")
@@ -11462,6 +11550,8 @@ fn str_lines(x: &Value, nest: usize) -> Vec<String> {
             out.push(format!("{ind}$ {name}:{sep}{body}"));
             out.extend(sub.into_iter().skip(1));
         }
+        // A list's `std.attr` is its `names`, which the `$ name:` lines show.
+        out.extend(str_attr_lines(x, nest, |key| key == "names"));
         return out;
     }
     if !matches!(k, RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str) {
@@ -11472,22 +11562,21 @@ fn str_lines(x: &Value, nest: usize) -> Vec<String> {
     }
     let n = len(x);
     let named = with_host(|h| h.attr(x, "names")).is_some();
-    // The implicit class every vector has is not printed; a written one is, in
-    // quotes, ahead of the type.
-    let explicit = with_host(|h| h.attr(x, "class")).map(|c| {
-        as_str(&c)
-            .into_iter()
-            .flatten()
-            .map(|s| format!("'{s}' "))
-            .collect::<String>()
-    });
-    let prefix = format!(
-        "{ind}{}{}{}",
-        if named { "Named " } else { "" },
-        explicit.clone().unwrap_or_default(),
-        str_abbrev(k)
-    );
-    let dims = str_dims(x, n, named, explicit.is_some());
+    // `str.default`: an array is never `Named`; a written class shows its first
+    // element, quoted, ahead of the mode — unless that class merely spells
+    // the mode out (`integer` over `int`).
+    let is_array = with_host(|h| h.attr(x, "dim")).is_some();
+    let mode = match named && !is_array {
+        true => format!("Named {}", str_abbrev(k)),
+        false => str_abbrev(k).to_string(),
+    };
+    let explicit = with_host(|h| h.attr(x, "class"))
+        .map(|c| as_str(&c).into_iter().next().flatten().unwrap_or_default());
+    let prefix = match &explicit {
+        Some(cl) if *cl != mode && !cl.starts_with(&mode) => format!("{ind}'{cl}' {mode}"),
+        _ => format!("{ind}{mode}"),
+    };
+    let dims = str_dims(x, n);
     let encoded: Vec<String> = match k {
         RKind::Str => as_str(x)
             .into_iter()
@@ -11524,21 +11613,34 @@ fn str_lines(x: &Value, nest: usize) -> Vec<String> {
         "{prefix}{dims} {}{tail}",
         encoded[..show].join(" ")
     )];
-    // `give.attr = TRUE`: what was folded into the line above (class, dim,
-    // levels) is not repeated; these two print as their own str, one level in.
-    for key in ["names", "dimnames"] {
-        if let Some(v) = with_host(|h| h.attr(x, key)) {
-            let sub = str_lines(&v, nest + 1);
-            let head = sub.first().cloned().unwrap_or_default();
-            let child_ind = str_indent(nest + 1);
-            let body = head
-                .strip_prefix(&child_ind[..])
-                .unwrap_or(&head)
-                .to_string();
-            let sep = if body.starts_with("List of") { "" } else { " " };
-            out.push(format!("{ind}- attr(*, \"{key}\")={sep}{body}"));
-            out.extend(sub.into_iter().skip(1));
+    // `std.attr`: what the line above already folded in — an array's `dim`, a
+    // written `class`.
+    out.extend(str_attr_lines(x, nest, |key| {
+        (is_array && key == "dim") || (explicit.is_some() && key == "class")
+    }));
+    out
+}
+
+/// `str.default`'s `give.attr = TRUE` tail: every attribute of `x` not in
+/// `std.attr` (`folded`), in attribute order, as `- attr(*, "name")=` and its
+/// own str one level in.
+fn str_attr_lines(x: &Value, nest: usize, folded: impl Fn(&str) -> bool) -> Vec<String> {
+    let ind = str_indent(nest);
+    let mut out = Vec::new();
+    for (key, v) in with_host(|h| h.attrs_of(x)) {
+        if folded(&key) {
+            continue;
         }
+        let sub = str_lines(&v, nest + 1);
+        let head = sub.first().cloned().unwrap_or_default();
+        let child_ind = str_indent(nest + 1);
+        let body = head
+            .strip_prefix(&child_ind[..])
+            .unwrap_or(&head)
+            .to_string();
+        let sep = if body.starts_with("List of") { "" } else { " " };
+        out.push(format!("{ind}- attr(*, \"{key}\")={sep}{body}"));
+        out.extend(sub.into_iter().skip(1));
     }
     out
 }
@@ -13006,6 +13108,7 @@ fn format_value_body(v: &Value) -> Vec<String> {
             },
         ],
         RData::Args(_) => format_list(v),
+        RData::List(_) if dim_rank(v) > 1 => format_list_array(v),
         RData::List(_) => format_list(v),
         _ => {
             if let Some(dim) = with_host(|h| h.attr(v, "dim")) {
@@ -13921,5 +14024,63 @@ mod tests {
     #[test]
     fn doubles_share_a_decimal_width_when_printed() {
         assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
+    }
+}
+
+/// The number of dimensions `v` carries — 0 without a `dim` attribute.
+fn dim_rank(v: &Value) -> usize {
+    with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d))
+}
+
+/// A list with two or more dimensions, as R's `PrintGenericVector` lays it
+/// out: each cell summarised to one string (a length-1 atomic as its value, a
+/// longer one as `type,length`), then printed as an unquoted character matrix
+/// or array over the list's own `dim` and `dimnames`.
+fn format_list_array(v: &Value) -> Vec<String> {
+    let RData::List(items) = data(v) else {
+        return format_list(v);
+    };
+    let cells = mk_str(items.iter().map(|x| Some(list_cell_summary(x))).collect());
+    for k in ["dim", "dimnames"] {
+        if let Some(a) = with_host(|h| h.attr(v, k)) {
+            with_host(|h| h.set_attr(&cells, k, a));
+        }
+    }
+    with_print_quote(false, || format_value_body(&cells))
+}
+
+/// One cell of a list matrix, by `PrintGenericVector`'s `switch (TYPEOF)`.
+fn list_cell_summary(x: &Value) -> String {
+    let n = len(x);
+    let one = |ty: &str, s: &dyn Fn() -> String| match n {
+        1 => s(),
+        _ => format!("{ty},{n}"),
+    };
+    match data(x) {
+        RData::Null => "NULL".into(),
+        RData::Lgl(_) => one("logical", &|| print_element(x, 0)),
+        RData::Int(_) if class_of(x).iter().any(|c| c == "factor") => {
+            one("factor", &|| factor_labels(x)[0].clone().unwrap_or_else(|| "NA".into()))
+        }
+        RData::Int(_) => one("integer", &|| print_element(x, 0)),
+        RData::Dbl(xs) => one("numeric", &|| format_dbl_run(&xs[..1]).remove(0)),
+        RData::Str(xs) => one("character", &|| {
+            let s = xs[0].clone().unwrap_or_else(|| "NA".into());
+            // R formats into a 115-byte buffer: a string of 100 bytes or more is
+            // cut to its first 99 and marked.
+            match s.len() < 100 {
+                true => format!("\"{s}\""),
+                false => {
+                    let mut cut = 99;
+                    while !s.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    format!("\"{}\" [truncated]", &s[..cut])
+                }
+            }
+        }),
+        RData::List(_) | RData::Args(_) => format!("list,{n}"),
+        RData::Lang(_) => "expression".into(),
+        _ => "?".into(),
     }
 }
