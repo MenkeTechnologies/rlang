@@ -1445,6 +1445,12 @@ impl RHost {
         self.innermost_context(0)
     }
 
+    /// [`Self::context_call`] as whole R source, for an error raised the way
+    /// R's C `error()` raises one from inside a builtin.
+    pub fn context_call_source(&self) -> Option<String> {
+        self.enclosing_ctx(0).map(|c| ctx_source(&c.text))
+    }
+
     /// R's `findCall`, which starts at `R_GlobalContext->nextcontext`: the
     /// innermost function context *outside* the call now running. `warning()`
     /// is itself a closure in R, so its own context is the one being skipped,

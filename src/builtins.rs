@@ -1635,6 +1635,7 @@ fn unop(op: &str, x: &Value, dispatch: bool) -> Result<Value, String> {
 }
 
 fn b_special(vm: &mut VM, _: u8) -> Value {
+    let call = vm.pop();
     let name = name_of(&vm.pop());
     let rhs = vm.pop();
     let lhs = vm.pop();
@@ -1652,7 +1653,7 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
                 .flatten()
                 .or_else(|| primitive_value(&fname))
             {
-                Some(f) => call_value(&f, vec![(None, lhs), (None, rhs)], Some(fname)),
+                Some(f) => call_infix(&f, call, lhs, rhs, fname),
                 None => Err(format!("could not find function \"{fname}\"")),
             }
         }
@@ -1661,6 +1662,36 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
         Ok(v) => propagate(vm, v),
         Err(e) => abort(vm, e),
     }
+}
+
+/// Call the function bound to a `%op%` operator under a context whose call is
+/// the infix expression itself, as R's `eval` of `x %op% y` makes one: a
+/// closure's `sys.call()` and conditions read `x %op% y`, and a primitive
+/// such as `%*%` that fails names it too.
+fn call_infix(
+    f: &Value,
+    call: Value,
+    lhs: Value,
+    rhs: Value,
+    fname: String,
+) -> Result<Value, String> {
+    let closure = matches!(data(f), RData::Closure { .. });
+    with_host(|h| {
+        h.calls.push(crate::host::CallCtx {
+            text: call,
+            closure,
+            entered: true,
+        })
+    });
+    let out = call_value(f, vec![(None, lhs), (None, rhs)], Some(fname));
+    with_host(|h| {
+        if out.is_err() && h.error.is_none() {
+            let c = h.current_call_source();
+            h.set_error_call(c);
+        }
+        h.calls.pop();
+    });
+    out
 }
 
 /// `x %in% table`.
@@ -3270,7 +3301,10 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     }
     // R_subassign3_dflt: an atomic vector is coerced to a list (keeping its
     // names) before `$<-` writes into it.
-    if matches!(data(&x), RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_)) {
+    if matches!(
+        data(&x),
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_)
+    ) {
         if let Err(e) = signal_warning("Coercing LHS to a list") {
             return abort(vm, e);
         }
@@ -5395,7 +5429,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     let mut args = vec![(None, unlist(&el))];
                     args.extend(pass.iter().cloned());
                     let parts = call_primitive("format", args)?;
-                    out.push(Some(as_str(&parts).into_iter().flatten().collect::<Vec<_>>().join(", ")));
+                    out.push(Some(
+                        as_str(&parts)
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
                 }
                 let res = mk_str(out);
                 let nm = names_of(&x);
@@ -7265,7 +7305,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                             match just {
                                 0 => format!("{s}{:pad$}", ""),
                                 1 => format!("{:pad$}{s}", ""),
-                                2 => format!("{:l$}{s}{:r$}", "", "", l = pad / 2, r = pad - pad / 2),
+                                2 => {
+                                    format!("{:l$}{s}{:r$}", "", "", l = pad / 2, r = pad - pad / 2)
+                                }
                                 _ => s,
                             }
                         })
@@ -7277,7 +7319,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // first count, from that name's last one, that names nothing yet.
         "make.unique" => {
             let names = as_str(&a.req(0, "names")?);
-            let sep = a.get(1, "sep").and_then(|v| str1(&v)).unwrap_or_else(|| ".".into());
+            let sep = a
+                .get(1, "sep")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| ".".into());
             Ok(mk_str(make_unique(&names, &sep)))
         }
         // `do_makenames`: an `X` before a name that cannot start one, `.` for
@@ -7286,9 +7331,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let names = as_str(&a.req(0, "names")?);
             let unique = a.get(1, "unique").and_then(|v| lgl1(&v)).unwrap_or(false);
             let allow_ = a.get(2, "allow_").and_then(|v| lgl1(&v)).unwrap_or(true);
-            let made: Vec<Option<String>> =
-                names.iter().map(|s| Some(make_name(s.as_deref(), allow_))).collect();
-            Ok(mk_str(if unique { make_unique(&made, ".") } else { made }))
+            let made: Vec<Option<String>> = names
+                .iter()
+                .map(|s| Some(make_name(s.as_deref(), allow_)))
+                .collect();
+            Ok(mk_str(if unique {
+                make_unique(&made, ".")
+            } else {
+                made
+            }))
         }
         "startsWith" | "endsWith" => {
             // Both `x` and the prefix/suffix recycle to the longer length.
@@ -8560,20 +8611,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "%*%" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "y")?;
-            Ok(mat_mul(&x, &y))
+            matprod(MatOp::Prod, &x, Some(&y))
         }
         "crossprod" | "tcrossprod" => {
-            // crossprod(x, y) = t(x) %*% y ; tcrossprod(x, y) = x %*% t(y).
             let x = a.req(0, "x")?;
-            let y = a.get(1, "y").unwrap_or_else(|| x.clone());
-            let out = if name == "crossprod" && a.get(1, "y").is_some() {
-                crossprod(&x, &y)
-            } else if name == "crossprod" {
-                mat_mul(&transpose(&x), &y)
+            let op = if name == "crossprod" {
+                MatOp::Cross
             } else {
-                tcrossprod(&x, &y)
+                MatOp::TCross
             };
-            Ok(out)
+            matprod(op, &x, a.get(1, "y").as_ref())
         }
         // `solve` is generic in R; `solve.default` does the work, and its
         // errors name that call.
@@ -8931,7 +8978,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `useNA`: "always" gives every factor an NA level, "ifany" only the
             // ones holding a missing value, and the missing values then count
             // there instead of being dropped.
-            let use_na = a.named("useNA").and_then(|v| str1(&v)).unwrap_or_else(|| "no".into());
+            let use_na = a
+                .named("useNA")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "no".into());
             let use_na = ["no", "ifany", "always"]
                 .into_iter()
                 .find(|o| !use_na.is_empty() && o.starts_with(use_na.as_str()))
@@ -10108,22 +10158,6 @@ fn choose(n: f64, k: f64) -> f64 {
     }
 }
 
-/// Transpose a matrix value (or a bare vector treated as a single row), the
-/// column-major reshuffle behind both `t()` and `crossprod`.
-fn transpose(x: &Value) -> Value {
-    let (nr, nc) = mat_dim(x);
-    let mut pos = Vec::with_capacity(nr * nc);
-    for r in 0..nr {
-        for c in 0..nc {
-            pos.push(Some(c * nr + r));
-        }
-    }
-    let out = take_positions(x, &pos);
-    let dim = mk_int(vec![Some(nc as i64), Some(nr as i64)]);
-    with_host(|h| h.set_attr(&out, "dim", dim));
-    out
-}
-
 /// `cat`'s own named arguments, which are not part of the `...` it prints.
 const CAT_CONTROL_ARGS: &[&str] = &["sep", "fill", "file", "append", "labels"];
 
@@ -10445,12 +10479,111 @@ fn mat_dim(x: &Value) -> (usize, usize) {
     }
 }
 
-/// Matrix product `A %*% B`, column-major, at R's `%*%` semantics: a bare
-/// vector on the left is a row, on the right a column, so it conforms.
-fn mat_mul(x: &Value, y: &Value) -> Value {
-    let has_dim = |v: &Value| with_host(|h| h.attr(v, "dim")).is_some();
-    let (ar, ac) = if has_dim(x) { mat_dim(x) } else { (1, len(x)) };
-    let (br, bc) = if has_dim(y) { mat_dim(y) } else { (len(y), 1) };
+/// Which of the three operations R's `do_matprod` (array.c) implements is
+/// running — its `PRIMVAL(op)` 0, 1 and 2.
+#[derive(Clone, Copy, PartialEq)]
+enum MatOp {
+    /// `x %*% y`.
+    Prod,
+    /// `crossprod(x, y)` = `t(x) %*% y`.
+    Cross,
+    /// `tcrossprod(x, y)` = `x %*% t(y)`.
+    TCross,
+}
+
+/// The default method of R's `do_matprod`: the shape each operand takes, the
+/// conformability check, the product, and the `dimnames` the result inherits.
+///
+/// A bare vector is shaped by the other operand — a row or a column, whichever
+/// conforms — and two bare vectors make an inner product (`1:3 %*% 1:3`) or,
+/// when `x` has length one, an outer one. A missing or `NULL` `y` makes
+/// `crossprod`/`tcrossprod` the symmetric product of `x` with itself.
+fn matprod(op: MatOp, x: &Value, y: Option<&Value>) -> Result<Value, String> {
+    let sym = y.is_none_or(is_null);
+    let y = match y {
+        Some(v) if !(sym && op != MatOp::Prod) => v.clone(),
+        _ if op != MatOp::Prod => x.clone(),
+        _ => null(),
+    };
+    // R's `isNumeric`: logical, integer (but not a factor) and double.
+    let numeric =
+        |v: &Value| matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl) && !is_factor(v);
+    if !numeric(x) || !numeric(&y) {
+        return Err("requires numeric/complex matrix/vector arguments".into());
+    }
+    let dims = |v: &Value| {
+        with_host(|h| h.attr(v, "dim"))
+            .map(|d| {
+                as_int(&d)
+                    .into_iter()
+                    .map(|e| e.unwrap_or(0) as usize)
+                    .collect()
+            })
+            .unwrap_or_else(Vec::new)
+    };
+    let (xd, yd) = (dims(x), dims(&y));
+    let (ldx, ldy) = (xd.len(), yd.len());
+    let (lx, ly) = (len(x), len(&y));
+    let (mut nrx, mut ncx, mut nry, mut ncy) = (0, 0, 0, 0);
+    if ldx != 2 && ldy != 2 {
+        // Two non-matrices: `crossprod` of a scalar is an outer product,
+        // otherwise `%*%` takes `x` as a row and the rest take it as a column.
+        if op == MatOp::Cross && lx == 1 {
+            (nrx, ncx, nry, ncy) = (1, 1, 1, ly);
+        } else {
+            (nry, ncy) = (ly, 1);
+            if op == MatOp::Prod {
+                (nrx, ncx) = (1, lx);
+                if ncx == 1 {
+                    (ncy, nry) = (nry, 1);
+                }
+            } else {
+                (nrx, ncx) = (lx, 1);
+            }
+        }
+    } else if ldx != 2 {
+        (nry, ncy) = (yd[0], yd[1]);
+        match op {
+            MatOp::Prod if lx == nry => (nrx, ncx) = (1, nry),
+            MatOp::Prod if nry == 1 => (nrx, ncx) = (lx, 1),
+            MatOp::Cross if lx == nry => (nrx, ncx) = (nry, 1),
+            MatOp::TCross if lx == ncy => (nrx, ncx) = (1, ncy),
+            MatOp::TCross if ncy == 1 => (nrx, ncx) = (lx, 1),
+            _ => {}
+        }
+    } else if ldy != 2 {
+        (nrx, ncx) = (xd[0], xd[1]);
+        match op {
+            MatOp::Prod if ly == ncx => (nry, ncy) = (ncx, 1),
+            MatOp::Prod if ncx == 1 => (nry, ncy) = (1, ly),
+            MatOp::Cross if ly == nrx => (nry, ncy) = (nrx, 1),
+            MatOp::Cross if nrx == 1 => (nry, ncy) = (1, ly),
+            MatOp::TCross if nrx == 1 => (nry, ncy) = (1, ly),
+            MatOp::TCross => (nry, ncy) = (ly, 1),
+            _ => {}
+        }
+    } else {
+        (nrx, ncx, nry, ncy) = (xd[0], xd[1], yd[0], yd[1]);
+    }
+
+    let conform = match op {
+        MatOp::Prod => ncx == nry,
+        MatOp::Cross => nrx == nry,
+        MatOp::TCross => ncx == ncy,
+    };
+    if !conform {
+        // `%*%` reports through `errorcall` with its own call; `crossprod`
+        // and `tcrossprod` through plain `error()`, which — a builtin making
+        // no context — lands on the enclosing closure, or no call at all.
+        if op != MatOp::Prod {
+            with_host(|h| {
+                let c = h.context_call_source();
+                h.set_error_call(c);
+            });
+        }
+        return Err("non-conformable arguments".into());
+    }
+
     // An `NA` rides as R's NaN payload so it propagates the way it does in R
     // instead of counting as zero.
     let na = crate::linalg::na_real;
@@ -10458,26 +10591,52 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
         .into_iter()
         .map(|e| e.unwrap_or_else(na))
         .collect();
-    let b: Vec<f64> = as_dbl(y)
+    let b: Vec<f64> = as_dbl(&y)
         .into_iter()
         .map(|e| e.unwrap_or_else(na))
         .collect();
-    if ac != br {
-        return mk_dbl(vec![None]);
-    }
-    // R's `matprod`: with a NaN or infinity anywhere it runs its own loop, and
-    // otherwise hands a one-row product to `dgemv('T')`, whose kernel sums a
-    // dot product in eight lanes. Every other shape — `dgemm`, `dgemv('N')`
-    // and the plain loop alike — accumulates each element in one fused chain.
     let finite = a.iter().chain(&b).all(|v| v.is_finite());
-    let mut out = vec![0.0; ar * bc];
-    for i in 0..ar {
-        for j in 0..bc {
-            let terms = (0..ac).map(|k| (a[k * ar + i], b[j * br + k]));
-            out[j * ar + i] = if finite && ar == 1 && bc > 1 {
-                crate::linalg::gemv_t_dot(terms)
-            } else {
-                terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
+    let (nr, nc) = match op {
+        MatOp::Prod => (nrx, ncy),
+        MatOp::Cross => (ncx, ncy),
+        MatOp::TCross => (nrx, nry),
+    };
+    let mut out = vec![0.0; nr * nc];
+    for i in 0..nr {
+        for j in 0..nc {
+            out[j * nr + i] = match op {
+                // R's `matprod`: with a NaN or infinity anywhere it runs its
+                // own loop, and otherwise hands a one-row product to
+                // `dgemv('T')`, whose kernel sums a dot product in eight
+                // lanes. Every other shape — `dgemm`, `dgemv('N')` and the
+                // plain loop alike — accumulates each element in one fused
+                // chain.
+                MatOp::Prod => {
+                    let terms = (0..ncx).map(|k| (a[k * nrx + i], b[j * nry + k]));
+                    if finite && nrx == 1 && ncy > 1 {
+                        crate::linalg::gemv_t_dot(terms)
+                    } else {
+                        terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
+                    }
+                }
+                // A column of `x` against a column of `y`; with a single
+                // column on either side (and nothing NaN or infinite) R
+                // hands it to `dgemv('T')`. The symmetric product runs
+                // `dsyrk`, one fused chain per element.
+                MatOp::Cross => {
+                    let terms = (0..nrx).map(|k| (a[i * nrx + k], b[j * nry + k]));
+                    if !sym && finite && (ncx == 1 || ncy == 1) {
+                        crate::linalg::gemv_t_dot(terms)
+                    } else {
+                        terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
+                    }
+                }
+                // A row of `x` against a row of `y`, summed in one fused
+                // chain as `dgemm('N', 'T')`, `dgemv('N')` and R's own loop
+                // all do.
+                MatOp::TCross => {
+                    (0..ncx).fold(0.0, |acc, k| a[k * nrx + i].mul_add(b[k * nry + j], acc))
+                }
             };
         }
     }
@@ -10486,43 +10645,70 @@ fn mat_mul(x: &Value, y: &Value) -> Value {
             .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
             .collect(),
     );
-    let dim = mk_int(vec![Some(ar as i64), Some(bc as i64)]);
+    let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
     with_host(|h| h.set_attr(&res, "dim", dim));
-    res
+    matprod_dimnames(op, &res, x, &y, (ldx, ldy, ncx, nry));
+    Ok(res)
 }
 
-/// `tcrossprod(x, y)` = `x %*% t(y)`, a vector counting as one column: each
-/// element is a row of `x` against a row of `y`, summed in one fused chain as
-/// `dgemm('N', 'T')`, `dgemv('N')` and R's own loop all do.
-fn tcrossprod(x: &Value, y: &Value) -> Value {
-    let (xr, xc) = mat_dim(x);
-    let (yr, yc) = mat_dim(y);
-    if xc != yc {
-        return mk_dbl(vec![None]);
+/// The `dimnames` `do_matprod` gives its result: the margins of `x` and `y`
+/// that survive the product, and their names when either operand's
+/// `dimnames` list carried names. A result whose two margins would both be
+/// `NULL` gets no `dimnames` at all.
+fn matprod_dimnames(
+    op: MatOp,
+    res: &Value,
+    x: &Value,
+    y: &Value,
+    shape: (usize, usize, usize, usize),
+) {
+    let (ldx, ldy, ncx, nry) = shape;
+    let xdn = with_host(|h| h.attr(x, "dimnames"));
+    let ydn = with_host(|h| h.attr(y, "dimnames"));
+    if xdn.is_none() && ydn.is_none() {
+        return;
     }
-    let na = crate::linalg::na_real;
-    let a: Vec<f64> = as_dbl(x)
-        .into_iter()
-        .map(|e| e.unwrap_or_else(na))
-        .collect();
-    let b: Vec<f64> = as_dbl(y)
-        .into_iter()
-        .map(|e| e.unwrap_or_else(na))
-        .collect();
-    let mut out = vec![0.0; xr * yr];
-    for i in 0..xr {
-        for j in 0..yr {
-            out[j * xr + i] = (0..xc).fold(0.0, |acc, k| a[k * xr + i].mul_add(b[k * yr + j], acc));
-        }
+    // Element `k` of a `dimnames` list, and the names that list carries.
+    let pick = |dn: &Value, k: usize| {
+        let names = with_host(|h| h.attr(dn, "names"));
+        let label = names
+            .as_ref()
+            .and_then(|n| as_str(n).get(k).cloned().flatten());
+        (
+            elements(dn).get(k).cloned().unwrap_or_else(null),
+            names.is_some(),
+            label,
+        )
+    };
+    let x_margin = match (op, &xdn) {
+        (MatOp::Prod, Some(dn)) if ldx == 2 || ncx == 1 => Some(pick(dn, 0)),
+        (MatOp::Cross, Some(dn)) if ldx == 2 => Some(pick(dn, 1)),
+        (MatOp::TCross, Some(dn)) if ldx == 2 => Some(pick(dn, 0)),
+        _ => None,
+    };
+    let y_margin = match (op, &ydn) {
+        (MatOp::TCross, Some(dn)) if ldy == 2 => Some(pick(dn, 0)),
+        (MatOp::TCross, _) => None,
+        (_, Some(dn)) if ldy == 2 => Some(pick(dn, 1)),
+        (_, Some(dn)) if nry == 1 => Some(pick(dn, 0)),
+        _ => None,
+    };
+    let margin =
+        |m: &Option<(Value, bool, Option<String>)>| m.as_ref().map_or_else(null, |m| m.0.clone());
+    let (d0, d1) = (margin(&x_margin), margin(&y_margin));
+    if is_null(&d0) && is_null(&d1) {
+        return;
     }
-    let res = mk_dbl(
-        out.into_iter()
-            .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
-            .collect(),
-    );
-    let dim = mk_int(vec![Some(xr as i64), Some(yr as i64)]);
-    with_host(|h| h.set_attr(&res, "dim", dim));
-    res
+    let dimnames = mk_list(vec![d0, d1]);
+    let named = |m: &Option<(Value, bool, Option<String>)>| m.as_ref().is_some_and(|m| m.1);
+    if named(&x_margin) || named(&y_margin) {
+        let label = |m: &Option<(Value, bool, Option<String>)>| {
+            Some(m.as_ref().and_then(|m| m.2.clone()).unwrap_or_default())
+        };
+        let names = mk_str(vec![label(&x_margin), label(&y_margin)]);
+        with_host(|h| h.set_attr(&dimnames, "names", names));
+    }
+    with_host(|h| h.set_attr(res, "dimnames", dimnames));
 }
 
 /// The cells of `outer(X, Y)` under the default `"*"`: `tcrossprod` of the
@@ -10543,48 +10729,6 @@ fn outer_product(x: &Value, y: &Value) -> Value {
         .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
         .collect();
     mk_dbl(cells)
-}
-
-/// `crossprod(x, y)` = `t(x) %*% y`, computed as R's `crossprod` does: every
-/// element is a dot product of a column of `x` with a column of `y`, and when
-/// either side has a single column (and nothing is NaN or infinite) R hands it
-/// to `dgemv('T')`, whose eight-lane sum differs from the fused chain `dgemm`
-/// and R's own loop use.
-fn crossprod(x: &Value, y: &Value) -> Value {
-    let (xr, xc) = mat_dim(x);
-    let (yr, yc) = mat_dim(y);
-    if xr != yr {
-        return mk_dbl(vec![None]);
-    }
-    let na = crate::linalg::na_real;
-    let a: Vec<f64> = as_dbl(x)
-        .into_iter()
-        .map(|e| e.unwrap_or_else(na))
-        .collect();
-    let b: Vec<f64> = as_dbl(y)
-        .into_iter()
-        .map(|e| e.unwrap_or_else(na))
-        .collect();
-    let gemv = (xc == 1 || yc == 1) && a.iter().chain(&b).all(|v| v.is_finite());
-    let mut out = vec![0.0; xc * yc];
-    for i in 0..xc {
-        for j in 0..yc {
-            let terms = (0..xr).map(|k| (a[i * xr + k], b[j * yr + k]));
-            out[j * xc + i] = if gemv {
-                crate::linalg::gemv_t_dot(terms)
-            } else {
-                terms.fold(0.0, |acc, (u, v)| u.mul_add(v, acc))
-            };
-        }
-    }
-    let res = mk_dbl(
-        out.into_iter()
-            .map(|v| (!crate::linalg::is_na_real(v)).then_some(v))
-            .collect(),
-    );
-    let dim = mk_int(vec![Some(xc as i64), Some(yc as i64)]);
-    with_host(|h| h.set_attr(&res, "dim", dim));
-    res
 }
 
 /// R's `deparse` for a value on one line — the text that would recreate it
@@ -11350,7 +11494,13 @@ fn format_c(a: &Args) -> Result<Value, String> {
     let format = a
         .get(3, "format")
         .and_then(|v| str1(&v))
-        .unwrap_or_else(|| if kind(&x) == RKind::Int { "d".into() } else { "g".into() });
+        .unwrap_or_else(|| {
+            if kind(&x) == RKind::Int {
+                "d".into()
+            } else {
+                "g".into()
+            }
+        });
     // A logical keeps its storage mode unless `format = "d"` coerces it to
     // integer, and `.Internal(formatC)` has no logical case.
     if kind(&x) == RKind::Lgl && !matches!(format.as_str(), "d" | "s") && len(&x) > 0 {
@@ -14225,9 +14375,9 @@ fn list_cell_summary(x: &Value) -> String {
     match data(x) {
         RData::Null => "NULL".into(),
         RData::Lgl(_) => one("logical", &|| print_element(x, 0)),
-        RData::Int(_) if class_of(x).iter().any(|c| c == "factor") => {
-            one("factor", &|| factor_labels(x)[0].clone().unwrap_or_else(|| "NA".into()))
-        }
+        RData::Int(_) if class_of(x).iter().any(|c| c == "factor") => one("factor", &|| {
+            factor_labels(x)[0].clone().unwrap_or_else(|| "NA".into())
+        }),
         RData::Int(_) => one("integer", &|| print_element(x, 0)),
         RData::Dbl(xs) => one("numeric", &|| format_dbl_run(&xs[..1]).remove(0)),
         RData::Str(xs) => one("character", &|| {

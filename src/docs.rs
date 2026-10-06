@@ -1196,12 +1196,12 @@ const MATRICES: &[Entry] = &[
     (
         "%*%",
         "x %*% y",
-        "The matrix product, column-major, summed in the order the reference R's BLAS sums, so results agree with R to the last bit; NA propagates. A dimensionless vector conforms as a row on the left and as a column on the right. Non-conforming shapes return NA rather than raising.",
+        "The matrix product, column-major, summed in the order the reference R's BLAS sums, so results agree with R to the last bit; NA propagates. A dimensionless vector is shaped by the other operand as R's do_matprod does (a row or a column, whichever conforms; two vectors make an inner product). The result keeps x's row names and y's column names. Non-conforming shapes are an error.",
     ),
     (
         "crossprod",
         "crossprod(x, y = x)",
-        "t(x) %*% y, computed through the same matrix product.",
+        "t(x) %*% y, with R's do_matprod shaping, conformability error and dimnames (x's column names, y's column names).",
     ),
     (
         "tcrossprod",

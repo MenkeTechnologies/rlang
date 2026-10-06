@@ -1035,7 +1035,10 @@ impl Compiler {
                 self.expr(b, lhs)?;
                 self.expr(b, rhs)?;
                 self.kstr(b, name);
-                b.emit(Op::CallBuiltin(ops::SPECIAL, 3), 0);
+                // A `%op%` function is called with the infix expression as its
+                // call, so its context and its errors name `x %op% y`.
+                self.kstr(b, &deparse_lines(e));
+                b.emit(Op::CallBuiltin(ops::SPECIAL, 4), 0);
             }
             Expr::Unary { op, operand } => {
                 self.expr(b, operand)?;
