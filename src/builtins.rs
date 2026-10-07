@@ -382,6 +382,10 @@ fn mapply(f: &Value, a: &Args, simplified: bool) -> Result<Value, String> {
     Ok(if simplified { simplify(&res) } else { res })
 }
 
+/// A factor's level labels (`None` for an NA level) and each element's
+/// 0-based level, as `table` builds them from [`classify_factor`].
+type FactorLevelsCodes = (Vec<Option<String>>, Vec<Option<usize>>);
+
 /// A grouping vector as R's `factor()` reads it for `table` / `tapply`: its
 /// level labels (a factor's own, else the sorted distinct values) and each
 /// element's 0-based level, `None` for a missing value.
@@ -6224,10 +6228,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "row" | "col" => {
             let x = a.req(0, "x")?;
             let dims = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d));
-            let Some([Some(nr), Some(nc)]) = dims
-                .as_deref()
-                .map(|d| <[_; 2]>::try_from(d).ok())
-                .flatten()
+            let Some([Some(nr), Some(nc)]) =
+                dims.as_deref().and_then(|d| <[_; 2]>::try_from(d).ok())
             else {
                 return Err(format!(
                     "a matrix-like object is required as argument to '{name}'"
@@ -6314,7 +6316,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = as_dbl(&a.req(0, "x")?);
             let na_rm = a.get(1, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(true);
             let na5 = || mk_lgl(vec![None; 5]);
-            if !na_rm && x.iter().any(|e| e.is_none_or(f64::is_nan)) {
+            if !na_rm && x.iter().any(|e| e.map_or(true, f64::is_nan)) {
                 return Ok(na5());
             }
             let mut xs: Vec<f64> = x.into_iter().flatten().filter(|v| !v.is_nan()).collect();
@@ -6413,10 +6415,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let ds = as_dbl(&digits);
             let digits = if mx > 0.0 {
                 // `max(min.d, digits - log10(mx))` — one value, the largest.
-                let shifted = ds.iter().map(|d| d.map(|d| d - mx.log10()));
-                let best = shifted.fold(Some(0.0), |m: Option<f64>, d| {
-                    m.zip(d).map(|(m, d)| m.max(d))
-                });
+                let mut shifted = ds.iter().map(|d| d.map(|d| d - mx.log10()));
+                let best = shifted.try_fold(0.0, |m: f64, d| d.map(|d| m.max(d)));
                 mk_dbl(vec![best])
             } else {
                 digits
@@ -9218,7 +9218,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .into_iter()
                 .find(|o| !use_na.is_empty() && o.starts_with(use_na.as_str()))
                 .ok_or_else(|| "'arg' should be one of “no”, “ifany”, “always”".to_string())?;
-            let classified: Vec<(Vec<Option<String>>, Vec<Option<usize>>)> = factors
+            let classified: Vec<FactorLevelsCodes> = factors
                 .iter()
                 .map(|(_, x)| {
                     let (levels, mut codes) = classify_factor(x);
@@ -10900,7 +10900,7 @@ enum MatOp {
 /// when `x` has length one, an outer one. A missing or `NULL` `y` makes
 /// `crossprod`/`tcrossprod` the symmetric product of `x` with itself.
 fn matprod(op: MatOp, x: &Value, y: Option<&Value>) -> Result<Value, String> {
-    let sym = y.is_none_or(is_null);
+    let sym = y.map_or(true, is_null);
     let y = match y {
         Some(v) if !(sym && op != MatOp::Prod) => v.clone(),
         _ if op != MatOp::Prod => x.clone(),
@@ -11659,7 +11659,7 @@ fn median_of(x: &[Option<f64>]) -> Option<f64> {
         return None;
     }
     xs.sort_by(|p, q| p.total_cmp(q));
-    let half = (xs.len() + 1) / 2;
+    let half = xs.len().div_ceil(2);
     Some(if xs.len() % 2 == 1 {
         xs[half - 1]
     } else {
@@ -11701,7 +11701,7 @@ fn quantile_default(a: &Args) -> Result<Value, String> {
     let mut xs = as_dbl(&x);
     if na_rm {
         xs.retain(|e| matches!(e, Some(v) if !v.is_nan()));
-    } else if xs.iter().any(|e| e.is_none_or(f64::is_nan)) {
+    } else if xs.iter().any(|e| e.map_or(true, f64::is_nan)) {
         return Err("missing values and NaN's not allowed if 'na.rm' is FALSE".into());
     }
     let mut xs: Vec<f64> = xs.into_iter().flatten().collect();
@@ -15411,45 +15411,6 @@ fn default_choices() -> Result<Value, String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::eval_to_string;
-
-    #[test]
-    fn arithmetic_recycles_and_keeps_integer_type() {
-        assert_eq!(eval_to_string("c(1L, 2L) + 1L").unwrap(), "[1] 2 3");
-        assert_eq!(eval_to_string("1:6 * c(1, 0)").unwrap(), "[1] 1 0 3 0 5 0");
-    }
-
-    #[test]
-    fn na_propagates_but_logic_stays_three_valued() {
-        assert_eq!(eval_to_string("NA + 1").unwrap(), "[1] NA");
-        assert_eq!(eval_to_string("NA & FALSE").unwrap(), "[1] FALSE");
-        assert_eq!(eval_to_string("NA | TRUE").unwrap(), "[1] TRUE");
-    }
-
-    #[test]
-    fn modulo_follows_the_sign_of_the_divisor() {
-        // R: -5 %% 3 is 1, not -2.
-        assert_eq!(eval_to_string("-5 %% 3").unwrap(), "[1] 1");
-        assert_eq!(eval_to_string("-5 %/% 3").unwrap(), "[1] -2");
-    }
-
-    #[test]
-    fn negative_subscripts_exclude() {
-        assert_eq!(eval_to_string("(1:5)[-1]").unwrap(), "[1] 2 3 4 5");
-        assert_eq!(
-            eval_to_string("(1:5)[c(TRUE, FALSE)]").unwrap(),
-            "[1] 1 3 5"
-        );
-    }
-
-    #[test]
-    fn doubles_share_a_decimal_width_when_printed() {
-        assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
-    }
-}
-
 /// The number of dimensions `v` carries — 0 without a `dim` attribute.
 fn dim_rank(v: &Value) -> usize {
     with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d))
@@ -15616,4 +15577,43 @@ fn is_reserved_word(s: &str) -> bool {
             | "NA_complex_"
             | "in"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::eval_to_string;
+
+    #[test]
+    fn arithmetic_recycles_and_keeps_integer_type() {
+        assert_eq!(eval_to_string("c(1L, 2L) + 1L").unwrap(), "[1] 2 3");
+        assert_eq!(eval_to_string("1:6 * c(1, 0)").unwrap(), "[1] 1 0 3 0 5 0");
+    }
+
+    #[test]
+    fn na_propagates_but_logic_stays_three_valued() {
+        assert_eq!(eval_to_string("NA + 1").unwrap(), "[1] NA");
+        assert_eq!(eval_to_string("NA & FALSE").unwrap(), "[1] FALSE");
+        assert_eq!(eval_to_string("NA | TRUE").unwrap(), "[1] TRUE");
+    }
+
+    #[test]
+    fn modulo_follows_the_sign_of_the_divisor() {
+        // R: -5 %% 3 is 1, not -2.
+        assert_eq!(eval_to_string("-5 %% 3").unwrap(), "[1] 1");
+        assert_eq!(eval_to_string("-5 %/% 3").unwrap(), "[1] -2");
+    }
+
+    #[test]
+    fn negative_subscripts_exclude() {
+        assert_eq!(eval_to_string("(1:5)[-1]").unwrap(), "[1] 2 3 4 5");
+        assert_eq!(
+            eval_to_string("(1:5)[c(TRUE, FALSE)]").unwrap(),
+            "[1] 1 3 5"
+        );
+    }
+
+    #[test]
+    fn doubles_share_a_decimal_width_when_printed() {
+        assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
+    }
 }
