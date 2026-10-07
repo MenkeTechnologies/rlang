@@ -269,12 +269,13 @@ run that compared nothing — no cases generated, or an oracle that never answer
   keeps class `"integer"` — `2147483647L + 1L`, `* 2L` and `-2147483647L - 2L`
   all give `NA`. Only the warning's call differs, under the operator entry
   above: R names `In 2147483647L + 1L :`, rlang reports no call.
-- **`%%`/`%/%`, `var`, and `round` differ from R by ULPs at the edge of f64
-  precision.** R accumulates them in C `long double`; Rust has no equivalent, so
-  a modulus of a value past `2^53` (where R warns of "complete loss of
-  accuracy"), a variance landing on a 7th-significant-digit rounding tie, or a
-  `round` of an exact `N.NN5` half (`round(0.05, 1)`) can differ in the last
-  place. The common cases — including `round(0.15, 1)`, `round(2.675, 2)` — match.
+- **`%%`/`%/%` and `var` differ from R by ULPs at the edge of f64 precision.**
+  R accumulates them in C `long double`; Rust has no equivalent, so a modulus of
+  a value past `2^53` (where R warns of "complete loss of accuracy") or a
+  variance landing on a 7th-significant-digit rounding tie can differ in the
+  last place. `round` and `signif` are no longer in this list: they are ports of
+  R's `fround` and `fprec`, which work in plain double arithmetic, so
+  `round(0.05, 1)` is `0` and `round(0.45, 1)` is `0.4` exactly as in R.
 
 ## Printing and formatting
 

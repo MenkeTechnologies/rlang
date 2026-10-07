@@ -4010,6 +4010,19 @@ pub const PRIMITIVES: &[&str] = &[
     "diff",
     "pmax",
     "pmin",
+    "sweep",
+    "scale",
+    "as.matrix",
+    "row",
+    "col",
+    "is.unsorted",
+    "anyDuplicated",
+    "kronecker",
+    "rowsum",
+    "fivenum",
+    "IQR",
+    "mad",
+    "zapsmall",
     "tabulate",
     "findInterval",
     "is.null",
@@ -6203,43 +6216,212 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 (xs[m - 1] + xs[m]) / 2.0
             }))
         }
-        "quantile" => {
-            let mut xs = numeric_arg(&a, 0, "x")?;
-            xs.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
-            let probs: Vec<f64> = match a.get(1, "probs") {
-                Some(p) => as_dbl(&p).into_iter().flatten().collect(),
-                None => vec![0.0, 0.25, 0.5, 0.75, 1.0],
+        "quantile" => in_method("quantile.default", || quantile_default(&a)),
+        "sweep" => sweep(&a),
+        "rowsum" => in_method("rowsum.default", || rowsum_default(&a)),
+        // `.Internal(row(dim(x)))` / `col`: the integer matrix of each
+        // cell's row or column index.
+        "row" | "col" => {
+            let x = a.req(0, "x")?;
+            let dims = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d));
+            let Some([Some(nr), Some(nc)]) = dims
+                .as_deref()
+                .map(|d| <[_; 2]>::try_from(d).ok())
+                .flatten()
+            else {
+                return Err(format!(
+                    "a matrix-like object is required as argument to '{name}'"
+                ));
             };
-            let n = xs.len();
-            // R's default type 7: h = (n-1)p, linear interpolation.
-            let vals: Vec<Option<f64>> = probs
-                .iter()
-                .map(|&p| {
-                    if n == 0 {
-                        return None;
-                    }
-                    let h = (n as f64 - 1.0) * p;
-                    let lo = h.floor() as usize;
-                    let frac = h - lo as f64;
-                    Some(if lo + 1 < n {
-                        xs[lo] + frac * (xs[lo + 1] - xs[lo])
+            let cells = (0..nr * nc)
+                .map(|k| {
+                    Some(if name == "row" {
+                        k % nr + 1
                     } else {
-                        xs[lo]
+                        k / nr + 1
                     })
                 })
                 .collect();
-            let out = mk_dbl(vals);
-            let names = a.named("names").and_then(|v| lgl1(&v)).unwrap_or(true);
-            if names {
-                set_names(
-                    &out,
-                    probs
-                        .iter()
-                        .map(|&p| Some(format!("{}%", crate::host::format_dbl(p * 100.0))))
-                        .collect(),
-                );
-            }
+            let out = mk_int(cells);
+            let dim = mk_int(vec![Some(nr), Some(nc)]);
+            with_host(|h| h.set_attr(&out, "dim", dim));
             Ok(out)
+        }
+        // R's `is.unsorted`: whether some element is greater than (with
+        // `strictly`, not less than) the next, in the order `sort` uses; a
+        // missing value makes the answer NA unless `na.rm` drops it.
+        "is.unsorted" => {
+            let x = a.req(0, "x")?;
+            let na_rm = a.get(1, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let strictly = a.get(2, "strictly").and_then(|v| lgl1(&v)).unwrap_or(false);
+            if len(&x) <= 1 {
+                return Ok(scalar_lgl(false));
+            }
+            let key = SortKey::of(&x);
+            let mut idx: Vec<usize> = (0..len(&x)).collect();
+            if idx.iter().any(|&i| key.missing(i)) {
+                if !na_rm {
+                    return Ok(mk_lgl(vec![None]));
+                }
+                idx.retain(|&i| !key.missing(i));
+            }
+            Ok(scalar_lgl(idx.windows(2).any(|w| {
+                let o = key.cmp(w[0], w[1]);
+                o.is_gt() || (strictly && o.is_eq())
+            })))
+        }
+        // R's `anyDuplicated`: the 1-based index of the first element equal
+        // to an earlier one (a later one with `fromLast`), or 0.
+        "anyDuplicated" => {
+            let keys = as_str(&a.req(0, "x")?);
+            let from_last = a.named("fromLast").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let order: Vec<usize> = if from_last {
+                (0..keys.len()).rev().collect()
+            } else {
+                (0..keys.len()).collect()
+            };
+            let mut seen = std::collections::HashSet::new();
+            let hit = order.into_iter().find(|&i| !seen.insert(keys[i].clone()));
+            Ok(scalar_int(hit.map_or(0, |i| i as i64 + 1)))
+        }
+        "scale" => in_method("scale.default", || scale_default(&a)),
+        // R's `as.matrix.default`: a matrix is itself; anything else becomes
+        // one column, its names the row names.
+        "as.matrix" => {
+            let x = a.req(0, "x")?;
+            if with_host(|h| h.attr(&x, "dim")).is_some_and(|d| len(&d) == 2) {
+                return Ok(x);
+            }
+            let dn = match with_host(|h| h.attr(&x, "names")) {
+                Some(nm) => mk_list(vec![nm, null()]),
+                None => null(),
+            };
+            let n = len(&x) as i64;
+            call_primitive(
+                "array",
+                vec![
+                    (None, x),
+                    (None, mk_int(vec![Some(n), Some(1)])),
+                    (None, dn),
+                ],
+            )
+        }
+        // R's `fivenum`: Tukey's minimum, lower hinge, median, upper hinge
+        // and maximum, each the mean of the order statistics either side of
+        // a (possibly half-integer) depth. A missing value without `na.rm`,
+        // or nothing to summarize, gives five logical NAs.
+        "fivenum" => {
+            let x = as_dbl(&a.req(0, "x")?);
+            let na_rm = a.get(1, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let na5 = || mk_lgl(vec![None; 5]);
+            if !na_rm && x.iter().any(|e| e.is_none_or(f64::is_nan)) {
+                return Ok(na5());
+            }
+            let mut xs: Vec<f64> = x.into_iter().flatten().filter(|v| !v.is_nan()).collect();
+            if xs.is_empty() {
+                return Ok(na5());
+            }
+            xs.sort_by(|p, q| p.total_cmp(q));
+            let n = xs.len() as f64;
+            let n4 = ((n + 3.0) / 2.0).floor() / 2.0;
+            let d = [1.0, n4, (n + 1.0) / 2.0, n + 1.0 - n4, n];
+            Ok(mk_dbl(
+                d.iter()
+                    .map(|&d| Some(0.5 * (xs[d.floor() as usize - 1] + xs[d.ceil() as usize - 1])))
+                    .collect(),
+            ))
+        }
+        // R's `IQR`: `diff(quantile(as.numeric(x), c(0.25, 0.75), na.rm =,
+        // names = FALSE, type =))`.
+        "IQR" => {
+            let x = mk_dbl(as_dbl(&a.req(0, "x")?));
+            let mut args = vec![
+                (None, x),
+                (None, mk_dbl(vec![Some(0.25), Some(0.75)])),
+                (Some("names".into()), scalar_lgl(false)),
+            ];
+            for (i, name) in [(1, "na.rm"), (2, "type")] {
+                if let Some(v) = a.get(i, name) {
+                    args.push((Some(name.into()), v));
+                }
+            }
+            let q = as_dbl(&quantile_default(&Args::new(args))?);
+            Ok(mk_dbl(vec![q[1].zip(q[0]).map(|(hi, lo)| hi - lo)]))
+        }
+        // R's `mad`: `constant * median(abs(x - center))`, `center`
+        // defaulting to the median of `x` after `na.rm` has dropped its
+        // missing values; `low`/`high` take the lo- or hi-median of an even
+        // count instead of the mean of the two.
+        "mad" => {
+            let mut x = as_dbl(&a.req(0, "x")?);
+            if a.get(3, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(false) {
+                x.retain(|e| matches!(e, Some(v) if !v.is_nan()));
+            }
+            let flag = |i, name| a.get(i, name).and_then(|v| lgl1(&v)).unwrap_or(false);
+            let (low, high) = (flag(4, "low"), flag(5, "high"));
+            let constant = match a.get(2, "constant") {
+                Some(c) => as_dbl(&c).first().copied().flatten(),
+                None => Some(1.4826),
+            };
+            let center = match a.get(1, "center") {
+                Some(c) => as_dbl(&c).first().copied().flatten(),
+                None => median_of(&x),
+            };
+            let dev: Vec<Option<f64>> = x
+                .iter()
+                .map(|e| e.zip(center).map(|(v, c)| (v - c).abs()))
+                .collect();
+            let n = dev.len();
+            let m = if (low || high) && n % 2 == 0 {
+                if low && high {
+                    return Err("'low' and 'high' cannot be both TRUE".into());
+                }
+                let n2 = n / 2 + usize::from(high);
+                let mut s: Vec<f64> = dev.iter().flatten().copied().collect();
+                s.sort_by(|p, q| p.total_cmp(q));
+                s.get(n2 - 1).copied()
+            } else {
+                median_of(&dev)
+            };
+            Ok(mk_dbl(vec![m.zip(constant).map(|(m, c)| c * m)]))
+        }
+        // R's `zapsmall`: round to `digits` less the order of magnitude of
+        // the largest finite-or-not absolute value, so entries that small
+        // relative to it become zero.
+        "zapsmall" => {
+            let x = a.req(0, "x")?;
+            let digits = match a.get(1, "digits") {
+                Some(d) => d,
+                None => scalar_dbl(crate::host::print_digits() as f64),
+            };
+            if len(&digits) == 0 {
+                return Err("invalid 'digits'".into());
+            }
+            let xs = as_dbl(&x);
+            let present: Vec<f64> = xs
+                .iter()
+                .flatten()
+                .filter(|v| !v.is_nan())
+                .copied()
+                .collect();
+            if present.is_empty() {
+                return Ok(x);
+            }
+            let mx = present
+                .iter()
+                .fold(f64::NEG_INFINITY, |m, v| m.max(v.abs()));
+            let ds = as_dbl(&digits);
+            let digits = if mx > 0.0 {
+                // `max(min.d, digits - log10(mx))` — one value, the largest.
+                let shifted = ds.iter().map(|d| d.map(|d| d - mx.log10()));
+                let best = shifted.fold(Some(0.0), |m: Option<f64>, d| {
+                    m.zip(d).map(|(m, d)| m.max(d))
+                });
+                mk_dbl(vec![best])
+            } else {
+                digits
+            };
+            math2(&Args::new(vec![(None, x), (None, digits)]), 0.0, r_round)
         }
         "cor" => {
             // Pearson correlation of two equal-length numeric vectors.
@@ -6740,15 +6922,28 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .collect();
             shaped_like(mk_dbl(out), &xv)
         }
+        // R's `tabulate(bin, nbins = max(1L, bin, na.rm = TRUE))` and its
+        // `.Internal`: bins outside `1..nbins` and `NA`s are not counted.
         "tabulate" => {
-            let bins = as_int(&a.req(0, "bin")?);
-            let nbins = a
-                .get(1, "nbins")
-                .and_then(|v| num1(&v))
-                .map(|v| v as usize)
-                .unwrap_or_else(|| {
-                    bins.iter().flatten().copied().max().unwrap_or(0).max(0) as usize
-                });
+            let bin = a.req(0, "bin")?;
+            if !matches!(kind(&bin), RKind::Lgl | RKind::Int | RKind::Dbl) {
+                return Err("'bin' must be numeric or a factor".into());
+            }
+            let bins = as_int(&bin);
+            let nbins = match a.get(1, "nbins") {
+                Some(v) => match as_dbl(&v).first().copied().flatten() {
+                    Some(n) if n > i32::MAX as f64 => {
+                        return Err("attempt to make a table with >= 2^31 elements".into())
+                    }
+                    Some(n) if !n.is_nan() => n.trunc() as i64,
+                    _ => return Err("invalid value of 'nbins'".into()),
+                },
+                None => bins.iter().flatten().copied().fold(1, i64::max),
+            };
+            if nbins < 0 {
+                return Err("invalid 'nbins' argument".into());
+            }
+            let nbins = nbins as usize;
             let mut counts = vec![0i64; nbins];
             for b in bins.into_iter().flatten() {
                 if b >= 1 && (b as usize) <= nbins {
@@ -6757,41 +6952,63 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(mk_int(counts.into_iter().map(Some).collect()))
         }
+        // R's `findInterval` and `findInterval2` (appl/interv.c): for sorted
+        // `vec`, the `i` with `vec[i] <= x < vec[i+1]` (`vec[i] < x <=
+        // vec[i+1]` with `left.open`), 0 below the first breakpoint and
+        // `length(vec)` past the last; `rightmost.closed` folds a hit on the
+        // closing end into the last interval, `all.inside` folds both ends in.
         "findInterval" => {
             let x = as_dbl(&a.req(0, "x")?);
-            let vec = as_dbl(&a.req(1, "vec")?);
+            let vec_v = a.req(1, "vec")?;
+            let flag = |i, name| a.get(i, name).and_then(|v| lgl1(&v)).unwrap_or(false);
+            let (rc, inside, left_open) = (
+                flag(2, "rightmost.closed"),
+                flag(3, "all.inside"),
+                flag(4, "left.open"),
+            );
+            let check_sorted = a
+                .get(5, "checkSorted")
+                .and_then(|v| lgl1(&v))
+                .unwrap_or(true);
+            if check_sorted {
+                let unsorted = call_primitive("is.unsorted", vec![(None, vec_v.clone())])?;
+                if lgl1(&unsorted) != Some(false) {
+                    return Err("'vec' must be sorted non-decreasingly and not contain NAs".into());
+                }
+            }
+            let xt: Vec<f64> = as_dbl(&vec_v)
+                .into_iter()
+                .map(|e| e.unwrap_or(f64::NAN))
+                .collect();
+            let n = xt.len();
+            let find = |v: f64| -> i64 {
+                if n == 0 {
+                    return 0;
+                }
+                let cnt = xt
+                    .iter()
+                    .filter(|&&t| if left_open { t < v } else { t <= v })
+                    .count();
+                if cnt == 0 {
+                    i64::from(inside || (rc && v == xt[0]))
+                } else if cnt == n {
+                    if inside || (rc && v == xt[n - 1]) {
+                        n as i64 - 1
+                    } else {
+                        n as i64
+                    }
+                } else {
+                    cnt as i64
+                }
+            };
             Ok(mk_int(
                 x.iter()
-                    .map(|e| e.map(|v| vec.iter().flatten().filter(|&&b| b <= v).count() as i64))
+                    .map(|e| e.filter(|v| !v.is_nan()).map(find))
                     .collect(),
             ))
         }
-        "round" => {
-            let x = a.req(0, "x")?;
-            let digits = a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(0.0) as i32;
-            Ok(math_like(
-                mk_dbl(
-                    as_dbl(&x)
-                        .iter()
-                        .map(|e| e.map(|v| r_round(v, digits)))
-                        .collect(),
-                ),
-                &x,
-            ))
-        }
-        "signif" => {
-            let x = a.req(0, "x")?;
-            let digits = (a.get(1, "digits").and_then(|v| num1(&v)).unwrap_or(6.0) as i32).max(1);
-            Ok(math_like(
-                mk_dbl(
-                    as_dbl(&x)
-                        .iter()
-                        .map(|e| e.map(|v| signif(v, digits)))
-                        .collect(),
-                ),
-                &x,
-            ))
-        }
+        "round" => math2(&a, 0.0, r_round),
+        "signif" => math2(&a, 6.0, signif),
 
         // ── predicates ──────────────────────────────────────────────────
         "is.null" => Ok(scalar_lgl(is_null(&a.get(0, "x").unwrap_or_else(null)))),
@@ -7888,16 +8105,33 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let f = as_str_labels(&a.req(1, "f")?);
             // Groups appear in sorted-level order (R uses the factor levels).
             let levels = factor_levels(&a.req(1, "f")?);
+            // `.Internal(split(x, f))` (split.c) walks `x`, recycling `f`
+            // along it, warns when the lengths do not divide, and keeps each
+            // element's name.
+            let (nobs, nfac) = (len(&x), f.len());
+            if nfac == 0 && nobs > 0 {
+                return Err("group length is 0 but data length > 0".into());
+            }
+            if nfac > 0 && nobs % nfac != 0 {
+                in_method("split.default", || {
+                    signal_warning_in(
+                        "data length is not a multiple of split variable",
+                        with_host(|h| h.context_call()),
+                    )
+                })?;
+            }
+            let names = with_host(|h| h.attr(&x, "names")).map(|n| as_str(&n));
             let groups: Vec<Value> = levels
                 .iter()
                 .map(|lev| {
-                    let pos: Vec<Option<usize>> = f
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, k)| k.as_deref() == Some(lev.as_str()))
-                        .map(|(i, _)| Some(i))
+                    let pos: Vec<usize> = (0..nobs)
+                        .filter(|&i| f[i % nfac].as_deref() == Some(lev.as_str()))
                         .collect();
-                    let group = take_positions(&x, &pos);
+                    let group =
+                        take_positions(&x, &pos.iter().map(|&i| Some(i)).collect::<Vec<_>>());
+                    if let Some(nm) = &names {
+                        set_names(&group, pos.iter().map(|&i| nm[i].clone()).collect());
+                    }
                     // Splitting a factor yields factors, levels intact.
                     carry_factor(&group, &x);
                     group
@@ -8307,45 +8541,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             with_host(|h| h.set_attr(&out, "dim", dim));
             Ok(out)
         }
-        "aperm" => {
-            // Permute an array's dimensions (default: reverse — a transpose).
-            let x = a.req(0, "a")?;
-            let dims = dims_of(&x);
-            let k = dims.len();
-            let perm: Vec<usize> = match a.get(1, "perm") {
-                Some(p) => as_int(&p)
-                    .into_iter()
-                    .flatten()
-                    .map(|m| (m - 1) as usize)
-                    .collect(),
-                None => (0..k).rev().collect(),
-            };
-            let mut stride = vec![1usize; k];
-            for d in 1..k {
-                stride[d] = stride[d - 1] * dims[d - 1];
-            }
-            let new_dims: Vec<usize> = perm.iter().map(|&p| dims[p]).collect();
-            let total: usize = dims.iter().product();
-            let mut pos = Vec::with_capacity(total);
-            // Walk the OUTPUT in column-major order, mapping each cell back to the
-            // source linear index via the permuted strides.
-            let mut idx = vec![0usize; k];
-            for _ in 0..total {
-                let lin: usize = (0..k).map(|d| idx[d] * stride[perm[d]]).sum();
-                pos.push(Some(lin));
-                for d in 0..k {
-                    idx[d] += 1;
-                    if idx[d] < new_dims[d] {
-                        break;
-                    }
-                    idx[d] = 0;
-                }
-            }
-            let out = take_positions(&x, &pos);
-            let dim = mk_int(new_dims.iter().map(|&n| Some(n as i64)).collect());
-            with_host(|h| h.set_attr(&out, "dim", dim));
-            Ok(out)
-        }
+        "aperm" => in_method("aperm.default", || aperm_default(&a)),
+        "kronecker" => kronecker(&a),
         "rowSums" | "colSums" | "rowMeans" | "colMeans" => {
             let x = a.req(0, "x")?;
             let dims = dims_of(&x);
@@ -8679,18 +8876,53 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     binop(op.as_deref().unwrap_or("*"), &xe, &ye)?
                 }
             };
-            let dim = mk_int(vec![Some(nx as i64), Some(ny as i64)]);
-            with_host(|h| h.set_attr(&res, "dim", dim));
-            // R labels the result's margins with the inputs' names, so
-            // `outer(c(a=1,b=2), c(x=1,y=2))` prints with `a`/`b` rows and
-            // `x`/`y` columns rather than `[1,]`/`[,1]`.
-            let (xn, yn) = (names_of(&xv), names_of(&yv));
-            if !xn.is_empty() || !yn.is_empty() {
-                let side = |nm: Vec<Option<String>>| match nm.is_empty() {
-                    true => null(),
-                    false => mk_str(nm),
+            // `dim(robj) <- c(dX, dY)`: an array operand contributes its own
+            // dimensions, a vector its length; then `dimnames(robj) <- c(nx,
+            // ny)`, an array's dimnames (with their names) or a vector's
+            // names, a side without them filled with NULLs.
+            let side = |v: &Value| -> (Vec<i64>, Option<Value>) {
+                match with_host(|h| h.attr(v, "dim")) {
+                    Some(d) => (
+                        as_int(&d).into_iter().map(|e| e.unwrap_or(0)).collect(),
+                        with_host(|h| h.attr(v, "dimnames")),
+                    ),
+                    None => (
+                        vec![len(v) as i64],
+                        with_host(|h| h.attr(v, "names")).map(|n| mk_list(vec![n])),
+                    ),
+                }
+            };
+            let ((dx, nx), (dy, ny)) = (side(&xv), side(&yv));
+            let dim = mk_int(dx.iter().chain(&dy).map(|&d| Some(d)).collect());
+            let (no_names, no_dimnames) = (null(), null());
+            with_host(|h| {
+                h.set_attr(&res, "names", no_names);
+                h.set_attr(&res, "dimnames", no_dimnames);
+                h.set_attr(&res, "dim", dim);
+            });
+            if nx.is_some() || ny.is_some() {
+                let parts = |dn: &Option<Value>, rank: usize| match dn {
+                    Some(l) => {
+                        let names = with_host(|h| h.attr(l, "names")).map(|n| as_str(&n));
+                        (elements(l), names)
+                    }
+                    None => (vec![null(); rank], None),
                 };
-                let dn = mk_list(vec![side(xn), side(yn)]);
+                let (ex, mx) = parts(&nx, dx.len());
+                let (ey, my) = parts(&ny, dy.len());
+                let named = mx.is_some() || my.is_some();
+                let label = |m: Option<Vec<Option<String>>>, k: usize| {
+                    m.unwrap_or_else(|| vec![Some(String::new()); k])
+                };
+                let dn = mk_list(ex.iter().chain(&ey).cloned().collect());
+                if named {
+                    let names: Vec<Option<String>> = label(mx, ex.len())
+                        .into_iter()
+                        .chain(label(my, ey.len()))
+                        .collect();
+                    let names = mk_str(names);
+                    with_host(|h| h.set_attr(&dn, "names", names));
+                }
                 with_host(|h| h.set_attr(&res, "dimnames", dn));
             }
             Ok(res)
@@ -10011,21 +10243,199 @@ fn identical(x: &Value, y: &Value) -> bool {
     }
 }
 
-/// Round half to even, matching R's `round`.
-/// `round(x, digits)` at R 4.x semantics: round half to even on the *true*
-/// decimal value, not on `x * 10^digits` (whose multiplication error made
-/// `round(0.15, 1)` come out `0.2` instead of `0.1`). Rust's float formatting
-/// already rounds ties to even on the true value, so for non-negative digits we
-/// format and parse back; negative digits round to tens/hundreds by scaling.
-fn r_round(v: f64, digits: i32) -> f64 {
-    if !v.is_finite() {
-        return v;
+/// R's `do_Math2` default method and `math2` (arithmetic.c) for `round` and
+/// `signif`: `x` and `digits` recycle against each other, a missing operand
+/// gives NA (NaN when it is a NaN), the result is always double, and it takes
+/// the attributes of whichever operand is as long as it.
+fn math2(a: &Args, default_digits: f64, f: fn(f64, f64) -> f64) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let digits = a
+        .get(1, "digits")
+        .unwrap_or_else(|| scalar_dbl(default_digits));
+    if len(&digits) == 0 {
+        return Err("invalid second argument of length 0".into());
     }
-    if digits >= 0 {
-        format!("{:.*}", digits as usize, v).parse().unwrap_or(v)
+    let numeric =
+        |v: &Value| matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl) && !is_factor(v);
+    if !numeric(&x) || !numeric(&digits) {
+        return Err("non-numeric argument to mathematical function".into());
+    }
+    let (xs, ds) = (as_dbl(&x), as_dbl(&digits));
+    if xs.is_empty() {
+        return Ok(math_like(mk_dbl(Vec::new()), &x));
+    }
+    let n = xs.len().max(ds.len());
+    let out = mk_dbl(
+        (0..n)
+            .map(|i| match (xs[i % xs.len()], ds[i % ds.len()]) {
+                (None, _) | (_, None) => None,
+                (Some(v), Some(d)) => Some(f(v, d)),
+            })
+            .collect(),
+    );
+    Ok(if n == xs.len() {
+        math_like(out, &x)
     } else {
-        let scale = 10f64.powi(-digits);
-        round_half_even(v / scale) * scale
+        math_like(out, &digits)
+    })
+}
+
+/// R's `R_pow_di`: `x` to an integer power by repeated squaring, a negative
+/// power as the reciprocal — exact for the powers of ten `fround` and `fprec`
+/// scale by, where `powf` need not be.
+fn r_pow_di(mut x: f64, n: i32) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    if n == 0 {
+        return 1.0;
+    }
+    if !x.is_finite() {
+        return x.powf(n as f64);
+    }
+    let neg = n < 0;
+    let mut n = n.unsigned_abs();
+    let mut xn = 1.0;
+    loop {
+        if n & 1 == 1 {
+            xn *= x;
+        }
+        n >>= 1;
+        if n == 0 {
+            break;
+        }
+        x *= x;
+    }
+    if neg {
+        1.0 / xn
+    } else {
+        xn
+    }
+}
+
+/// C's `nearbyint` under the default rounding mode: ties to even.
+fn nearbyint(x: f64) -> f64 {
+    x.round_ties_even()
+}
+
+/// R's `fround` (nmath/fround.c), `round(x, digits)` for one element: the
+/// candidates `x` rounded down and up at `digits` decimals, and whichever is
+/// nearer in double arithmetic — on a tie, the one whose scaled value is even.
+/// A fractional `digits` rounds to the nearest whole count first.
+fn r_round(x: f64, digits: f64) -> f64 {
+    const MAX10E: i32 = f64::MAX_10_EXP;
+    const MAX_DIGITS: f64 = (f64::MAX_10_EXP + f64::DIGITS as i32) as f64;
+    if x.is_nan() || digits.is_nan() {
+        return x + digits;
+    }
+    if !x.is_finite() {
+        return x;
+    }
+    if digits > MAX_DIGITS || x == 0.0 {
+        return x;
+    } else if digits < -(MAX10E as f64) {
+        return 0.0;
+    } else if digits == 0.0 {
+        return nearbyint(x);
+    }
+    let dig = (digits + 0.5).floor() as i32;
+    let (sgn, x) = if x < 0.0 { (-1.0, -x) } else { (1.0, x) };
+    // `M_LOG10_2 * (0.5 + logb(x))`, a cheap `log10(x)`.
+    let l10x = std::f64::consts::LOG10_2 * (0.5 + libm_logb(x));
+    if l10x + dig as f64 > f64::DIGITS as f64 {
+        return sgn * x;
+    }
+    let (i10, xd, xu);
+    if dig <= MAX10E {
+        let pow10 = r_pow_di(10.0, dig);
+        let x10 = x * pow10;
+        i10 = x10.floor();
+        xd = i10 / pow10;
+        xu = x10.ceil() / pow10;
+    } else {
+        let e10 = dig - MAX10E;
+        let p10 = r_pow_di(10.0, e10);
+        let pow10 = r_pow_di(10.0, MAX10E);
+        let x10 = (x * pow10) * p10;
+        i10 = x10.floor();
+        xd = i10 / pow10 / p10;
+        xu = x10.ceil() / pow10 / p10;
+    }
+    let (du, dd) = (xu - x, x - xd);
+    sgn * if du < dd || (i10 % 2.0 == 1.0 && du == dd) {
+        xu
+    } else {
+        xd
+    }
+}
+
+/// C's `logb`: the unbiased binary exponent of `x`, as a double (subnormals
+/// included).
+fn libm_logb(x: f64) -> f64 {
+    extern "C" {
+        fn logb(x: f64) -> f64;
+    }
+    unsafe { logb(x) }
+}
+
+/// R's `fprec` (nmath/fprec.c), `signif(x, digits)` for one element: scale so
+/// `digits` significant figures sit left of the point, `nearbyint`, scale
+/// back — multiplying by a power of ten of at least one and dividing by it,
+/// so the scale factor is always exact. `digits` rounds to a whole count and
+/// is at least 1.
+fn signif(x: f64, digits: f64) -> f64 {
+    const MAX_DIGITS: i32 = 22;
+    const MAX10E: i32 = f64::MAX_10_EXP;
+    if x.is_nan() || digits.is_nan() {
+        return x + digits;
+    }
+    if !x.is_finite() {
+        return x;
+    }
+    let digits = if digits.is_finite() {
+        digits
+    } else if digits > 0.0 {
+        return x;
+    } else {
+        1.0
+    };
+    if x == 0.0 {
+        return x;
+    }
+    let mut dig = digits.round() as i32;
+    if dig > MAX_DIGITS {
+        return x;
+    } else if dig < 1 {
+        dig = 1;
+    }
+    let (sgn, mut x) = if x < 0.0 { (-1.0, -x) } else { (1.0, x) };
+    let l10 = x.log10();
+    let mut e10 = dig - 1 - l10.floor() as i32;
+    if l10.abs() < (MAX10E - 2) as f64 {
+        let mut p10 = 1.0;
+        if e10 > MAX10E {
+            p10 = r_pow_di(10.0, e10 - MAX10E);
+            e10 = MAX10E;
+        }
+        if e10 > 0 {
+            let pow10 = r_pow_di(10.0, e10);
+            sgn * (nearbyint((x * pow10) * p10) / pow10) / p10
+        } else {
+            let pow10 = r_pow_di(10.0, -e10);
+            sgn * (nearbyint(x / pow10) * pow10)
+        }
+    } else {
+        let do_round = f64::MAX.log10() - l10 >= r_pow_di(10.0, -dig);
+        let e2 = dig + if e10 > 0 { 1 } else { -1 } * MAX_DIGITS;
+        let p10 = r_pow_di(10.0, e2);
+        let big = r_pow_di(10.0, e10 - e2);
+        x *= p10;
+        x *= big;
+        if do_round {
+            x += 0.5;
+        }
+        x = x.floor() / p10;
+        sgn * x / big
     }
 }
 
@@ -10089,15 +10499,6 @@ fn r_pow(x: f64, y: f64) -> f64 {
         return f64::NAN;
     }
     x.powf(y)
-}
-
-fn round_half_even(x: f64) -> f64 {
-    let r = x.round();
-    if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-        r - x.signum()
-    } else {
-        r
-    }
 }
 
 // libm's gamma functions aren't in the `libc` crate bindings; declare them
@@ -10731,6 +11132,723 @@ fn outer_product(x: &Value, y: &Value) -> Value {
     mk_dbl(cells)
 }
 
+/// R's `match.fun` on a value: a function is itself, a string names one.
+fn match_fun(f: &Value) -> Result<Value, String> {
+    if with_host(|h| h.is_function(f)) {
+        return Ok(f.clone());
+    }
+    match (kind(f), str1(f)) {
+        (RKind::Str, Some(name)) if len(f) == 1 => function_named(&name)
+            .ok_or_else(|| format!("object '{name}' of mode 'function' was not found")),
+        _ => Err(format!(
+            "'{}' is not a function, character or symbol",
+            deparse_value(f)
+        )),
+    }
+}
+
+/// R's `sweep` (base/R/sweep.R): lay `STATS` out along the `MARGIN`
+/// dimensions of `x` — `aperm(array(STATS, dim(x)[perm]), order(perm))` with
+/// `perm` the margins first — and apply `FUN` (default `"-"`) to `x` and it.
+/// `check.margin` warns when `STATS` cannot line up with those margins.
+fn sweep(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let margin = a.req(1, "MARGIN")?;
+    let stats = a.req(2, "STATS")?;
+    let fun = match_fun(&a.get(3, "FUN").unwrap_or_else(|| scalar_str("-")))?;
+    let check = a
+        .get(4, "check.margin")
+        .and_then(|v| lgl1(&v))
+        .unwrap_or(true);
+    let extra: Vec<(Option<String>, Value)> = a
+        .rest(5)
+        .into_iter()
+        .filter(|(t, _)| {
+            !matches!(
+                t.as_deref(),
+                Some("x" | "MARGIN" | "STATS" | "FUN" | "check.margin")
+            )
+        })
+        .collect();
+    let dims: Vec<i64> = with_host(|h| h.attr(&x, "dim"))
+        .map(|d| as_int(&d).into_iter().map(|e| e.unwrap_or(0)).collect())
+        .unwrap_or_default();
+    let margin: Vec<usize> = if kind(&margin) == RKind::Str {
+        let dnn = with_host(|h| h.attr(&x, "dimnames"))
+            .and_then(|dn| with_host(|h| h.attr(&dn, "names")))
+            .map(|n| as_str(&n))
+            .ok_or("'x' must have named dimnames")?;
+        as_str(&margin)
+            .iter()
+            .map(|m| dnn.iter().position(|d| d == m).map(|p| p + 1))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("not all elements of 'MARGIN' are names of dimensions")?
+    } else {
+        as_int(&margin)
+            .into_iter()
+            .map(|m| m.unwrap_or(0) as usize)
+            .collect()
+    };
+    let dim_at = |k: usize| dims.get(k.wrapping_sub(1)).copied();
+    if check {
+        let dimmargin: Vec<i64> = margin.iter().filter_map(|&m| dim_at(m)).collect();
+        let lstats = len(&stats) as i64;
+        let warn = |msg: &str| signal_warning_in(msg, with_host(|h| h.context_call()));
+        match with_host(|h| h.attr(&stats, "dim")) {
+            _ if lstats > dimmargin.iter().product() => {
+                warn("STATS is longer than the extent of 'dim(x)[MARGIN]'")?
+            }
+            None => {
+                let mut cum = vec![1i64];
+                for d in &dimmargin {
+                    cum.push(cum.last().unwrap() * d);
+                }
+                let upper = cum
+                    .iter()
+                    .filter(|&&c| c >= lstats)
+                    .min()
+                    .copied()
+                    .unwrap_or(i64::MAX);
+                let lower = cum
+                    .iter()
+                    .filter(|&&c| c <= lstats)
+                    .max()
+                    .copied()
+                    .unwrap_or(0);
+                if lstats != 0 && (upper % lstats != 0 || lstats % lower != 0) {
+                    warn("STATS does not recycle exactly across MARGIN")?;
+                }
+            }
+            Some(ds) => {
+                let big = |v: Vec<i64>| v.into_iter().filter(|&d| d > 1).collect::<Vec<_>>();
+                let ds = big(as_int(&ds).into_iter().map(|e| e.unwrap_or(0)).collect());
+                if ds != big(dimmargin) {
+                    warn("length(STATS) or dim(STATS) do not match dim(x)[MARGIN]")?;
+                }
+            }
+        }
+    }
+    let perm: Vec<usize> = margin
+        .iter()
+        .copied()
+        .chain((1..=dims.len()).filter(|k| !margin.contains(k)))
+        .collect();
+    let laid = perm
+        .iter()
+        .map(|&k| dim_at(k).map(Some))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("subscript out of bounds")?;
+    let arr = call_primitive("array", vec![(None, stats), (None, mk_int(laid))])?;
+    let mut order: Vec<usize> = (0..perm.len()).collect();
+    order.sort_by_key(|&i| perm[i]);
+    let back = mk_int(order.iter().map(|&i| Some(i as i64 + 1)).collect());
+    let spread = call_primitive("aperm", vec![(None, arr), (None, back)])?;
+    let mut args = vec![(None, x), (None, spread)];
+    args.extend(extra);
+    call_value(&fun, args, Some("FUN".into()))
+}
+
+/// R's `scale.default`: center each column of `as.matrix(x)` on its mean (or
+/// the given `center`) and divide it by its root-mean-square (or the given
+/// `scale`), recording what was used as the `scaled:center` and
+/// `scaled:scale` attributes.
+fn scale_default(a: &Args) -> Result<Value, String> {
+    let mut x = call_primitive("as.matrix", vec![(None, a.req(0, "x")?)])?;
+    let nc = mat_dim(&x).1;
+    let sweep2 = |x: Value, stats: Value, fun: &str| {
+        sweep(&Args::new(vec![
+            (None, x),
+            (None, scalar_int(2)),
+            (None, stats),
+            (None, scalar_str(fun)),
+            (Some("check.margin".into()), scalar_lgl(false)),
+        ]))
+    };
+    let mut center = a.get(1, "center").unwrap_or_else(|| scalar_lgl(true));
+    if kind(&center) == RKind::Lgl {
+        if lgl1(&center).unwrap_or(false) {
+            center = call_primitive(
+                "colMeans",
+                vec![(None, x.clone()), (Some("na.rm".into()), scalar_lgl(true))],
+            )?;
+            x = sweep2(x, center.clone(), "-")?;
+        }
+    } else {
+        if !matches!(kind(&center), RKind::Int | RKind::Dbl) {
+            center = mk_dbl(as_dbl(&center));
+        }
+        if len(&center) != nc {
+            return Err("length of 'center' must equal the number of columns of 'x'".into());
+        }
+        x = sweep2(x, center.clone(), "-")?;
+    }
+    let mut scale = a.get(2, "scale").unwrap_or_else(|| scalar_lgl(true));
+    if kind(&scale) == RKind::Lgl {
+        if lgl1(&scale).unwrap_or(false) {
+            // `apply(x, 2L, function(v) { v <- v[!is.na(v)]; sqrt(sum(v^2) /
+            // max(1, length(v) - 1L)) })`.
+            let (nr, nc) = mat_dim(&x);
+            let xs = as_dbl(&x);
+            let rms = (0..nc)
+                .map(|j| {
+                    let v: Vec<f64> = xs[j * nr..(j + 1) * nr]
+                        .iter()
+                        .flatten()
+                        .filter(|v| !v.is_nan())
+                        .copied()
+                        .collect();
+                    let ss: f64 = v.iter().map(|v| v * v).sum();
+                    Some((ss / (v.len() as f64 - 1.0).max(1.0)).sqrt())
+                })
+                .collect();
+            scale = mk_dbl(rms);
+            if let Some(cn) = dimnames_of(&x).get(1).cloned().flatten() {
+                set_names(&scale, cn);
+            }
+            x = sweep2(x, scale.clone(), "/")?;
+        }
+    } else {
+        if !matches!(kind(&scale), RKind::Int | RKind::Dbl) {
+            scale = mk_dbl(as_dbl(&scale));
+        }
+        if len(&scale) != nc {
+            return Err("length of 'scale' must equal the number of columns of 'x'".into());
+        }
+        x = sweep2(x, scale.clone(), "/")?;
+    }
+    if matches!(kind(&center), RKind::Int | RKind::Dbl) {
+        with_host(|h| h.set_attr(&x, "scaled:center", center));
+    }
+    if matches!(kind(&scale), RKind::Int | RKind::Dbl) {
+        with_host(|h| h.set_attr(&x, "scaled:scale", scale));
+    }
+    Ok(x)
+}
+
+/// R's `do_aperm` (array.c) behind `aperm.default(a, perm = NULL, resize =
+/// TRUE)`: `perm` (default: reversed) is checked to be a permutation of the
+/// dimensions — given by number, or by the names of `a`'s dimnames — and the
+/// result carries the permuted `dim` and `dimnames` and no other attribute.
+fn aperm_default(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "a")?;
+    let Some(dim_attr) = with_host(|h| h.attr(&x, "dim")) else {
+        return Err("invalid first argument, must be an array".into());
+    };
+    let dims: Vec<usize> = as_int(&dim_attr)
+        .into_iter()
+        .map(|e| e.unwrap_or(0) as usize)
+        .collect();
+    let n = dims.len();
+    let dna = with_host(|h| h.attr(&x, "dimnames"));
+    let pp: Vec<i64> = match a.get(1, "perm").filter(|p| len(p) > 0) {
+        None => (0..n as i64).rev().collect(),
+        Some(p) => {
+            if len(&p) != n {
+                return Err(format!("'perm' is of wrong length {} (!= {n})", len(&p)));
+            }
+            if kind(&p) == RKind::Str {
+                let dnna = dna
+                    .as_ref()
+                    .and_then(|d| with_host(|h| h.attr(d, "names")))
+                    .map(|nm| as_str(&nm))
+                    .ok_or("'a' does not have named dimnames")?;
+                as_str(&p)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        dnna.iter()
+                            .position(|d| d == s)
+                            .map(|j| j as i64)
+                            .ok_or(format!("'perm[{}]' does not match a dimension name", i + 1))
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                as_int(&p)
+                    .into_iter()
+                    .map(|e| e.map_or(i64::MIN, |v| v - 1))
+                    .collect()
+            }
+        }
+    };
+    let mut seen = vec![0usize; n];
+    for &p in &pp {
+        if p < 0 || p >= n as i64 {
+            return Err("value out of range in 'perm'".into());
+        }
+        seen[p as usize] += 1;
+    }
+    if seen.contains(&0) {
+        return Err("invalid 'perm' argument".into());
+    }
+    let pp: Vec<usize> = pp.into_iter().map(|p| p as usize).collect();
+    let resize = match a.get(2, "resize") {
+        Some(r) => lgl1(&r).ok_or("'resize' must be TRUE or FALSE")?,
+        None => true,
+    };
+    let mut cum = vec![1usize; n];
+    for i in 1..n {
+        cum[i] = cum[i - 1] * dims[i - 1];
+    }
+    let stride: Vec<usize> = pp.iter().map(|&p| cum[p]).collect();
+    let new_dims: Vec<usize> = pp.iter().map(|&p| dims[p]).collect();
+    let total: usize = dims.iter().product();
+    // Walk the result in column-major order, mapping each cell back to the
+    // source index through the permuted strides (R's `CLICKJ`).
+    let mut pos = Vec::with_capacity(total);
+    let mut idx = vec![0usize; n];
+    for _ in 0..total {
+        pos.push(Some((0..n).map(|d| idx[d] * stride[d]).sum::<usize>()));
+        for d in 0..n {
+            idx[d] += 1;
+            if idx[d] < new_dims[d] {
+                break;
+            }
+            idx[d] = 0;
+        }
+    }
+    let out = copy_of(&take_positions(&x, &pos));
+    for (k, _) in with_host(|h| h.attrs_of(&out)) {
+        let none = null();
+        with_host(|h| h.set_attr(&out, &k, none));
+    }
+    // Without `resize` the result keeps `dim(a)` itself, names and all.
+    let dim = if resize {
+        mk_int(new_dims.iter().map(|&d| Some(d as i64)).collect())
+    } else {
+        dim_attr.clone()
+    };
+    if resize {
+        if let Some(nm) = with_host(|h| h.attr(&dim_attr, "names")) {
+            let nm = as_str(&nm);
+            set_names(&dim, pp.iter().map(|&p| nm[p].clone()).collect());
+        }
+    }
+    with_host(|h| h.set_attr(&out, "dim", dim));
+    if let (true, Some(dna)) = (resize, dna) {
+        let el = elements(&dna);
+        let dnr = mk_list(pp.iter().map(|&p| el[p].clone()).collect());
+        if let Some(nm) = with_host(|h| h.attr(&dna, "names")) {
+            let nm = as_str(&nm);
+            set_names(&dnr, pp.iter().map(|&p| nm[p].clone()).collect());
+        }
+        with_host(|h| h.set_attr(&out, "dimnames", dnr));
+    }
+    Ok(out)
+}
+
+/// R's `as.array` of a vector: a 1-d array of its length, its names the
+/// dimnames. An array is itself.
+fn as_array(x: &Value) -> Value {
+    if with_host(|h| h.attr(x, "dim")).is_some() {
+        return x.clone();
+    }
+    let out = copy_of(x);
+    let names = with_host(|h| h.attr(x, "names"));
+    let dim = mk_int(vec![Some(len(x) as i64)]);
+    let none = null();
+    with_host(|h| {
+        h.set_attr(&out, "names", none);
+        h.set_attr(&out, "dim", dim);
+    });
+    if let Some(nm) = names {
+        let dn = mk_list(vec![nm]);
+        with_host(|h| h.set_attr(&out, "dimnames", dn));
+    }
+    out
+}
+
+/// R's `kronecker` / `.kronecker` (base/R/kronecker.R): pad the shorter
+/// operand's dimensions with ones, take `outer(X, Y, FUN)`, interleave its
+/// dimensions as `(Y1, X1, Y2, X2, …)` so each X cell becomes a block, and
+/// reshape to `dim(X) * dim(Y)`. `make.dimnames` labels each margin with the
+/// `x:y` pairs of the operands' dimnames.
+fn kronecker(a: &Args) -> Result<Value, String> {
+    let mut x = as_array(&a.req(0, "X")?);
+    let mut y = as_array(&a.req(1, "Y")?);
+    let fun = a.get(2, "FUN").unwrap_or_else(|| scalar_str("*"));
+    let make_dn = a
+        .get(3, "make.dimnames")
+        .and_then(|v| lgl1(&v))
+        .unwrap_or(false);
+    let extra: Vec<(Option<String>, Value)> = a
+        .rest(4)
+        .into_iter()
+        .filter(|(t, _)| !matches!(t.as_deref(), Some("X" | "Y" | "FUN" | "make.dimnames")))
+        .collect();
+    let (dnx, dny) = (dimnames_of(&x), dimnames_of(&y));
+    let has = |v: &Value| with_host(|h| h.attr(v, "dimnames")).is_some();
+    let (had_x, had_y) = (has(&x), has(&y));
+    let dims = |v: &Value| -> Vec<i64> { dims_of(v).into_iter().map(|d| d as i64).collect() };
+    let (mut dx, mut dy) = (dims(&x), dims(&y));
+    // `dim(X) <- c(dX, rep.int(1, -ld))`, which also drops X's dimnames.
+    let pad = |v: &mut Value, d: &mut Vec<i64>, k: usize| {
+        d.resize(k, 1);
+        *v = copy_of(v);
+        let dim = mk_int(d.iter().map(|&e| Some(e)).collect());
+        let none = null();
+        with_host(|h| {
+            h.set_attr(v, "dimnames", none);
+            h.set_attr(v, "dim", dim);
+        });
+    };
+    let k = dx.len().max(dy.len());
+    if dx.len() < k {
+        pad(&mut x, &mut dx, k);
+    } else if dy.len() < k {
+        pad(&mut y, &mut dy, k);
+    }
+    let mut args = vec![(None, x), (None, y), (None, fun)];
+    args.extend(extra);
+    let op = call_primitive("outer", args)?;
+    // `as.vector(t(matrix(1:(2k), ncol = 2)[, 2:1]))`: k+1, 1, k+2, 2, ….
+    let dp = mk_int(
+        (0..k)
+            .flat_map(|i| [Some((k + i + 1) as i64), Some(i as i64 + 1)])
+            .collect(),
+    );
+    let op = call_primitive("aperm", vec![(None, op), (None, dp)])?;
+    let dim = mk_int(dx.iter().zip(&dy).map(|(a, b)| Some(a * b)).collect());
+    let (none1, none2) = (null(), null());
+    with_host(|h| {
+        h.set_attr(&op, "names", none1);
+        h.set_attr(&op, "dimnames", none2);
+        h.set_attr(&op, "dim", dim);
+    });
+    if make_dn && (had_x || had_y) {
+        // A side without dimnames, or a padded margin, labels with "".
+        let fill = |dn: Vec<Option<Vec<Option<String>>>>, d: &[i64]| -> Vec<Vec<Option<String>>> {
+            (0..d.len())
+                .map(|i| match dn.get(i).cloned().flatten() {
+                    Some(v) => v,
+                    None => vec![Some(String::new()); d[i] as usize],
+                })
+                .collect()
+        };
+        let (nx, ny) = (fill(dnx, &dx), fill(dny, &dy));
+        let dno: Vec<Value> = (0..k)
+            .map(|i| {
+                // `as.vector(t(outer(dnx[[i]], dny[[i]], paste, sep = ":")))`.
+                let cells = nx[i]
+                    .iter()
+                    .flat_map(|p| {
+                        ny[i].iter().map(move |q| {
+                            Some(format!(
+                                "{}:{}",
+                                p.as_deref().unwrap_or("NA"),
+                                q.as_deref().unwrap_or("NA")
+                            ))
+                        })
+                    })
+                    .collect();
+                mk_str(cells)
+            })
+            .collect();
+        let dn = mk_list(dno);
+        with_host(|h| h.set_attr(&op, "dimnames", dn));
+    }
+    Ok(op)
+}
+
+/// R's `rowsum.default` and its `.Internal(rowsum_matrix)` (unique.c): sum
+/// the rows of `x` (a vector is one column) within each level of `group`,
+/// one result row per distinct group — sorted, missing last, unless
+/// `reorder = FALSE` keeps first-appearance order — labelled with the group
+/// as text. An integer sum that overflows is NA.
+fn rowsum_default(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let group = a.req(1, "group")?;
+    let reorder = a.get(2, "reorder").and_then(|v| lgl1(&v)).unwrap_or(true);
+    let na_rm = match a.named("na.rm") {
+        Some(v) => lgl1(&v).ok_or("'na.rm' must be TRUE or FALSE")?,
+        None => false,
+    };
+    if !matches!(kind(&x), RKind::Lgl | RKind::Int | RKind::Dbl) || is_factor(&x) {
+        return Err("'x' must be numeric".into());
+    }
+    let dims = with_host(|h| h.attr(&x, "dim")).map(|d| as_int(&d));
+    if dims.as_ref().is_some_and(|d| d.len() > 2) {
+        return Err("invalid 'x'".into());
+    }
+    let (nr, p) = match dims.as_deref() {
+        Some([Some(r), Some(c)]) => (*r as usize, *c as usize),
+        _ => (len(&x), 1),
+    };
+    if len(&group) != nr {
+        return Err("incorrect length for 'group'".into());
+    }
+    if as_str(&group).iter().any(Option::is_none) {
+        signal_warning_in(
+            "missing values for 'group'",
+            with_host(|h| h.context_call()),
+        )?;
+    }
+    let mut ugroup = call_primitive("unique", vec![(None, group.clone())])?;
+    if reorder {
+        ugroup = call_primitive(
+            "sort",
+            vec![(None, ugroup), (Some("na.last".into()), scalar_lgl(true))],
+        )?;
+    }
+    let keys = as_str_labels(&ugroup);
+    let slot: Vec<usize> = as_str_labels(&group)
+        .iter()
+        .map(|g| keys.iter().position(|k| k == g).unwrap_or(0))
+        .collect();
+    let ng = keys.len();
+    let out = match data(&x) {
+        RData::Dbl(v) => {
+            let mut acc = vec![0.0f64; ng * p];
+            for c in 0..p {
+                for j in 0..nr {
+                    let e = v[c * nr + j].unwrap_or_else(crate::linalg::na_real);
+                    if !na_rm || !e.is_nan() {
+                        acc[c * ng + slot[j]] += e;
+                    }
+                }
+            }
+            mk_dbl(
+                acc.into_iter()
+                    .map(|s| (!crate::linalg::is_na_real(s)).then_some(s))
+                    .collect(),
+            )
+        }
+        RData::Int(v) => {
+            let mut acc = vec![Some(0i64); ng * p];
+            for c in 0..p {
+                for j in 0..nr {
+                    let cell = &mut acc[c * ng + slot[j]];
+                    match v[c * nr + j] {
+                        None if !na_rm => *cell = None,
+                        None => {}
+                        Some(e) => {
+                            if let Some(s) = *cell {
+                                let t = s + e;
+                                *cell =
+                                    (t >= -(i32::MAX as i64) && t <= i32::MAX as i64).then_some(t);
+                            }
+                        }
+                    }
+                }
+            }
+            mk_int(acc)
+        }
+        _ => return Err("non-numeric matrix in rowsum(): this should not happen".into()),
+    };
+    let dim = mk_int(vec![Some(ng as i64), Some(p as i64)]);
+    let rn = call_primitive("as.character", vec![(None, ugroup)])?;
+    let cn = with_host(|h| h.attr(&x, "dimnames"))
+        .and_then(|dn| elements(&dn).get(1).cloned())
+        .unwrap_or_else(null);
+    let dn = mk_list(vec![rn, cn]);
+    with_host(|h| {
+        h.set_attr(&out, "dim", dim);
+        h.set_attr(&out, "dimnames", dn);
+    });
+    Ok(out)
+}
+
+/// R's `median.default` on doubles with `na.rm` already applied: any missing
+/// value, or none at all, is `NA`; otherwise the middle order statistic, or
+/// the mean of the two middle ones at an even count.
+fn median_of(x: &[Option<f64>]) -> Option<f64> {
+    let mut xs = x
+        .iter()
+        .map(|e| e.filter(|v| !v.is_nan()))
+        .collect::<Option<Vec<f64>>>()?;
+    if xs.is_empty() {
+        return None;
+    }
+    xs.sort_by(|p, q| p.total_cmp(q));
+    let half = (xs.len() + 1) / 2;
+    Some(if xs.len() % 2 == 1 {
+        xs[half - 1]
+    } else {
+        (xs[half - 1] + xs[half]) / 2.0
+    })
+}
+
+/// R's `quantile.default` (stats/R/quantile.R), all nine `type`s.
+///
+/// `x` may not hold a missing value unless `na.rm` drops them; a missing
+/// `prob` gives a missing quantile (and an empty name). Type 7 interpolates
+/// as `(1 - h) * x[lo] + h * x[hi]`, only where the two order statistics
+/// differ; types 1–3 pick an order statistic and 4–9 interpolate between the
+/// two around `a + p * (n + 1 - a - b)`, with a relative `fuzz` guarding the
+/// floor. An ordered factor (types 1 and 3 only) gives an ordered factor.
+fn quantile_default(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let type_ = match a.get(4, "type") {
+        Some(t) if len(&t) == 1 && matches!(kind(&t), RKind::Int | RKind::Dbl) => num1(&t),
+        Some(_) => None,
+        None => Some(7.0),
+    };
+    let Some(type_) = type_.filter(|t| (1..=9).any(|k| k as f64 == *t)) else {
+        return Err("'type' must be an integer in 1..9".into());
+    };
+    let type_ = type_ as i64;
+    let levels = if is_factor(&x) {
+        if !is_ordered(&x) {
+            return Err("(unordered) factors are not allowed".into());
+        }
+        if type_ != 1 && type_ != 3 {
+            return Err("'type' must be 1 or 3 for ordered factors".into());
+        }
+        Some(levels_of(&x))
+    } else {
+        None
+    };
+    let na_rm = a.get(2, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
+    let mut xs = as_dbl(&x);
+    if na_rm {
+        xs.retain(|e| matches!(e, Some(v) if !v.is_nan()));
+    } else if xs.iter().any(|e| e.is_none_or(f64::is_nan)) {
+        return Err("missing values and NaN's not allowed if 'na.rm' is FALSE".into());
+    }
+    let mut xs: Vec<f64> = xs.into_iter().flatten().collect();
+    let probs: Vec<Option<f64>> = match a.get(1, "probs") {
+        Some(p) => as_dbl(&p),
+        None => vec![Some(0.0), Some(0.25), Some(0.5), Some(0.75), Some(1.0)],
+    };
+    let eps = 100.0 * f64::EPSILON;
+    let ok = |p: &Option<f64>| matches!(p, Some(v) if !v.is_nan());
+    if probs
+        .iter()
+        .any(|p| ok(p) && (p.unwrap() < -eps || p.unwrap() > 1.0 + eps))
+    {
+        return Err("'probs' outside [0,1]".into());
+    }
+    let fuzz = match a.named("fuzz") {
+        Some(f) => num1(&f).unwrap_or(f64::NAN),
+        None if type_ == 7 => 0.0,
+        None => 4.0 * f64::EPSILON,
+    };
+    if !fuzz.is_finite() || fuzz < 0.0 {
+        return Err(if fuzz.is_finite() {
+            "fuzz >= 0 is not TRUE"
+        } else {
+            "is.finite(fuzz) is not TRUE"
+        }
+        .into());
+    }
+    let floor_f = |np: f64| (np * (1.0 + fuzz)).floor();
+    xs.sort_by(|p, q| p.total_cmp(q));
+    let n = xs.len();
+    // `x[k]`, 1-based, `NA` past either end as R's subscript gives.
+    let at = |k: f64| -> Option<f64> { (k >= 1.0 && k <= n as f64).then(|| xs[k as usize - 1]) };
+    let mut qs: Vec<Option<f64>> = Vec::with_capacity(probs.len());
+    for p in &probs {
+        if !ok(p) {
+            // `qs[!p.ok] <- probs[!p.ok]`: NA stays NA, NaN stays NaN.
+            qs.push(*p);
+            continue;
+        }
+        let p = p.unwrap().clamp(0.0, 1.0);
+        let q = if type_ == 7 {
+            let index = 1.0 + (n as f64 - 1.0).max(0.0) * p;
+            let (lo, hi) = (floor_f(index), index.ceil());
+            let q = at(lo);
+            match (q, at(hi)) {
+                (Some(ql), Some(qh)) if index > lo && qh != ql => {
+                    let h = index - lo;
+                    Some((1.0 - h) * ql + h * qh)
+                }
+                _ => q,
+            }
+        } else {
+            let (nppm, j, h);
+            if type_ <= 3 {
+                nppm = if type_ == 3 {
+                    n as f64 * p - 0.5
+                } else {
+                    n as f64 * p
+                };
+                j = floor_f(nppm);
+                let b = |c: bool| if c { 1.0 } else { 0.0 };
+                h = match type_ {
+                    1 => b(nppm > j),
+                    2 => (b(nppm > j) + 1.0) / 2.0,
+                    _ => b(nppm != j || j.rem_euclid(2.0) == 1.0),
+                };
+            } else {
+                let (aa, bb) = match type_ {
+                    4 => (0.0, 1.0),
+                    5 => (0.5, 0.5),
+                    6 => (0.0, 0.0),
+                    8 => (1.0 / 3.0, 1.0 / 3.0),
+                    _ => (3.0 / 8.0, 3.0 / 8.0),
+                };
+                nppm = aa + p * (n as f64 + 1.0 - aa - bb);
+                j = floor_f(nppm);
+                let d = nppm - j;
+                h = if d.abs() < fuzz { 0.0 } else { d };
+            }
+            // `x <- c(x[1], x[1], x, x[n], x[n])`, read at `j + 2` and `j + 3`.
+            let ext = |k: f64| -> Option<f64> {
+                let k = k - 2.0;
+                if n == 0 {
+                    None
+                } else if k < 1.0 {
+                    Some(xs[0])
+                } else if k > n as f64 {
+                    Some(xs[n - 1])
+                } else {
+                    Some(xs[k as usize - 1])
+                }
+            };
+            let (x2, x3) = (ext(j + 2.0), ext(j + 3.0));
+            let mut q = if h == 1.0 { x3 } else { x2 };
+            let other = 0.0 < h && h < 1.0 && !matches!((x2, x3), (Some(u), Some(v)) if u == v);
+            if other {
+                q = match (x2, x3) {
+                    (Some(u), Some(v)) => Some((1.0 - h) * u + h * v),
+                    _ => None,
+                };
+            }
+            q
+        };
+        qs.push(q);
+    }
+    let out = match &levels {
+        Some(lx) => mk_factor(
+            qs.iter().map(|q| q.map(|v| v as i64)).collect(),
+            lx.clone(),
+            true,
+        ),
+        None => mk_dbl(qs),
+    };
+    let names = a.get(3, "names").and_then(|v| lgl1(&v)).unwrap_or(true);
+    if names && !probs.is_empty() {
+        let digits = a.named("digits").and_then(|v| num1(&v)).unwrap_or(7.0);
+        if digits < 1.0 {
+            return Err("digits >= 1 is not TRUE".into());
+        }
+        // `format_perc`: `formatC(100 * probs, format = "fg", width = 1,
+        // digits = digits)` and a `%`, with an empty name for a missing prob.
+        let pct = mk_dbl(probs.iter().map(|p| p.map(|v| 100.0 * v)).collect());
+        let formatted = format_c(&Args::new(vec![
+            (None, pct),
+            (Some("format".into()), scalar_str("fg")),
+            (Some("width".into()), scalar_dbl(1.0)),
+            (Some("digits".into()), scalar_dbl(digits)),
+        ]))?;
+        set_names(
+            &out,
+            as_str(&formatted)
+                .into_iter()
+                .zip(&probs)
+                .map(|(s, p)| {
+                    Some(if ok(p) {
+                        format!("{}%", s.unwrap_or_default())
+                    } else {
+                        String::new()
+                    })
+                })
+                .collect(),
+        );
+    }
+    Ok(out)
+}
+
 /// R's `deparse` for a value on one line — the text that would recreate it
 /// (`1:3`, `c(a = 1.5)`, `list(x = "q")`, `structure(1:4, dim = c(2L, 2L))`).
 /// For the callers that splice the text into a single string or parse it back.
@@ -11062,17 +12180,6 @@ fn trim_g(s: &str) -> String {
         Some(e) => format!("{mant}e{e}"),
         None => mant.to_string(),
     }
-}
-
-/// `signif(x, digits)` — round to `digits` significant figures, half-to-even
-/// like R. `signif(123.456, 2)` is `120`, `signif(0.0034219, 3)` is `0.00342`.
-fn signif(v: f64, digits: i32) -> f64 {
-    if v == 0.0 || !v.is_finite() {
-        return v;
-    }
-    let power = digits as f64 - 1.0 - v.abs().log10().floor();
-    let factor = 10f64.powf(power);
-    round_half_even(v * factor) / factor
 }
 
 /// Compile an R pattern to a `regex::Regex`, honoring `fixed` (literal) and
@@ -11762,7 +12869,7 @@ fn str_num(x: f64) -> String {
     if x.is_infinite() {
         return if x > 0.0 { "Inf" } else { "-Inf" }.into();
     }
-    let r = signif(x, 3);
+    let r = signif(x, 3.0);
     if r != 0.0 && (r.abs() >= 1e5 || r.abs() < 1e-4) {
         crate::host::render_sci(r, crate::host::sci_decimals(r))
     } else {

@@ -557,8 +557,8 @@ const SUMMARIES: &[Entry] = &[
     ),
     (
         "quantile",
-        "quantile(x, probs = c(0, 0.25, 0.5, 0.75, 1), names = TRUE)",
-        "Sample quantiles by R's default type 7 — linear interpolation at h = (n-1)p — named with the percent labels unless names = FALSE. Other `type` values are not supported.",
+        "quantile(x, probs = seq(0, 1, 0.25), na.rm = FALSE, names = TRUE, type = 7, digits = 7, fuzz)",
+        "Sample quantiles, a port of R's quantile.default: all nine types (7, interpolating (1 - h) * x[lo] + h * x[hi], is the default), names from formatC(100 * probs, format = \"fg\", digits = digits) plus a percent sign, an empty name and a missing value for a missing prob. A missing value in x is an error unless na.rm = TRUE; an ordered factor takes type 1 or 3 and gives an ordered factor.",
     ),
     (
         "cor",
@@ -657,12 +657,12 @@ const MATH: &[Entry] = &[
     (
         "round",
         "round(x, digits = 0)",
-        "Round half to even on the true decimal value rather than on x * 10^digits, so round(0.15, 1) is 0.1 and round(2.675, 2) is 2.67 exactly as in R. Negative digits round to tens, hundreds and so on.",
+        "R's fround: of x rounded down and up at `digits` decimals, the nearer in double arithmetic, and on a tie the one whose scaled value is even, so round(0.15, 1) is 0.1. A fractional `digits` rounds to the nearest whole count; negative digits round to tens, hundreds and so on. x and digits recycle against each other.",
     ),
     (
         "signif",
         "signif(x, digits = 6)",
-        "Round to `digits` significant figures, half to even: signif(123.456, 2) is 120 and signif(0.0034219, 3) is 0.00342.",
+        "R's fprec: round to `digits` (at least 1) significant figures by scaling with an exact power of ten, nearbyint, and scaling back: signif(123.456, 2) is 120 and signif(0.0034219, 3) is 0.00342. x and digits recycle against each other.",
     ),
     (
         "sign",
@@ -739,14 +739,79 @@ const MATH: &[Entry] = &[
         "The elementwise minimum across the arguments, recycled to the longest.",
     ),
     (
+        "sweep",
+        "sweep(x, MARGIN, STATS, FUN = \"-\", check.margin = TRUE, ...)",
+        "Apply FUN to x and STATS laid out along the MARGIN dimensions (aperm(array(STATS, dim(x)[perm]), order(perm)), margins first). check.margin warns when STATS cannot line up with those margins; MARGIN may name dimensions.",
+    ),
+    (
+        "scale",
+        "scale(x, center = TRUE, scale = TRUE)",
+        "Center the columns of as.matrix(x) on their means (or the given values) and divide them by their root-mean-square (or the given values), recording both as the scaled:center and scaled:scale attributes.",
+    ),
+    (
+        "as.matrix",
+        "as.matrix(x)",
+        "A matrix is returned as is; any other vector becomes a single column whose row names are its names.",
+    ),
+    (
+        "row",
+        "row(x)",
+        "The integer matrix of each cell's row index, for a matrix-like x.",
+    ),
+    (
+        "col",
+        "col(x)",
+        "The integer matrix of each cell's column index, for a matrix-like x.",
+    ),
+    (
+        "is.unsorted",
+        "is.unsorted(x, na.rm = FALSE, strictly = FALSE)",
+        "Whether some element sorts after the next (with strictly, not before it), in sort's order; NA when x holds a missing value and na.rm is FALSE.",
+    ),
+    (
+        "anyDuplicated",
+        "anyDuplicated(x, incomparables = FALSE, fromLast = FALSE)",
+        "The index of the first element equal to an earlier one (scanning from the end with fromLast), or 0 when every element is unique.",
+    ),
+    (
+        "kronecker",
+        "kronecker(X, Y, FUN = \"*\", make.dimnames = FALSE, ...)",
+        "The Kronecker product: outer(X, Y, FUN) with its dimensions interleaved so each cell of X scales a block of Y, reshaped to dim(X) * dim(Y) after padding the shorter dim with ones. make.dimnames labels each margin with the x:y pairs of the dimnames.",
+    ),
+    (
+        "rowsum",
+        "rowsum(x, group, reorder = TRUE, na.rm = FALSE)",
+        "Column sums of the rows of x (a vector is one column) within each group: one row per distinct group, sorted with missing last unless reorder = FALSE, labelled with the group as text. Integer sums that overflow are NA.",
+    ),
+    (
+        "fivenum",
+        "fivenum(x, na.rm = TRUE)",
+        "Tukey's five-number summary (minimum, lower hinge, median, upper hinge, maximum), each the mean of the order statistics either side of its depth. A missing value without na.rm, or an empty x, gives five logical NAs.",
+    ),
+    (
+        "IQR",
+        "IQR(x, na.rm = FALSE, type = 7)",
+        "The interquartile range, diff(quantile(as.numeric(x), c(0.25, 0.75), na.rm =, names = FALSE, type =)).",
+    ),
+    (
+        "mad",
+        "mad(x, center = median(x), constant = 1.4826, na.rm = FALSE, low = FALSE, high = FALSE)",
+        "The scaled median absolute deviation, constant * median(abs(x - center)); low or high takes the lo- or hi-median of an even count.",
+    ),
+    (
+        "zapsmall",
+        "zapsmall(x, digits = getOption(\"digits\"))",
+        "round(x, max(0, digits - log10(max(abs(x))))): entries negligible next to the largest become zero. All-missing x is returned unchanged.",
+    ),
+    (
         "tabulate",
-        "tabulate(bin, nbins = max(bin))",
-        "The count of each integer 1..nbins occurring in `bin`. Values outside the range are ignored.",
+        "tabulate(bin, nbins = max(1L, bin, na.rm = TRUE))",
+        "The count of each integer 1..nbins occurring in `bin`, as an integer vector of length nbins. Values outside the range and NAs are ignored.",
     ),
     (
         "findInterval",
-        "findInterval(x, vec)",
-        "For each element of x, how many breakpoints in `vec` are less than or equal to it — the index of the interval it falls in.",
+        "findInterval(x, vec, rightmost.closed = FALSE, all.inside = FALSE, left.open = FALSE, checkSorted = TRUE)",
+        "For each x, the index i of the interval vec[i] <= x < vec[i+1] of the sorted breakpoints (vec[i] < x <= vec[i+1] with left.open): 0 below the first, length(vec) past the last. rightmost.closed folds a hit on the closing breakpoint into the last interval, all.inside folds both ends in. An unsorted vec is an error.",
     ),
 ];
 

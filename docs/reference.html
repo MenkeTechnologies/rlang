@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 328 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 341 primitive functions and 20 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 348 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 361 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 328 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 341 primitives and 20 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -140,7 +140,7 @@
         <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">18</span></li>
-        <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">37</span></li>
+        <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">50</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">31</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">38</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
@@ -732,9 +732,9 @@
       </article>
       <article class="doc-entry" id="doc-quantile">
         <h3><a class="doc-anchor" href="#doc-quantile">#</a> <code>quantile</code></h3>
-        <pre><code class="lang-r r">quantile(x, probs = c(0, 0.25, 0.5, 0.75, 1), names = TRUE)
+        <pre><code class="lang-r r">quantile(x, probs = seq(0, 1, 0.25), na.rm = FALSE, names = TRUE, type = 7, digits = 7, fuzz)
 </code></pre>
-        <p>Sample quantiles by R's default type 7 — linear interpolation at h = (n-1)p — named with the percent labels unless names = FALSE. Other `type` values are not supported.</p>
+        <p>Sample quantiles, a port of R's quantile.default: all nine types (7, interpolating (1 - h) * x[lo] + h * x[hi], is the default), names from formatC(100 * probs, format = "fg", digits = digits) plus a percent sign, an empty name and a missing value for a missing prob. A missing value in x is an error unless na.rm = TRUE; an ordered factor takes type 1 or 3 and gives an ordered factor.</p>
       </article>
       <article class="doc-entry" id="doc-cor">
         <h3><a class="doc-anchor" href="#doc-cor">#</a> <code>cor</code></h3>
@@ -811,7 +811,7 @@
     </section>
     <section class="tutorial-section" id="ch-Elementwise-math">
       <h2>Elementwise math</h2>
-      <p class="chapter-meta">37 entries</p>
+      <p class="chapter-meta">50 entries</p>
       <article class="doc-entry" id="doc-abs">
         <h3><a class="doc-anchor" href="#doc-abs">#</a> <code>abs</code></h3>
         <pre><code class="lang-r r">abs(x)
@@ -882,13 +882,13 @@
         <h3><a class="doc-anchor" href="#doc-round">#</a> <code>round</code></h3>
         <pre><code class="lang-r r">round(x, digits = 0)
 </code></pre>
-        <p>Round half to even on the true decimal value rather than on x * 10^digits, so round(0.15, 1) is 0.1 and round(2.675, 2) is 2.67 exactly as in R. Negative digits round to tens, hundreds and so on.</p>
+        <p>R's fround: of x rounded down and up at `digits` decimals, the nearer in double arithmetic, and on a tie the one whose scaled value is even, so round(0.15, 1) is 0.1. A fractional `digits` rounds to the nearest whole count; negative digits round to tens, hundreds and so on. x and digits recycle against each other.</p>
       </article>
       <article class="doc-entry" id="doc-signif">
         <h3><a class="doc-anchor" href="#doc-signif">#</a> <code>signif</code></h3>
         <pre><code class="lang-r r">signif(x, digits = 6)
 </code></pre>
-        <p>Round to `digits` significant figures, half to even: signif(123.456, 2) is 120 and signif(0.0034219, 3) is 0.00342.</p>
+        <p>R's fprec: round to `digits` (at least 1) significant figures by scaling with an exact power of ten, nearbyint, and scaling back: signif(123.456, 2) is 120 and signif(0.0034219, 3) is 0.00342. x and digits recycle against each other.</p>
       </article>
       <article class="doc-entry" id="doc-sign">
         <h3><a class="doc-anchor" href="#doc-sign">#</a> <code>sign</code></h3>
@@ -1022,17 +1022,95 @@
 </code></pre>
         <p>The elementwise minimum across the arguments, recycled to the longest.</p>
       </article>
+      <article class="doc-entry" id="doc-sweep">
+        <h3><a class="doc-anchor" href="#doc-sweep">#</a> <code>sweep</code></h3>
+        <pre><code class="lang-r r">sweep(x, MARGIN, STATS, FUN = "-", check.margin = TRUE, ...)
+</code></pre>
+        <p>Apply FUN to x and STATS laid out along the MARGIN dimensions (aperm(array(STATS, dim(x)[perm]), order(perm)), margins first). check.margin warns when STATS cannot line up with those margins; MARGIN may name dimensions.</p>
+      </article>
+      <article class="doc-entry" id="doc-scale">
+        <h3><a class="doc-anchor" href="#doc-scale">#</a> <code>scale</code></h3>
+        <pre><code class="lang-r r">scale(x, center = TRUE, scale = TRUE)
+</code></pre>
+        <p>Center the columns of as.matrix(x) on their means (or the given values) and divide them by their root-mean-square (or the given values), recording both as the scaled:center and scaled:scale attributes.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-matrix">
+        <h3><a class="doc-anchor" href="#doc-as-matrix">#</a> <code>as.matrix</code></h3>
+        <pre><code class="lang-r r">as.matrix(x)
+</code></pre>
+        <p>A matrix is returned as is; any other vector becomes a single column whose row names are its names.</p>
+      </article>
+      <article class="doc-entry" id="doc-row">
+        <h3><a class="doc-anchor" href="#doc-row">#</a> <code>row</code></h3>
+        <pre><code class="lang-r r">row(x)
+</code></pre>
+        <p>The integer matrix of each cell's row index, for a matrix-like x.</p>
+      </article>
+      <article class="doc-entry" id="doc-col">
+        <h3><a class="doc-anchor" href="#doc-col">#</a> <code>col</code></h3>
+        <pre><code class="lang-r r">col(x)
+</code></pre>
+        <p>The integer matrix of each cell's column index, for a matrix-like x.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-unsorted">
+        <h3><a class="doc-anchor" href="#doc-is-unsorted">#</a> <code>is.unsorted</code></h3>
+        <pre><code class="lang-r r">is.unsorted(x, na.rm = FALSE, strictly = FALSE)
+</code></pre>
+        <p>Whether some element sorts after the next (with strictly, not before it), in sort's order; NA when x holds a missing value and na.rm is FALSE.</p>
+      </article>
+      <article class="doc-entry" id="doc-anyDuplicated">
+        <h3><a class="doc-anchor" href="#doc-anyDuplicated">#</a> <code>anyDuplicated</code></h3>
+        <pre><code class="lang-r r">anyDuplicated(x, incomparables = FALSE, fromLast = FALSE)
+</code></pre>
+        <p>The index of the first element equal to an earlier one (scanning from the end with fromLast), or 0 when every element is unique.</p>
+      </article>
+      <article class="doc-entry" id="doc-kronecker">
+        <h3><a class="doc-anchor" href="#doc-kronecker">#</a> <code>kronecker</code></h3>
+        <pre><code class="lang-r r">kronecker(X, Y, FUN = "*", make.dimnames = FALSE, ...)
+</code></pre>
+        <p>The Kronecker product: outer(X, Y, FUN) with its dimensions interleaved so each cell of X scales a block of Y, reshaped to dim(X) * dim(Y) after padding the shorter dim with ones. make.dimnames labels each margin with the x:y pairs of the dimnames.</p>
+      </article>
+      <article class="doc-entry" id="doc-rowsum">
+        <h3><a class="doc-anchor" href="#doc-rowsum">#</a> <code>rowsum</code></h3>
+        <pre><code class="lang-r r">rowsum(x, group, reorder = TRUE, na.rm = FALSE)
+</code></pre>
+        <p>Column sums of the rows of x (a vector is one column) within each group: one row per distinct group, sorted with missing last unless reorder = FALSE, labelled with the group as text. Integer sums that overflow are NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-fivenum">
+        <h3><a class="doc-anchor" href="#doc-fivenum">#</a> <code>fivenum</code></h3>
+        <pre><code class="lang-r r">fivenum(x, na.rm = TRUE)
+</code></pre>
+        <p>Tukey's five-number summary (minimum, lower hinge, median, upper hinge, maximum), each the mean of the order statistics either side of its depth. A missing value without na.rm, or an empty x, gives five logical NAs.</p>
+      </article>
+      <article class="doc-entry" id="doc-IQR">
+        <h3><a class="doc-anchor" href="#doc-IQR">#</a> <code>IQR</code></h3>
+        <pre><code class="lang-r r">IQR(x, na.rm = FALSE, type = 7)
+</code></pre>
+        <p>The interquartile range, diff(quantile(as.numeric(x), c(0.25, 0.75), na.rm =, names = FALSE, type =)).</p>
+      </article>
+      <article class="doc-entry" id="doc-mad">
+        <h3><a class="doc-anchor" href="#doc-mad">#</a> <code>mad</code></h3>
+        <pre><code class="lang-r r">mad(x, center = median(x), constant = 1.4826, na.rm = FALSE, low = FALSE, high = FALSE)
+</code></pre>
+        <p>The scaled median absolute deviation, constant * median(abs(x - center)); low or high takes the lo- or hi-median of an even count.</p>
+      </article>
+      <article class="doc-entry" id="doc-zapsmall">
+        <h3><a class="doc-anchor" href="#doc-zapsmall">#</a> <code>zapsmall</code></h3>
+        <pre><code class="lang-r r">zapsmall(x, digits = getOption("digits"))
+</code></pre>
+        <p>round(x, max(0, digits - log10(max(abs(x))))): entries negligible next to the largest become zero. All-missing x is returned unchanged.</p>
+      </article>
       <article class="doc-entry" id="doc-tabulate">
         <h3><a class="doc-anchor" href="#doc-tabulate">#</a> <code>tabulate</code></h3>
-        <pre><code class="lang-r r">tabulate(bin, nbins = max(bin))
+        <pre><code class="lang-r r">tabulate(bin, nbins = max(1L, bin, na.rm = TRUE))
 </code></pre>
-        <p>The count of each integer 1..nbins occurring in `bin`. Values outside the range are ignored.</p>
+        <p>The count of each integer 1..nbins occurring in `bin`, as an integer vector of length nbins. Values outside the range and NAs are ignored.</p>
       </article>
       <article class="doc-entry" id="doc-findInterval">
         <h3><a class="doc-anchor" href="#doc-findInterval">#</a> <code>findInterval</code></h3>
-        <pre><code class="lang-r r">findInterval(x, vec)
+        <pre><code class="lang-r r">findInterval(x, vec, rightmost.closed = FALSE, all.inside = FALSE, left.open = FALSE, checkSorted = TRUE)
 </code></pre>
-        <p>For each element of x, how many breakpoints in `vec` are less than or equal to it — the index of the interval it falls in.</p>
+        <p>For each x, the index i of the interval vec[i] &lt;= x &lt; vec[i+1] of the sorted breakpoints (vec[i] &lt; x &lt;= vec[i+1] with left.open): 0 below the first, length(vec) past the last. rightmost.closed folds a hit on the closing breakpoint into the last interval, all.inside folds both ends in. An unsorted vec is an error.</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-Predicates">
