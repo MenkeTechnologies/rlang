@@ -895,19 +895,27 @@ fn is_factor(v: &Value) -> bool {
 fn is_ordered(v: &Value) -> bool {
     class_of(v).iter().any(|c| c == "ordered")
 }
-/// A factor's level labels, in code order.
+/// A factor's level labels, in code order. An `NA` level (`factor(x, exclude =
+/// NULL)`) keeps its place, written `NA`, so every code still indexes its label.
 fn levels_of(v: &Value) -> Vec<String> {
     with_host(|h| h.attr(v, "levels"))
-        .map(|l| as_str(&l).into_iter().flatten().collect())
+        .map(|l| {
+            as_str(&l)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 /// A factor's elements as their labels — `as.character(f)`. An `NA` or
-/// out-of-range code stays `NA`.
+/// out-of-range code stays `NA`, and so does a code for an `NA` level.
 fn factor_labels(v: &Value) -> Vec<Option<String>> {
-    let levels = levels_of(v);
+    let levels: Vec<Option<String>> = with_host(|h| h.attr(v, "levels"))
+        .map(|l| as_str(&l))
+        .unwrap_or_default();
     as_int(v)
         .iter()
-        .map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned()))
+        .map(|c| c.and_then(|i| levels.get((i - 1) as usize).cloned().flatten()))
         .collect()
 }
 /// Character coercion the way R's factor methods do it: a factor contributes
@@ -9208,31 +9216,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 None => Err("Recall called from outside a closure".into()),
             }
         }
-        "factor" => {
-            let x = a.req(0, "x")?;
-            let levels: Vec<String> = match a.named("levels") {
-                Some(l) => as_str(&l).into_iter().flatten().collect(),
-                None => factor_levels(&x),
-            };
-            // Each value's code is the 1-based index of its label in `levels`
-            // (NA when the value is not among the levels). Re-factoring an
-            // existing factor matches on its labels, never its codes.
-            let codes: Vec<Option<i64>> = as_str_labels(&x)
-                .iter()
-                .map(|c| {
-                    c.as_ref()
-                        .and_then(|c| levels.iter().position(|l| l == c))
-                        .map(|p| p as i64 + 1)
-                })
-                .collect();
-            // R's default is `ordered = is.ordered(x)`, so re-factoring an
-            // ordered factor keeps it ordered.
-            let ordered = a
-                .named("ordered")
-                .and_then(|v| lgl1(&v))
-                .unwrap_or_else(|| is_ordered(&x));
-            Ok(mk_factor(codes, levels, ordered))
-        }
+        "factor" => r_factor(&a.all),
         "levels" => {
             let x = a.req(0, "x")?;
             Ok(with_host(|h| h.attr(&x, "levels")).unwrap_or_else(null))
@@ -10783,6 +10767,117 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
         set_dimnames(&out, seam, cross_names);
     }
     out
+}
+
+/// R's `factor(x = character(), levels, labels = levels, exclude = NA,
+/// ordered = is.ordered(x), nmax = NA)`, ported from its R definition.
+///
+/// Values are matched as their labels (`as.character`, a factor's level
+/// labels), which is `match`'s own coercion for every type `factor` accepts.
+/// A missing value is a value like any other here: it becomes a level of its
+/// own unless `exclude` (by default `NA`) removes it.
+fn r_factor(args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    let params: Vec<String> = ["x", "levels", "labels", "exclude", "ordered", "nmax"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let bound = crate::host::match_args(&params, args)?;
+    let arg = |n: &str| bound.iter().find(|(p, _)| p == n).map(|(_, v)| v.clone());
+    let x = arg("x").filter(|v| kind(v) != RKind::Null).unwrap_or_else(|| mk_str(Vec::new()));
+    let labels_of_x = as_str_labels(&x);
+    // `missing(levels)`: the distinct values in sorted order — a factor's in its
+    // own level order, keeping only the levels that occur — with `NA` last.
+    let mut levels: Vec<Option<String>> = match arg("levels") {
+        Some(l) => as_str(&l),
+        None => {
+            let mut lv: Vec<Option<String>> = if is_factor(&x) {
+                let codes = as_int(&x);
+                let all: Vec<Option<String>> = with_host(|h| h.attr(&x, "levels"))
+                    .map(|l| as_str(&l))
+                    .unwrap_or_default();
+                let mut seen = vec![false; all.len()];
+                for c in codes.iter().flatten() {
+                    if let Some(s) = seen.get_mut((*c - 1) as usize) {
+                        *s = true;
+                    }
+                }
+                all.into_iter()
+                    .zip(seen)
+                    .filter(|(_, s)| *s)
+                    .map(|(l, _)| l)
+                    .collect()
+            } else {
+                factor_levels(&x).into_iter().map(Some).collect()
+            };
+            if labels_of_x.contains(&None) {
+                lv.push(None);
+            }
+            lv
+        }
+    };
+    // `ordered = is.ordered(x)` is forced before `x` is coerced.
+    let ordered = match arg("ordered") {
+        Some(v) => lgl1(&v).unwrap_or(false),
+        None => is_ordered(&x),
+    };
+    let exclude: Vec<Option<String>> = match arg("exclude") {
+        Some(e) => as_str(&e),
+        None => vec![None],
+    };
+    levels.retain(|l| !exclude.contains(l));
+    let position = |key: &Option<String>| levels.iter().position(|l| l == key).map(|p| p as i64 + 1);
+    let mut codes: Vec<Option<i64>> = labels_of_x.iter().map(position).collect();
+    let levels = match arg("labels") {
+        None => levels,
+        Some(lab) => {
+            let labels = as_str(&lab);
+            if labels.len() == levels.len() {
+                // Duplicate labels merge their levels: codes are remapped onto
+                // the de-duplicated label set.
+                let mut nlevs: Vec<Option<String>> = Vec::new();
+                for l in &labels {
+                    if !nlevs.contains(l) {
+                        nlevs.push(l.clone());
+                    }
+                }
+                let remap: Vec<i64> = labels
+                    .iter()
+                    .map(|l| nlevs.iter().position(|n| n == l).unwrap_or(0) as i64 + 1)
+                    .collect();
+                codes = codes
+                    .into_iter()
+                    .map(|c| c.map(|c| remap[(c - 1) as usize]))
+                    .collect();
+                nlevs
+            } else if labels.len() == 1 {
+                let stem = labels[0].clone().unwrap_or_else(|| "NA".into());
+                (1..=levels.len()).map(|i| Some(format!("{stem}{i}"))).collect()
+            } else {
+                return Err(format!(
+                    "invalid 'labels'; length {} should be 1 or {}",
+                    labels.len(),
+                    levels.len()
+                ));
+            }
+        }
+    };
+    let out = mk_int(codes);
+    // Attributes in R's order: `names(f) <- nx`, then the levels, the class.
+    let names = names_of(&x);
+    if !names.is_empty() {
+        set_names(&out, names);
+    }
+    let lv = mk_str(levels);
+    let cls = if ordered {
+        mk_str(vec![Some("ordered".into()), Some("factor".into())])
+    } else {
+        scalar_str("factor")
+    };
+    with_host(|h| {
+        h.set_attr(&out, "levels", lv);
+        h.set_attr(&out, "class", cls);
+    });
+    Ok(out)
 }
 
 /// The sorted, de-duplicated labels R uses as factor/table levels: numeric
@@ -14921,8 +15016,14 @@ fn format_rle(v: &Value) -> Vec<String> {
 /// Print a factor: the level labels (unquoted, `[i]`-indexed like a character
 /// vector) followed by a `Levels:` line.
 fn format_factor(v: &Value) -> Vec<String> {
+    // An `NA` level prints as `<NA>`, in the `Levels:` line and as a label.
     let levels: Vec<String> = with_host(|h| h.attr(v, "levels"))
-        .map(|l| as_str(&l).into_iter().flatten().collect())
+        .map(|l| {
+            as_str(&l)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "<NA>".into()))
+                .collect()
+        })
         .unwrap_or_default();
     let labels: Vec<String> = as_int(v)
         .iter()
