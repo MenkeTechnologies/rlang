@@ -145,9 +145,14 @@ run that compared nothing — no cases generated, or an oracle that never answer
   **The condition object carries the call as well**, now that there is a type
   for one: `conditionCall(e)` hands back the language object, `print(cond)`
   shows `<simpleError in f(): msg>`, and `try`'s string is
-  `"Error in f() : msg\n"`. A condition that unwinds to a `tryCatch` is rebuilt
-  from what the raise recorded, because the unwind has already cut the context
-  stack back past the frame that raised it.
+  `"Error in f() : msg\n"`. A condition object signalled with `stop(cond)`,
+  `warning(cond)`, `message(cond)` or `signalCondition(cond)` reaches a
+  `tryCatch` handler as itself, extra fields and own call included; one raised
+  from a message is rebuilt from what the raise recorded, because the unwind
+  has already cut the context stack back past the frame that raised it. A
+  condition raised directly in `tryCatch`'s `expr` names
+  `doTryCatch(return(expr), name, parentenv, handler)`, as in R, since rlang
+  stands up the frames R's own `tryCatch` code makes.
 
   One gap remains. A condition raised by an **operator or an index** reports no
   call — R names them (`In 1:3 + 1:2 : longer object length …`,
