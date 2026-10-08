@@ -1836,6 +1836,61 @@ pub const OPERATORS: &[Entry] = &[
         "x %in% table\n`%in%`(x, table)",
         "TRUE for each element of x that occurs in table — match(x, table, nomatch = 0) > 0. Factors match on their labels. As a function value it is callable like any other, as in Reduce(`%in%`, …).",
     ),
+    (
+        "if",
+        "if (cond) yes else no\n`if`(cond, yes, no)",
+        "Evaluate yes when cond is TRUE, else no (invisible NULL when there is no else). cond must be one non-NA logical or number: a longer one, NA, an empty one or a string with no logical reading is an error. As a function value only the chosen branch is evaluated.",
+    ),
+    (
+        "for",
+        "for (var in seq) body\n`for`(var, seq, body)",
+        "Bind var to each element of seq in turn and evaluate body; the value is invisible NULL. Callable as a function value only when written as a call, since it takes the loop variable as a name.",
+    ),
+    (
+        "while",
+        "while (cond) body\n`while`(cond, body)",
+        "Evaluate body while cond is TRUE; the value is invisible NULL. Callable as a function value only when written as a call.",
+    ),
+    (
+        "repeat",
+        "repeat body\n`repeat`(body)",
+        "Evaluate body until a break; the value is invisible NULL. Callable as a function value only when written as a call.",
+    ),
+    (
+        "{",
+        "{ expr1; expr2; … }\n`{`(expr1, expr2, …)",
+        "Evaluate each expression in turn; the value is the last one's (NULL for none).",
+    ),
+    (
+        "(",
+        "(expr)\n`(`(expr)",
+        "The value of expr, made visible: (x <- 5) prints where x <- 5 does not.",
+    ),
+    (
+        "<-",
+        "name <- value\n`<-`(name, value)",
+        "Bind value to name in the current environment (or replace part of an object through a replacement function, x[i] <- v); the value is value, invisibly. Callable as a function value only when written as a call, since it takes its target unevaluated.",
+    ),
+    (
+        "<<-",
+        "name <<- value\n`<<-`(name, value)",
+        "Bind value to name in the nearest enclosing environment that has it, else the global one; invisible. Callable as a function value only when written as a call.",
+    ),
+    (
+        "=",
+        "name = value",
+        "Assignment, as <-, where it is not an argument tag. Callable as a function value only when written as a call.",
+    ),
+    (
+        "&&",
+        "x && y\n`&&`(x, y)",
+        "Scalar AND: FALSE when x is FALSE without evaluating y, else y, with NA when x is NA unless y is FALSE. Each operand must be one logical or number; a longer one is an error.",
+    ),
+    (
+        "||",
+        "x || y\n`||`(x, y)",
+        "Scalar OR: TRUE when x is TRUE without evaluating y, else y, with NA when x is NA unless y is TRUE. Each operand must be one logical or number; a longer one is an error.",
+    ),
 ];
 
 #[cfg(test)]

@@ -2697,3 +2697,15 @@ print(max); print(is.na); print(sqrt); print(`%*%`); print(seq_len)
 args(sum); args(length); print(args("if")); print(args("max")); print(is.function(args(sum)))
 f <- function(a, b = 2, ...) a + b; args(f); g <- args(f); print(formals(g)$b); print(body(args(f)))
 print(environmentName(environment(args(sum)))); print(args(1)); print(deparse(sum)); print(deparse(args(f)))
+#==#
+# The language keywords are function values: they print as their .Primitive
+# call, answer typeof/is.primitive as R's specials and builtins do, and called
+# through a value evaluate their arguments only as the keyword would.
+print(`if`); print(`for`); print(`{`); print(`(`); print(`<-`); print(`&&`); print(`||`); print(`while`)
+print(sapply(list(`if`, `for`, `{`, `(`, `<-`, `&&`, `repeat`), typeof)); print(is.primitive(`if`)); print(is.function(`(`))
+f <- `if`; print(f(TRUE, "a", stop("never"))); print(f(FALSE, 1, 2)); print(is.null(f(FALSE, 1)))
+p <- `(`; print(p(3)); print(sapply(1:3, `(`)); print(do.call(`{`, list(1, 2, 3))); print(do.call(`{`, list()))
+a <- `&&`; o <- `||`; print(a(TRUE, NA)); print(a(FALSE, stop("never"))); print(a(NA, FALSE)); print(o(NA, TRUE)); print(o(FALSE, NA))
+print(Reduce(`&&`, list(TRUE, TRUE, FALSE))); print(Map(`if`, c(TRUE, FALSE), "y", "n"))
+print(tryCatch(f(NA, 1, 2), error = function(e) conditionMessage(e))); print(tryCatch(a(1:2, TRUE), error = function(e) conditionMessage(e)))
+print(tryCatch(p(1, 2), error = function(e) conditionMessage(e))); print(exists("if")); print(exists("("))

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 350 primitive functions and 21 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 350 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 371 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 382 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 350 primitives and 21 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 350 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -146,7 +146,7 @@
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
         <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">78</span></li>
-        <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">21</span></li>
+        <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">32</span></li>
       </ul>
     </section>
     <section class="tutorial-section" id="ch-Construction-and-coercion">
@@ -2299,7 +2299,7 @@
     </section>
     <section class="tutorial-section" id="ch-Operators">
       <h2>Operators</h2>
-      <p class="chapter-meta">21 entries</p>
+      <p class="chapter-meta">32 entries</p>
       <article class="doc-entry" id="doc-plus">
         <h3><a class="doc-anchor" href="#doc-plus">#</a> <code>+</code></h3>
         <pre><code class="lang-r r">x + y
@@ -2447,6 +2447,82 @@ x[i, j]
 `%in%`(x, table)
 </code></pre>
         <p>TRUE for each element of x that occurs in table — match(x, table, nomatch = 0) &gt; 0. Factors match on their labels. As a function value it is callable like any other, as in Reduce(`%in%`, …).</p>
+      </article>
+      <article class="doc-entry" id="doc-if">
+        <h3><a class="doc-anchor" href="#doc-if">#</a> <code>if</code></h3>
+        <pre><code class="lang-r r">if (cond) yes else no
+`if`(cond, yes, no)
+</code></pre>
+        <p>Evaluate yes when cond is TRUE, else no (invisible NULL when there is no else). cond must be one non-NA logical or number: a longer one, NA, an empty one or a string with no logical reading is an error. As a function value only the chosen branch is evaluated.</p>
+      </article>
+      <article class="doc-entry" id="doc-for">
+        <h3><a class="doc-anchor" href="#doc-for">#</a> <code>for</code></h3>
+        <pre><code class="lang-r r">for (var in seq) body
+`for`(var, seq, body)
+</code></pre>
+        <p>Bind var to each element of seq in turn and evaluate body; the value is invisible NULL. Callable as a function value only when written as a call, since it takes the loop variable as a name.</p>
+      </article>
+      <article class="doc-entry" id="doc-while">
+        <h3><a class="doc-anchor" href="#doc-while">#</a> <code>while</code></h3>
+        <pre><code class="lang-r r">while (cond) body
+`while`(cond, body)
+</code></pre>
+        <p>Evaluate body while cond is TRUE; the value is invisible NULL. Callable as a function value only when written as a call.</p>
+      </article>
+      <article class="doc-entry" id="doc-repeat">
+        <h3><a class="doc-anchor" href="#doc-repeat">#</a> <code>repeat</code></h3>
+        <pre><code class="lang-r r">repeat body
+`repeat`(body)
+</code></pre>
+        <p>Evaluate body until a break; the value is invisible NULL. Callable as a function value only when written as a call.</p>
+      </article>
+      <article class="doc-entry" id="doc-brace">
+        <h3><a class="doc-anchor" href="#doc-brace">#</a> <code>{</code></h3>
+        <pre><code class="lang-r r">{ expr1; expr2; … }
+`{`(expr1, expr2, …)
+</code></pre>
+        <p>Evaluate each expression in turn; the value is the last one's (NULL for none).</p>
+      </article>
+      <article class="doc-entry" id="doc-paren">
+        <h3><a class="doc-anchor" href="#doc-paren">#</a> <code>(</code></h3>
+        <pre><code class="lang-r r">(expr)
+`(`(expr)
+</code></pre>
+        <p>The value of expr, made visible: (x &lt;- 5) prints where x &lt;- 5 does not.</p>
+      </article>
+      <article class="doc-entry" id="doc-ltminus">
+        <h3><a class="doc-anchor" href="#doc-ltminus">#</a> <code>&lt;-</code></h3>
+        <pre><code class="lang-r r">name &lt;- value
+`&lt;-`(name, value)
+</code></pre>
+        <p>Bind value to name in the current environment (or replace part of an object through a replacement function, x[i] &lt;- v); the value is value, invisibly. Callable as a function value only when written as a call, since it takes its target unevaluated.</p>
+      </article>
+      <article class="doc-entry" id="doc-ltltminus">
+        <h3><a class="doc-anchor" href="#doc-ltltminus">#</a> <code>&lt;&lt;-</code></h3>
+        <pre><code class="lang-r r">name &lt;&lt;- value
+`&lt;&lt;-`(name, value)
+</code></pre>
+        <p>Bind value to name in the nearest enclosing environment that has it, else the global one; invisible. Callable as a function value only when written as a call.</p>
+      </article>
+      <article class="doc-entry" id="doc-eq">
+        <h3><a class="doc-anchor" href="#doc-eq">#</a> <code>=</code></h3>
+        <pre><code class="lang-r r">name = value
+</code></pre>
+        <p>Assignment, as &lt;-, where it is not an argument tag. Callable as a function value only when written as a call.</p>
+      </article>
+      <article class="doc-entry" id="doc-andand">
+        <h3><a class="doc-anchor" href="#doc-andand">#</a> <code>&amp;&amp;</code></h3>
+        <pre><code class="lang-r r">x &amp;&amp; y
+`&amp;&amp;`(x, y)
+</code></pre>
+        <p>Scalar AND: FALSE when x is FALSE without evaluating y, else y, with NA when x is NA unless y is FALSE. Each operand must be one logical or number; a longer one is an error.</p>
+      </article>
+      <article class="doc-entry" id="doc-oror">
+        <h3><a class="doc-anchor" href="#doc-oror">#</a> <code>||</code></h3>
+        <pre><code class="lang-r r">x || y
+`||`(x, y)
+</code></pre>
+        <p>Scalar OR: TRUE when x is TRUE without evaluating y, else y, with NA when x is NA unless y is TRUE. Each operand must be one logical or number; a longer one is an error.</p>
       </article>
     </section>
     </main>

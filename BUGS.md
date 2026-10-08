@@ -390,6 +390,15 @@ run that compared nothing — no cases generated, or an oracle that never answer
   rlang accepts both, so a program R rejects can run here. The parity corpus
   treats "both reject" as parity, so this leniency is visible only for that one
   construct.
+- **The keywords are function values, but loops and assignments run only as
+  calls.** `` `if`(a, b, c) ``, `` `for`(i, s, b) ``, `` `<-`(x, v) `` and every other
+  keyword or operator written as a call is folded by the parser into the node
+  its syntax builds, exactly as R's call and syntax are one object. Through a
+  value (`` f <- `if` ``, `` sapply(x, `(`) ``, `` Reduce(`&&`, …) ``) `if`, `(`, `{`,
+  `&&` and `||` force their arguments only where R would evaluate them; `for`,
+  `while`, `repeat`, `<-`, `<<-` and `=` raise an error there instead, because
+  they read an argument as an *expression* (the loop variable, the target) and a
+  promise reached through a value carries only its thunk.
 - **`?help`, `::` namespaces** — `pkg::name` parses and the qualifier is dropped
   (rlang has one namespace); `?` is lexed and unused.
 - **CRAN packages run through an embedded-R bridge, not natively.**

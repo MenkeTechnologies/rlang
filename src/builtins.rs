@@ -2550,20 +2550,25 @@ fn b_truthy(vm: &mut VM, _: u8) -> Value {
     if let Value::Bool(b) = v {
         return Value::Bool(b);
     }
-    // R reports the `if`/`while` call itself (`Error in if (x) 1 :`).
-    let abort = |vm: &mut VM, msg: String| abort_in(vm, msg, Some(crate::host::ctx_source(&call)));
-    let n = len(&v);
-    if n > 1 {
-        return abort(vm, "the condition has length > 1".into());
+    match condition_truth(&v) {
+        Ok(b) => Value::Bool(b),
+        // R reports the `if`/`while` call itself (`Error in if (x) 1 :`).
+        Err(msg) => abort_in(vm, msg, Some(crate::host::ctx_source(&call))),
     }
-    let readable = matches!(kind(&v), RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str);
-    match as_lgl(&v).first().copied().filter(|_| readable) {
-        Some(Some(b)) => Value::Bool(b),
-        _ if n == 0 => abort(vm, "argument is of length zero".into()),
-        Some(None) if kind(&v) == RKind::Lgl => {
-            abort(vm, "missing value where TRUE/FALSE needed".into())
-        }
-        _ => abort(vm, "argument is not interpretable as logical".into()),
+}
+
+/// The truth of an `if`/`while` condition (`asLogicalNoNA`), or R's error.
+fn condition_truth(v: &Value) -> Result<bool, String> {
+    let n = len(v);
+    if n > 1 {
+        return Err("the condition has length > 1".into());
+    }
+    let readable = matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str);
+    match as_lgl(v).first().copied().filter(|_| readable) {
+        Some(Some(b)) => Ok(b),
+        _ if n == 0 => Err("argument is of length zero".into()),
+        Some(None) if kind(v) == RKind::Lgl => Err("missing value where TRUE/FALSE needed".into()),
+        _ => Err("argument is not interpretable as logical".into()),
     }
 }
 
@@ -2577,14 +2582,23 @@ fn b_logic2_arg(vm: &mut VM, _: u8) -> Value {
         return v;
     }
     let (operand, op) = which.split_at(1);
-    if is_factor(&v) || !matches!(kind(&v), RKind::Lgl | RKind::Int | RKind::Dbl) {
-        return abort(vm, format!("invalid '{operand}' type in 'x {op} y'"));
+    match logic2_operand(&v, operand, op) {
+        Ok(b) => mk_lgl(vec![b]),
+        Err(msg) => abort(vm, msg),
     }
-    let n = len(&v);
+}
+
+/// `v` as operand `operand` (`"x"` or `"y"`) of `op` (`"&&"` or `"||"`) — the
+/// one logical `asLogical2` reads, `None` for `NA` — or R's error.
+fn logic2_operand(v: &Value, operand: &str, op: &str) -> Result<Option<bool>, String> {
+    if is_factor(v) || !matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl) {
+        return Err(format!("invalid '{operand}' type in 'x {op} y'"));
+    }
+    let n = len(v);
     if n > 1 {
-        return abort(vm, format!("'length = {n}' in coercion to 'logical(1)'"));
+        return Err(format!("'length = {n}' in coercion to 'logical(1)'"));
     }
-    mk_lgl(vec![as_lgl(&v).first().copied().flatten()])
+    Ok(as_lgl(v).first().copied().flatten())
 }
 
 fn b_is_false(vm: &mut VM, _: u8) -> Value {
@@ -3976,7 +3990,8 @@ thread_local! {
 /// The operators reachable as functions through their backtick names.
 pub const OPERATORS: &[&str] = &[
     "+", "-", "*", "/", "^", "%%", "%/%", "==", "!=", "<", ">", "<=", ">=", "&", "|", "!", ":",
-    "[", "[[", "$", "%in%",
+    "[", "[[", "$", "%in%", "if", "for", "while", "repeat", "{", "(", "<-", "<<-", "=",
+    "&&", "||",
 ];
 
 /// Every primitive rlang implements; also the corpus the LSP completes from.
@@ -4387,6 +4402,10 @@ const VISIBILITY_TRANSPARENT: &[&str] = &[
 ];
 
 pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<Value, String> {
+    // A keyword reached as a function value forces its own arguments, lazily.
+    if is_keyword_value(name) {
+        return call_keyword_value(name, &args);
+    }
     // A primitive forces its arguments, as R's do: only a closure binds them
     // unforced. The compiler cannot always tell which a name will be, so an
     // argument may arrive as a promise even here — this is where that is
@@ -9770,6 +9789,83 @@ fn cran_eval(code: &str) -> Result<Value, String> {
 #[cfg(target_arch = "wasm32")]
 fn cran_eval(_: &str) -> Result<Value, String> {
     Err("package loading needs an R installation (unavailable on wasm)".into())
+}
+
+/// The language keywords that are also function values: ``f <- `if` ``,
+/// ``sapply(x, `(`)``, ``do.call(`{`, args)``. Each is a special in R, taking
+/// its arguments unevaluated, so [`call_keyword_value`] forces them itself.
+fn is_keyword_value(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "for" | "while" | "repeat" | "{" | "(" | "<-" | "<<-" | "=" | "&&" | "||"
+    )
+}
+
+/// A keyword called through a function value. The arguments arrive as
+/// promises (or as values already, from `do.call` and the apply family) and
+/// are forced only where R's `do_if`, `do_begin`, `do_paren` and `do_logic2`
+/// evaluate them: `` `if`(TRUE, 1, stop()) `` never reaches the `stop`. A loop
+/// or an assignment reads its arguments as *expressions* — the loop variable,
+/// the assignment target — which a promise does not keep, so those are refused
+/// rather than run on values. Written as a call (`` `for`(i, s, b) ``) every
+/// keyword is folded into its syntax by the parser and never comes here.
+fn call_keyword_value(name: &str, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    let force = |i: usize| crate::host::force_value(&args[i].1);
+    let arity = |want: usize| match args.len() {
+        n if n == want => Ok(()),
+        1 => Err(format!("1 argument passed to '{name}' which requires {want}")),
+        n => Err(format!("{n} arguments passed to '{name}' which requires {want}")),
+    };
+    match name {
+        "(" => {
+            arity(1)?;
+            let v = force(0)?;
+            with_host(|h| h.visible = true);
+            Ok(v)
+        }
+        // Each in turn; the value (and visibility) is the last one's.
+        "{" => {
+            let mut last = null();
+            for i in 0..args.len() {
+                last = force(i)?;
+            }
+            Ok(last)
+        }
+        "if" => {
+            if args.len() < 2 {
+                return Err("argument \"cons.expr\" is missing, with no default".into());
+            }
+            if condition_truth(&force(0)?)? {
+                force(1)
+            } else if args.len() > 2 {
+                force(2)
+            } else {
+                with_host(|h| h.visible = false);
+                Ok(null())
+            }
+        }
+        "&&" | "||" => {
+            if args.len() != 2 {
+                return Err(format!("'{name}' operator requires 2 arguments"));
+            }
+            let and = name == "&&";
+            let x = logic2_operand(&force(0)?, "x", name)?;
+            // FALSE decides `&&` and TRUE decides `||` without the right side.
+            let ans = match x {
+                Some(b) if b != and => Some(b),
+                _ => match (x, logic2_operand(&force(1)?, "y", name)?) {
+                    (Some(_), y) => y,
+                    (None, Some(b)) if b != and => Some(b),
+                    (None, _) => None,
+                },
+            };
+            with_host(|h| h.visible = true);
+            Ok(mk_lgl(vec![ans]))
+        }
+        _ => Err(format!(
+            "`{name}` called through a function value is not supported: its arguments are evaluated before the call"
+        )),
+    }
 }
 
 /// An operator invoked through its function name: ``\`+\`(1, 2)``, ``\`[\`(x, 2)``.
