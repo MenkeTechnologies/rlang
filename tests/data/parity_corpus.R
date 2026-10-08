@@ -2756,3 +2756,12 @@ z <- NULL; z[1] <- NULL; print(z); z[2] <- integer(0); print(z); z[[1]] <- NULL;
 w <- c(a = 1, c = 3); x <- w[rep(NA_integer_, 3)]; y <- x; y[1L] <- 9; print(y); y[5] <- 2; print(y)
 l <- list(p = 1)[c(NA_integer_, NA_integer_)]; m <- l; m[[1]] <- "z"; print(names(m)); m[2] <- NULL; print(names(m))
 s <- c(u = "a")[NA_integer_]; t <- s; t[1] <- "b"; print(t); z <- x; z[2:3] <- c(TRUE, FALSE); print(z)
+#==#
+# unsplit() reverses split(): each group goes back to the positions split()
+# took it from, recycling value when it has fewer groups than f.
+x <- c(10, 20, 30, 40, 50); g <- c(1, 2, 1, 2, 1); s <- split(x, g); print(unsplit(s, g)); print(identical(unsplit(s, g), x))
+f <- factor(c("b", "a", "b", "c")); v <- c(1L, 2L, 3L, 4L); print(unsplit(split(v, f), f))
+print(unsplit(lapply(split(x, g), rev), g)); print(unsplit(list(c("p", "q", "r")), c(1, 1, 1)))
+w <- c(a = 1, b = 2, c = 3); print(unsplit(split(w, c(1, 2, 1)), c(1, 2, 1)))
+print(unsplit(list(1:2, 9L), c(1, 2, 1, 2, 1)[1:3])); print(unsplit(split(c(TRUE, FALSE, NA), c("x", "y", "x")), c("x", "y", "x")))
+print(unsplit(lapply(split(1:6, rep(1:2, 3)), cumsum), rep(1:2, 3)))

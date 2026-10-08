@@ -1188,6 +1188,11 @@ const APPLY: &[Entry] = &[
         "Split x into a list of groups, one per distinct value of f, named by the sorted levels.",
     ),
     (
+        "unsplit",
+        "unsplit(value, f, drop = FALSE)",
+        "Reverse split(): a vector as long as f (as long as its first element when f is a list) of value[[1]]'s type, each group of value written back to the positions split(x, f) took it from, value recycled when it has fewer groups. A list of data frames is reassembled in the embedded R.",
+    ),
+    (
         "tapply",
         "tapply(X, INDEX, FUN, ...)",
         "Apply FUN, with the extra arguments, to each cell of the cross-classification of X by INDEX (one grouping vector, or a list of them). The answer is an array over the level grid, labelled by the levels and by INDEX's names, NA for an empty cell; it is a list array when FUN's answers are not all single atomic values. Elements with a missing group are dropped.",

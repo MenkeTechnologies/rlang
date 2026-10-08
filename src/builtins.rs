@@ -4208,6 +4208,7 @@ pub const PRIMITIVES: &[&str] = &[
     "Find",
     "Position",
     "split",
+    "unsplit",
     "tapply",
     "modifyList",
     "rapply",
@@ -8299,6 +8300,35 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let out = mk_list(groups);
             set_names(&out, levels.into_iter().map(Some).collect());
             Ok(out)
+        }
+        // `unsplit(value, f, drop = FALSE)`, R's own definition: an all-NA copy
+        // of `value[[1]]` as long as `f`, then `split(x, f, drop = drop) <- value`
+        // — `split<-.default`, which splits the positions of `x` the same way
+        // and writes each group of `value` (recycled) back where it came from.
+        // A data-frame `value` takes R's data-frame branch, in the embedded R.
+        "unsplit" => {
+            let value = a.req(0, "value")?;
+            let f = a.req(1, "f")?;
+            let drop = a.get(2, "drop").unwrap_or_else(|| scalar_lgl(false));
+            let parts = elements(&value);
+            let first = parts.first().cloned().ok_or("subscript out of bounds")?;
+            if class_of(&first).iter().any(|c| c == "data.frame") {
+                return cran_call(name, &a.all);
+            }
+            let n = match kind(&f) {
+                RKind::List => elements(&f).first().map_or(0, len),
+                _ => len(&f),
+            };
+            let mut x = index_single(&first, &[(None, mk_int(vec![None; n]))])?;
+            let positions = mk_int((1..=len(&x) as i64).map(Some).collect());
+            let groups = call_primitive(
+                "split",
+                vec![(None, positions), (None, f), (Some("drop".into()), drop)],
+            )?;
+            for (j, at) in elements(&groups).into_iter().enumerate() {
+                x = assign_index(&x, &[(None, at)], &parts[j % parts.len()], false, false)?;
+            }
+            Ok(x)
         }
         // `tapply(X, INDEX, FUN, ...)`: FUN over each cell of the
         // cross-classification of INDEX (one factor, or a list of them), with
