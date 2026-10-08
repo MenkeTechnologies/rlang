@@ -563,6 +563,11 @@ pub struct RHost {
     /// `c("simpleError", "error", "condition")` and friends. It rides alongside
     /// `error` so a `tryCatch` handler can be selected by class.
     pub error_classes: Vec<String>,
+    /// The condition object itself, when the pending unwind was signalled with
+    /// one — `stop(cond)`, `warning(cond)`, `signalCondition(cond)`. R hands an
+    /// exiting handler that very object, extra fields and all; only a condition
+    /// rlang raised from a message is rebuilt from `error_classes`.
+    pub error_condition: Option<Value>,
     /// The call the pending error was raised in — R's `errorcall`. Held as
     /// whole R source: the `Error in <call> :` line shows its first line, and
     /// the condition object the error carries needs the rest. It has to be taken where the error is
@@ -753,6 +758,7 @@ impl RHost {
             closures: Vec::new(),
             error: None,
             error_classes: Vec::new(),
+            error_condition: None,
             error_call: None,
             error_trace: Vec::new(),
             error_call_known: false,
@@ -1648,6 +1654,7 @@ impl RHost {
     /// over.
     pub fn clear_error_call(&mut self) {
         self.error_call = None;
+        self.error_condition = None;
         self.error_trace.clear();
         self.error_call_known = false;
     }

@@ -4164,6 +4164,8 @@ pub const PRIMITIVES: &[&str] = &[
     "simpleWarning",
     "simpleMessage",
     "simpleCondition",
+    "errorCondition",
+    "warningCondition",
     "signalCondition",
     "withRestarts",
     "invokeRestart",
@@ -5103,6 +5105,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "message" | "warning" => {
+            // `warning(cond)` / `message(cond)`: a lone condition argument is
+            // signalled as it is, inside the same muffle restart, and its
+            // message and call feed the default action.
+            let lone = match a.all.as_slice() {
+                [(_, v)] if class_of(v).iter().any(|c| c == "condition") => Some(v.clone()),
+                _ => None,
+            };
+            if let Some(cond) = lone {
+                return resignal_condition(name, cond);
+            }
             let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
             // R's `message` appends a newline to the condition's message; a
             // warning's does not.
@@ -5130,7 +5142,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             match signal_condition_with_muffle(&text, &classes, muffle, raised_in.clone())? {
                 // A `tryCatch` is waiting: raise it so the unwind reaches there.
                 Signalled::Unwind => {
-                    raise_condition(text, classes, raised_in);
+                    raise_condition(text, classes, raised_in, None);
                     return Ok(null());
                 }
                 // Nothing took it — R's default action is to report and carry on.
@@ -5174,22 +5186,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // An error has no restart of its own, but calling handlers still see
             // it before the stack comes down — and one of them may transfer to a
             // restart established further out, which is not an error at all.
-            let obj = match cond {
-                Some(c) => c,
+            // R's `do_stop` calls `findCall`, which starts one context out:
+            // `stop()` is itself a closure, so its own frame is skipped and the
+            // error names the function that called it. A condition object
+            // brings its own call instead — `stop(cond)` is
+            // `.Internal(.signalCondition(cond, message, call))` with
+            // `call <- conditionCall(cond)`.
+            let call = match &cond {
+                Some(c) => condition_call_source(c),
+                None => with_host(|h| h.enclosing_call_source()),
+            };
+            let obj = match &cond {
+                Some(c) => c.clone(),
                 None => mk_condition(
                     &text,
                     &classes.iter().map(String::as_str).collect::<Vec<_>>(),
-                    with_host(|h| h.enclosing_call_source()),
+                    call.clone(),
                 ),
             };
             signal_to_handlers(&obj, &classes)?;
             with_host(|h| {
-                // R's `do_stop` calls `findCall`, which starts one context out:
-                // `stop()` is itself a closure, so its own frame is skipped and
-                // the error names the function that called it.
-                let call = h.enclosing_call_source();
                 h.set_error_call(call);
                 h.error_classes = classes;
+                h.error_condition = cond;
             });
             Err(text)
         }
@@ -9110,6 +9129,39 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             Ok(mk_condition(&msg, classes, None))
         }
+        // R's
+        //   errorCondition <- function(message, ..., class = character(), call = NULL)
+        //       structure(class = c(class, "error", "condition"),
+        //                 list(message = as.character(message), call = call, ...))
+        // and `warningCondition` the same with "warning".
+        "errorCondition" | "warningCondition" => {
+            let message = a.req(0, "message")?;
+            let message = mk_str(as_str(&message));
+            let call = a.named("call").unwrap_or_else(null);
+            let mut fields = vec![
+                (Some("message".to_string()), message),
+                (Some("call".to_string()), call),
+            ];
+            // `...` is every argument but the three formals: the first untagged
+            // one is `message` unless `message =` was written.
+            let mut message_seen = a.named("message").is_some();
+            for (t, v) in &a.all {
+                match t.as_deref() {
+                    Some("message" | "class" | "call") => {}
+                    None if !message_seen => message_seen = true,
+                    _ => fields.push((t.clone(), v.clone())),
+                }
+            }
+            let mut classes: Vec<Option<String>> = a.named("class").map(|c| as_str(&c)).unwrap_or_default();
+            let kind = if name == "errorCondition" { "error" } else { "warning" };
+            classes.extend([Some(kind.to_string()), Some("condition".to_string())]);
+            let (names, values): (Vec<Option<String>>, Vec<Value>) = fields.into_iter().unzip();
+            let out = mk_list(values);
+            set_names(&out, names.into_iter().map(|n| Some(n.unwrap_or_default())).collect());
+            let cls = mk_str(classes);
+            with_host(|h| h.set_attr(&out, "class", cls));
+            Ok(out)
+        }
         "signalCondition" => {
             let c = a.req(0, "cond")?;
             let msg = element_field(&c, "message")
@@ -9120,13 +9172,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // action: with nothing waiting it just returns NULL — visibly, so a
             // bare call at top level echoes it.
             if let Signalled::Unwind = signal_to_handlers(&c, &classes)? {
-                raise_condition(
-                    msg,
-                    classes,
-                    element_field(&c, "call")
-                        .and_then(|cl| lang_of(&cl))
-                        .map(|e| crate::deparse::deparse_lines(&e)),
-                );
+                let call = condition_call_source(&c);
+                raise_condition(msg, classes, call, Some(c));
             }
             with_host(|h| h.visible = true);
             Ok(null())
@@ -13650,7 +13697,7 @@ fn signal_warning_in(msg: &str, call: Option<String>) -> Result<(), String> {
         Signalled::Fell => r_warning(msg, call),
         Signalled::Muffled => {}
         Signalled::Unwind => {
-            raise_condition(msg.to_string(), classes, call);
+            raise_condition(msg.to_string(), classes, call, None);
             return Err(msg.to_string());
         }
     }
@@ -13675,8 +13722,19 @@ fn signal_condition_with_muffle(
         &classes.iter().map(String::as_str).collect::<Vec<_>>(),
         call,
     );
+    signal_object_with_muffle(&cond, classes, muffle)
+}
+
+/// As [`signal_condition_with_muffle`], for a condition object that already
+/// exists — `warning(cond)` and `message(cond)` signal the object they were
+/// handed, so its handlers see every field it carries.
+fn signal_object_with_muffle(
+    cond: &Value,
+    classes: &[String],
+    muffle: &str,
+) -> Result<Signalled, String> {
     let id = push_restarts(vec![(muffle.to_string(), String::new(), None)])[0];
-    let out = signal_to_handlers(&cond, classes);
+    let out = signal_to_handlers(cond, classes);
     with_host(|h| {
         h.restarts.pop();
     });
@@ -13882,16 +13940,59 @@ fn restart_in_flight() -> bool {
     with_host(|h| h.restart_invoke.is_some())
 }
 
-/// Raise a condition: record the message and its class vector, and let the
-/// normal error unwind carry it out to the nearest `tryCatch`.
-fn raise_condition(msg: String, classes: Vec<String>, call: Option<String>) {
+/// Raise a condition: record the message and its class vector — and the
+/// condition object, when one was signalled — and let the normal error unwind
+/// carry it out to the nearest `tryCatch`.
+fn raise_condition(msg: String, classes: Vec<String>, call: Option<String>, cond: Option<Value>) {
     with_host(|h| {
         if h.error.is_none() {
             h.set_error_call(call);
             h.error = Some(msg);
             h.error_classes = classes;
+            h.error_condition = cond;
         }
     });
+}
+
+/// `warning(cond)` / `message(cond)` — R's
+///
+/// ```r
+/// withRestarts({
+///     .Internal(.signalCondition(cond, message, call))
+///     .Internal(.dfltWarn(message, call))      # message(): cat(..., file = stderr())
+/// }, muffleWarning = function() NULL)          # muffleMessage for message()
+/// ```
+///
+/// with `message <- conditionMessage(cond)` and `call <- conditionCall(cond)`.
+/// `warning` returns the message invisibly, `message` returns `NULL` invisibly.
+fn resignal_condition(name: &str, cond: Value) -> Result<Value, String> {
+    let text = element_field(&cond, "message")
+        .and_then(|m| str1(&m))
+        .unwrap_or_default();
+    let call = condition_call_source(&cond);
+    let classes = class_of(&cond);
+    let warn = name == "warning";
+    let muffle = if warn { "muffleWarning" } else { "muffleMessage" };
+    match signal_object_with_muffle(&cond, &classes, muffle)? {
+        Signalled::Unwind => {
+            raise_condition(text, classes, call, Some(cond));
+            return Ok(null());
+        }
+        Signalled::Fell if warn => crate::host::queue_warning(&text, call),
+        Signalled::Fell => crate::host::emit_stderr(&text),
+        Signalled::Muffled => {}
+    }
+    let out = if warn { scalar_str(&text) } else { null() };
+    with_host(|h| h.visible = false);
+    Ok(out)
+}
+
+/// `conditionCall(cond)` as source, the form the context stack and the
+/// `Error in` line carry calls in. `NULL` (or anything not a call) is none.
+fn condition_call_source(cond: &Value) -> Option<String> {
+    element_field(cond, "call")
+        .and_then(|c| lang_of(&c))
+        .map(|e| crate::deparse::deparse_lines(&e))
 }
 
 /// `tryCatch(function() expr, <class> = handler, …, finally = function() f)`.
@@ -13926,11 +14027,12 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     // The error's own call comes off the host with its classes: the unwind has
     // already cut the context stack back past the frame that raised it, so the
     // condition handed to the handler can only be built from what was recorded.
-    let (raised, raised_call) = with_host(|h| {
+    let (raised, raised_call, raised_cond) = with_host(|h| {
         h.handlers.pop();
         let call = h.error_call.clone();
+        let cond = h.error_condition.take();
         h.clear_error_call();
-        (std::mem::take(&mut h.error_classes), call)
+        (std::mem::take(&mut h.error_classes), call, cond)
     });
     let result = match out {
         Ok(v) => Ok(v),
@@ -13952,11 +14054,15 @@ fn try_catch(a: &Args) -> Result<Value, String> {
                 .find(|(c, _)| classes.iter().any(|k| k == c))
             {
                 Some((_, f)) => {
-                    let cond = mk_condition(
-                        &msg,
-                        &classes.iter().map(String::as_str).collect::<Vec<_>>(),
-                        raised_call.clone(),
-                    );
+                    let cond = match raised_cond {
+                        // A signalled object reaches the handler as itself.
+                        Some(c) => c,
+                        None => mk_condition(
+                            &msg,
+                            &classes.iter().map(String::as_str).collect::<Vec<_>>(),
+                            raised_call.clone(),
+                        ),
+                    };
                     call_value(f, vec![(None, cond)], None)
                 }
                 // Nothing here handles it — keep unwinding.
@@ -14043,10 +14149,11 @@ fn r_try(a: &Args) -> Result<Value, String> {
         // A restart transfer is not an error and `try` does not catch one.
         Err(msg) if restart_in_flight() => Err(msg),
         Err(msg) => {
-            let (classes, raised_call) = with_host(|h| {
+            let (classes, raised_call, raised_cond) = with_host(|h| {
                 let call = h.error_call.clone();
+                let cond = h.error_condition.take();
                 h.clear_error_call();
-                (std::mem::take(&mut h.error_classes), call)
+                (std::mem::take(&mut h.error_classes), call, cond)
             });
             // R heads the string with the call when the error carries one:
             // `Error in f() : msg`, and a bare `Error : msg` when it does not.
@@ -14076,7 +14183,7 @@ fn r_try(a: &Args) -> Result<Value, String> {
             // Every value is built before the host is borrowed — allocating one
             // borrows it too, and `with_host` is not re-entrant.
             let cls = scalar_str("try-error");
-            let cond = mk_condition(&msg, &classes, raised_call);
+            let cond = raised_cond.unwrap_or_else(|| mk_condition(&msg, &classes, raised_call));
             with_host(|h| {
                 h.set_attr(&out, "class", cls);
                 h.set_attr(&out, "condition", cond);

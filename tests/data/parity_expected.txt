@@ -3258,3 +3258,20 @@ TRUE TRUE FALSE FALSE FALSE
 function function function 
 [1] "argument 1 (type 'special') cannot be handled by 'cat'"
 [1] "argument 1 (type 'closure') cannot be handled by 'cat'"
+#==#
+[1] 42
+<myError in f(x): m>
+f(x)
+[1] "E"
+[1] 1 2 3
+[1] 1 2 3
+$k
+[1] 1
+
+[1] "ecls"      "error"     "condition"
+[1] "message" "call"    "x"       ""       
+[1] "wcls"      "warning"   "condition"
+[1] "x"         "error"     "condition"
+Error : tt
+[1] 5
+[1] TRUE

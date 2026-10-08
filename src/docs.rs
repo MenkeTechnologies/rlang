@@ -1469,6 +1469,16 @@ const ENVIRONMENTS: &[Entry] = &[
         "Build a condition object of class c(\"simpleCondition\", \"condition\").",
     ),
     (
+        "errorCondition",
+        "errorCondition(message, ..., class = character(), call = NULL)",
+        "Build an error condition object: a list of message, call and any further named fields, of class c(class, \"error\", \"condition\"). stop() on it signals the object itself, so a handler sees every field.",
+    ),
+    (
+        "warningCondition",
+        "warningCondition(message, ..., class = character(), call = NULL)",
+        "Build a warning condition object: a list of message, call and any further named fields, of class c(class, \"warning\", \"condition\").",
+    ),
+    (
         "signalCondition",
         "signalCondition(cond)",
         "Signal a condition object: every enclosing calling handler for one of its classes runs in place, an enclosing tryCatch for one of them unwinds, and with nothing in scope the call returns NULL and evaluation continues.",
