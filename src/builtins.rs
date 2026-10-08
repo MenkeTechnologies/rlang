@@ -4042,6 +4042,7 @@ pub const PRIMITIVES: &[&str] = &[
     "is.numeric",
     "is.character",
     "is.logical",
+    "is.primitive",
     "is.function",
     "is.environment",
     "is.list",
@@ -4583,7 +4584,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let t = with_host(|h| h.type_of(&x));
             Ok(scalar_str(match t {
                 "integer" | "double" => "numeric",
-                "closure" | "builtin" => "function",
+                "closure" | "builtin" | "special" => "function",
                 // R's `mode` names an unevaluated expression by what it is
                 // rather than by its internal type.
                 "language" => "call",
@@ -7169,6 +7170,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "is.function" => Ok(scalar_lgl(with_host(|h| {
             h.is_function(&a.req(0, "x").unwrap_or(Value::Undef))
         }))),
+        // R: TRUE exactly for functions whose `typeof` is builtin or special.
+        "is.primitive" => Ok(scalar_lgl(match data(&a.req(0, "x")?) {
+            RData::Builtin(name) => crate::host::builtin_type(&name) != "closure",
+            _ => false,
+        })),
         "is.environment" => Ok(scalar_lgl(matches!(
             data(&a.req(0, "x")?),
             RData::Environment(_)
@@ -10567,7 +10573,7 @@ const CAT_CONTROL_ARGS: &[&str] = &["sep", "fill", "file", "append", "labels"];
 fn uncatable(v: &Value) -> Option<&'static str> {
     match data(v) {
         RData::List(_) | RData::Args(_) => Some("list"),
-        RData::Builtin(_) => Some("builtin"),
+        RData::Builtin(name) => Some(crate::host::builtin_type(&name)),
         RData::Closure { .. } | RData::Combinator { .. } => Some("closure"),
         _ => None,
     }

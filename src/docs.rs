@@ -863,6 +863,7 @@ const PREDICATES: &[Entry] = &[
     ("is.character", "is.character(x)", "TRUE for a character vector, whatever attributes it carries."),
     ("is.logical", "is.logical(x)", "TRUE for a logical vector, whatever attributes it carries."),
     ("is.list", "is.list(x)", "TRUE for a list, including a list carrying a class attribute."),
+    ("is.primitive", "is.primitive(x)", "TRUE for a function R implements as a primitive (typeof builtin or special), FALSE for a closure."),
     ("is.environment", "is.environment(x)", "TRUE for an environment, FALSE for anything else."),
     (
         "is.function",

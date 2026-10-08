@@ -329,6 +329,11 @@ const R_PRIMITIVES: &[&str] = &[
     "xtfrm",
 ];
 
+/// Whether R implements `name` as a primitive (`is.primitive`).
+pub(crate) fn is_r_primitive(name: &str) -> bool {
+    R_PRIMITIVES.contains(&name)
+}
+
 /// Whether calling `name` makes an R context — true for everything R implements
 /// as a closure, which is what [`ops::OPEN_CALL`] is emitted for.
 fn makes_context(name: &str) -> bool {
@@ -336,7 +341,7 @@ fn makes_context(name: &str) -> bool {
     // the script wrote, so it makes no R context: one on the stack would sit
     // between a closure and its caller and make `substitute`/`sys.call` read
     // the wrong frame's source.
-    !R_PRIMITIVES.contains(&name) && !name.starts_with(".rlang_")
+    !is_r_primitive(name) && !name.starts_with(".rlang_")
 }
 
 /// The names in a whole-program top level that are safe to bind to native frame

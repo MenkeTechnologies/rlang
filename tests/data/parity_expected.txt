@@ -3252,3 +3252,9 @@ $`1`
 $`2`
 [1] 2 4
 
+#==#
+builtin special closure closure 
+TRUE TRUE FALSE FALSE FALSE 
+function function function 
+[1] "argument 1 (type 'special') cannot be handled by 'cat'"
+[1] "argument 1 (type 'closure') cannot be handled by 'cat'"

@@ -704,6 +704,29 @@ pub fn reset_host() {
     with_host(|h| *h = RHost::new());
 }
 
+/// The base primitives R implements as `special` (arguments passed
+/// unevaluated). A subset of `compiler::R_PRIMITIVES`. Sorted for `binary_search`.
+const R_SPECIAL_PRIMITIVES: &[&str] = &[
+    "$", "$<-", "&&", ".Internal", "::", ":::", "<-", "<<-", "=", "@", "@<-", "Exec",
+    "Tailcall", "UseMethod", "[", "[<-", "[[", "[[<-", "break", "call", "declare",
+    "expression", "for", "forceAndCall", "function", "if", "log", "missing", "next",
+    "on.exit", "quote", "rep", "repeat", "return", "round", "signif", "substitute",
+    "switch", "while", "{", "||", "~",
+];
+
+/// `typeof` of a Rust-implemented function named `name`: R's own type for it.
+/// Only R's primitives are `builtin`/`special`; every other base function is a
+/// closure in R, so it reports `closure` here too.
+pub fn builtin_type(name: &str) -> &'static str {
+    if !crate::compiler::is_r_primitive(name) {
+        "closure"
+    } else if R_SPECIAL_PRIMITIVES.binary_search(&name).is_ok() {
+        "special"
+    } else {
+        "builtin"
+    }
+}
+
 impl Default for RHost {
     fn default() -> Self {
         Self::new()
@@ -1314,7 +1337,7 @@ impl RHost {
             Some(RData::List(_)) | Some(RData::Args(_)) => "list",
             Some(RData::RForeign(_)) => "externalptr",
             Some(RData::Closure { .. }) | Some(RData::Combinator { .. }) => "closure",
-            Some(RData::Builtin(_)) => "builtin",
+            Some(RData::Builtin(name)) => builtin_type(name),
             Some(RData::Environment(_)) => "environment",
             Some(RData::Lang(_)) => "language",
             Some(RData::Sym(_)) => "symbol",
