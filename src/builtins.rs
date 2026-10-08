@@ -10556,6 +10556,20 @@ fn identical(x: &Value, y: &Value) -> bool {
         // An environment is a reference: two handles are identical exactly
         // when they name the same one, however many times it was allocated.
         (RData::Environment(a), RData::Environment(b)) => Rc::ptr_eq(&a, &b),
+        // A primitive is one object per name, and so is a symbol.
+        (RData::Builtin(a), RData::Builtin(b)) | (RData::Sym(a), RData::Sym(b)) => a == b,
+        // A call is compared part by part, which its tree already is.
+        (RData::Lang(a), RData::Lang(b)) => a == b,
+        // R compares a closure's formals, body and environment. The compiled
+        // closure keeps its formals and body only as its deparsed source, so
+        // that is parsed back and compared as trees.
+        (RData::Closure { id: i, env: e }, RData::Closure { id: j, env: f }) => {
+            let tree = |id: usize| {
+                with_host(|h| h.closures.get(id).map(|c| c.src.join("\n")))
+                    .and_then(|s| crate::parser::parse(&s).ok())
+            };
+            Rc::ptr_eq(&e, &f) && (i == j || tree(i).is_some_and(|t| Some(t) == tree(j)))
+        }
         _ => x == y,
     }
 }

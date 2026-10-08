@@ -942,7 +942,7 @@ const PREDICATES: &[Entry] = &[
     (
         "identical",
         "identical(x, y)",
-        "TRUE when both values have the same internal type, the same names and the same elements, comparing lists recursively. Attributes other than names are not compared, so a classed value can be identical to a bare one.",
+        "TRUE when both values have the same internal type, the same names and the same elements, comparing lists recursively. Environments are identical only to themselves; a primitive or a symbol to the one of the same name; calls part by part; closures by their formals, body and environment. Attributes other than names are not compared, so a classed value can be identical to a bare one.",
     ),
     (
         "ifelse",

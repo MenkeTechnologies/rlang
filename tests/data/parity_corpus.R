@@ -2709,3 +2709,14 @@ a <- `&&`; o <- `||`; print(a(TRUE, NA)); print(a(FALSE, stop("never"))); print(
 print(Reduce(`&&`, list(TRUE, TRUE, FALSE))); print(Map(`if`, c(TRUE, FALSE), "y", "n"))
 print(tryCatch(f(NA, 1, 2), error = function(e) conditionMessage(e))); print(tryCatch(a(1:2, TRUE), error = function(e) conditionMessage(e)))
 print(tryCatch(p(1, 2), error = function(e) conditionMessage(e))); print(exists("if")); print(exists("("))
+#==#
+# identical() on functions and language: a primitive and a symbol are one
+# object per name, calls compare part by part, and closures by formals, body
+# and environment.
+print(identical(sum, sum)); print(identical(sum, max)); g <- sum; print(identical(g, sum)); print(identical(`if`, `if`))
+print(identical(`+`, `+`)); print(identical(quote(a), quote(a))); print(identical(quote(a), quote(b)))
+print(identical(quote(a + b), quote(a + b))); print(identical(quote(a + b), quote(a - b))); print(identical(quote(f(x = 1)), quote(f(x = 2))))
+f <- function(x) x; h <- function(x) x; k <- function(x) x + 1; m <- local(function(x) x)
+print(identical(f, f)); print(identical(f, h)); print(identical(f, k)); print(identical(f, m)); print(identical(f, sum))
+mk <- function() function(y) y; print(identical(mk(), mk())); a <- mk(); print(identical(a, a))
+print(identical(as.name("x"), quote(x))); print(identical(call("sum", 1), quote(sum(1)))); print(identical(list(sum, quote(z)), list(sum, quote(z))))
