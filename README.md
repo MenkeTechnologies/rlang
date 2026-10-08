@@ -19,8 +19,7 @@
 
 **R in Rust** — a compiled R runtime, hosted on the
 [`fusevm`](https://github.com/MenkeTechnologies/fusevm) bytecode VM with a
-Cranelift ahead-of-time compiler (`--aot`) — the same engine behind `zshrs`,
-`stryke`, `awkrs`, `elisp`, and `rubylang`.
+Cranelift ahead-of-time compiler (`--aot`).
 
 ### [`Read the Docs`](https://menketechnologies.github.io/rlang/) &middot; [`Engineering Report`](https://menketechnologies.github.io/rlang/report.html) &middot; [`Primitive Reference`](https://menketechnologies.github.io/rlang/reference.html)
 
@@ -78,8 +77,7 @@ no VM of its own. Highlights:
   data to look at the tag. Compiled regexes are memoised by pattern text, so
   `grepl`/`sub`/`gsub`/`strsplit` in a loop build the engine once instead of per
   call — its literal prefilter costs far more than matching a short subject.
-- **fusevm-hosted** — no local `vm.rs` / `jit.rs`; the shared engine behind
-  `zshrs`, `stryke`, `awkrs`, `elisp`, and `rubylang`. `jit-disk-cache` persists
+- **fusevm-hosted** — no local `vm.rs` / `jit.rs`; the shared fusevm engine. `jit-disk-cache` persists
   native code across runs.
 - **Everything is a vector** — there are no scalars: `1` is a double vector of
   length one, every value carries attributes (`names`, `dim`, `class`), and every
