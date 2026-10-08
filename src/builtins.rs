@@ -3517,6 +3517,18 @@ fn assign_index(
         }
     }
 
+    // An empty replacement (subassign.c): `[<-` leaves a NULL `x` NULL and
+    // deletes from a list when it is NULL; `[[<-` deletes from a list or sets
+    // one empty element. Into anything else it is R's error.
+    if !positions.is_empty() && len(value) == 0 {
+        match (single_slot, kind(x)) {
+            (false, RKind::Null) => return Ok(x.clone()),
+            (false, RKind::List) if is_null(value) => {}
+            (true, RKind::List | RKind::Null) => {}
+            _ => return Err("replacement has length zero".into()),
+        }
+    }
+
     // R's reference-count rule (`REFCNT`, real counting since R 4.0): a value
     // nothing else holds is written into, and only a shared one is copied
     // first. Everything below this point rebuilds the vector, which is what
@@ -3591,8 +3603,21 @@ fn assign_index(
             RData::Null => Vec::new(),
             _ => elements(x),
         };
-        // Assigning NULL into a list removes those elements.
-        if is_null(value) && single_slot {
+        // Assigning NULL into a list removes those elements, through `[<-` as
+        // through `[[<-` (`DeleteListElements` in subassign.c). `[<-` first
+        // stretches the list over every index, as it does for any value, so
+        // `x[4] <- NULL` on a list of one leaves three; `[[<-` past the end
+        // changes nothing.
+        if is_null(value) {
+            if !single_slot {
+                let reach = positions.iter().map(|p| p + 1).max().unwrap_or(0);
+                while items.len() < reach {
+                    items.push(null());
+                    if !names.is_empty() {
+                        names.push(blank());
+                    }
+                }
+            }
             let mut sorted = positions.clone();
             sorted.sort_unstable();
             for p in sorted.into_iter().rev() {

@@ -2738,3 +2738,15 @@ k <- function(v) v; z <- k(f()); print(z); w <- k(sys.nframe()); print(w); m <- 
 r <- function(n) if (n == 0) sys.nframe() else r(n - 1); print(r(3)); print(sapply(1:2, function(i) sys.nframe()))
 print(tryCatch(sys.nframe(), error = function(e) -1)); q <- function() tryCatch(sys.nframe(), error = function(e) -1); print(q())
 print(do.call(f, list())); print(Reduce(function(a, b) sys.nframe(), 1:2))
+#==#
+# x[i] <- NULL deletes list elements as x[[i]] <- NULL does; [<- first
+# stretches the list over every index, so an index past the end leaves the
+# padding behind, while [[<- past the end changes nothing.
+l <- list(a = 1, b = 2, c = 3); l[2] <- NULL; print(l); l[c(TRUE, FALSE)] <- NULL; print(l)
+k <- list(1, 2, 3); k[c(1, 3)] <- NULL; print(k); k[4] <- NULL; print(length(k)); print(k[[3]])
+m <- list(a = 1); m[3] <- NULL; print(names(m)); m <- list(a = 1); m[["z"]] <- NULL; print(names(m)); m["z"] <- NULL; print(names(m))
+n <- list(1); n[[5]] <- NULL; print(length(n)); n["q"] <- NULL; print(names(n)); e <- list(); e[1] <- NULL; print(length(e))
+print(tryCatch({ x <- 1:3; x[1] <- NULL }, error = function(e) conditionMessage(e)))
+err <- function(e) conditionMessage(e); print(tryCatch({ x <- 1:3; x[[1]] <- NULL }, error = err)); print(tryCatch({ l <- list(1); l[1] <- list() }, error = err))
+print(tryCatch({ x <- 1:3; x[c(TRUE, FALSE, TRUE)] <- numeric(0) }, error = err)); x <- 1:3; x[integer(0)] <- NULL; print(x)
+z <- NULL; z[1] <- NULL; print(z); z[2] <- integer(0); print(z); z[[1]] <- NULL; print(z); l <- list(1); l[[1]] <- list(); print(l)
