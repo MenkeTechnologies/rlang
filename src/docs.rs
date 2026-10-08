@@ -44,7 +44,7 @@ pub fn find(name: &str) -> Option<&'static Entry> {
 
 /// A stable HTML anchor for a callable name. Operator names are all
 /// punctuation, so each punctuation character maps to a word rather than being
-/// dropped — otherwise `%*%`, `[` and `$` would all anchor to the empty string.
+/// dropped — otherwise `%*%`, `[`, `(`, `{` and `$` would all anchor to the empty string.
 /// Letters keep their case, since R names are case-sensitive and HTML ids are
 /// too: `NROW` and `nrow` are different functions and need different anchors.
 /// The `...` of `...length` and its kin is spelled `dots`, since leading dashes
@@ -79,6 +79,8 @@ pub fn slug(name: &str) -> String {
             '!' => "not",
             ':' => "colon",
             '[' => "bracket",
+            '(' => "paren",
+            '{' => "brace",
             '$' => "dollar",
             _ => "-",
         };
@@ -1913,6 +1915,14 @@ mod tests {
                 "{name}: signature `{sig}` does not name the function"
             );
         }
+    }
+
+    #[test]
+    fn bracketing_operators_anchor_by_name() {
+        assert_eq!(slug("("), "paren");
+        assert_eq!(slug("{"), "brace");
+        assert_eq!(slug("[["), "bracketbracket");
+        assert_eq!(slug("<-"), "ltminus");
     }
 
     #[test]
