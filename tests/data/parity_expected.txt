@@ -3579,3 +3579,14 @@ NULL
 [[1]]
 list()
 
+#==#
+<NA> <NA> <NA> 
+   9   NA   NA 
+<NA> <NA> <NA>           
+   9   NA   NA   NA    2 
+[1] NA NA
+[1] NA
+<NA> 
+ "b" 
+<NA> <NA> <NA> 
+  NA    1    0 

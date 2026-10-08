@@ -1140,6 +1140,15 @@ pub(crate) fn set_names(v: &Value, names: Vec<Option<String>>) {
     with_host(|h| h.set_attr(v, "names", nv));
 }
 
+/// Set `names` as the names attribute as it stands, all-`NA` included: what a
+/// rebuilt vector carries over when the original's names were all `NA`
+/// (`x <- c(a = 1)[c(NA, NA)]; x[1] <- 5` keeps its two `NA` names in R).
+/// [`set_names`] reads an all-`None` vector as "no names" instead.
+fn set_names_attr(v: &Value, names: Vec<Option<String>>) {
+    let nv = mk_str(names);
+    with_host(|h| h.set_attr(v, "names", nv));
+}
+
 /// Marshal a length-1 R vector to a fusevm scalar for a `.Call` FFI invocation.
 /// fusevm's v1 FFI ABI takes `i64` / `f64` / string scalars, so integer and
 /// logical vectors map to `Int`, doubles to `Float`, and character to `Str`.
@@ -3630,7 +3639,7 @@ fn assign_index(
             }
             let out = mk_list(items);
             if !names.is_empty() {
-                set_names(&out, names);
+                set_names_attr(&out, names);
             }
             return Ok(out);
         }
@@ -3655,7 +3664,7 @@ fn assign_index(
         let grew = items.len() > n;
         let out = mk_list(items);
         if !names.is_empty() {
-            set_names(&out, names.clone());
+            set_names_attr(&out, names.clone());
         }
         copy_attrs(x, &out, grew);
         return Ok(out);
@@ -3706,7 +3715,7 @@ fn assign_index(
         while names.len() < grow {
             names.push(blank());
         }
-        set_names(&out, names);
+        set_names_attr(&out, names);
     }
     copy_attrs(x, &out, grow > n);
     Ok(out)

@@ -2750,3 +2750,9 @@ print(tryCatch({ x <- 1:3; x[1] <- NULL }, error = function(e) conditionMessage(
 err <- function(e) conditionMessage(e); print(tryCatch({ x <- 1:3; x[[1]] <- NULL }, error = err)); print(tryCatch({ l <- list(1); l[1] <- list() }, error = err))
 print(tryCatch({ x <- 1:3; x[c(TRUE, FALSE, TRUE)] <- numeric(0) }, error = err)); x <- 1:3; x[integer(0)] <- NULL; print(x)
 z <- NULL; z[1] <- NULL; print(z); z[2] <- integer(0); print(z); z[[1]] <- NULL; print(z); l <- list(1); l[[1]] <- list(); print(l)
+#==#
+# A vector whose names are all NA keeps them through a subassignment that
+# rebuilds it, as R's does; only names(x) <- NULL removes them.
+w <- c(a = 1, c = 3); x <- w[rep(NA_integer_, 3)]; y <- x; y[1L] <- 9; print(y); y[5] <- 2; print(y)
+l <- list(p = 1)[c(NA_integer_, NA_integer_)]; m <- l; m[[1]] <- "z"; print(names(m)); m[2] <- NULL; print(names(m))
+s <- c(u = "a")[NA_integer_]; t <- s; t[1] <- "b"; print(t); z <- x; z[2:3] <- c(TRUE, FALSE); print(z)
