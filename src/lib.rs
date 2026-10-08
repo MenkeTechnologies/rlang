@@ -22,6 +22,7 @@ pub mod intercepts;
 pub mod lexer;
 pub mod linalg;
 pub mod parser;
+pub mod primargs;
 pub mod strwidth;
 
 // Native-only: Cranelift AOT, the on-disk cache, and the LSP/DAP/REPL/CLI

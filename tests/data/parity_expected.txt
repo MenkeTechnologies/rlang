@@ -3435,3 +3435,33 @@ x <- 1
 x[1]
 for (i in s) b
 -a
+#==#
+function (..., na.rm = FALSE)  .Primitive("sum")
+function (x)  .Primitive("length")
+function (...)  .Primitive("c")
+function (e1, e2)  .Primitive("+")
+function (x, digits = 0, ...)  .Primitive("round")
+function (x, base = exp(1))  .Primitive("log")
+function (x, ...)  .Primitive("rep")
+.Primitive("[")
+function (..., na.rm = FALSE)  .Primitive("max")
+function (x)  .Primitive("is.na")
+function (x)  .Primitive("sqrt")
+function (x, y)  .Primitive("%*%")
+function (length.out)  .Primitive("seq_len")
+function (..., na.rm = FALSE) 
+NULL
+function (x) 
+NULL
+NULL
+function (..., na.rm = FALSE) 
+NULL
+[1] TRUE
+function (a, b = 2, ...) 
+NULL
+[1] 2
+NULL
+[1] "R_GlobalEnv"
+NULL
+[1] ".Primitive(\"sum\")"
+[1] "function (a, b = 2, ...) " "NULL"                     

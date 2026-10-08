@@ -1681,6 +1681,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "The names of a closure's formals, ... included.",
     ),
     (
+        "args",
+        "args(name)",
+        "A function with the formals of name and a NULL body, enclosed by the global environment — what printing it shows is the argument list. For a primitive, the formals R keeps in its stand-in table (args(sum) is function (..., na.rm = FALSE) NULL); NULL for a primitive with none, such as if. A string names the function.",
+    ),
+    (
         "body",
         "body(fun)",
         "The body of a closure as the language object written: a call, a symbol or a constant. Without fun, the calling function's; a string names the function; a primitive has none (NULL).",

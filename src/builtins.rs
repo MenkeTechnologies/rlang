@@ -4318,6 +4318,7 @@ pub const PRIMITIVES: &[&str] = &[
     "match.arg",
     "formals",
     "formalArgs",
+    "args",
     "body",
     "sys.function",
     "eval",
@@ -9665,6 +9666,52 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     _ => null(),
                 },
             )
+        }
+        // `args(name)`, R's `do_args`: a closure with `name`'s formals and a
+        // NULL body, enclosed by the global environment. A primitive's formals
+        // come from R's stand-in table (`.ArgsEnv` / `.GenericArgsEnv`); a
+        // primitive with none, and anything that is not a function, gives NULL.
+        "args" => {
+            let f = a.req(0, "name")?;
+            let f = match kind(&f) {
+                RKind::Str => {
+                    let n = str1(&f).unwrap_or_default();
+                    match with_host(|h| h.lookup_function(&n)) {
+                        Some(f) => f,
+                        None if is_primitive(&n) => with_host(|h| h.alloc(RData::Builtin(n))),
+                        None => return Ok(null()),
+                    }
+                }
+                _ => f,
+            };
+            // The source of a function with those formals, parsed back for them.
+            let src = match data(&f) {
+                RData::Builtin(n) if crate::compiler::is_r_primitive(&n) => {
+                    crate::primargs::formals(&n).map(|formals| format!("function {formals} NULL"))
+                }
+                // A base closure rlang implements in Rust has no formals it can
+                // show; the embedded R knows them.
+                RData::Builtin(_) | RData::Combinator { .. } => return cran_call(name, &a.all),
+                RData::Closure { id, .. } => {
+                    with_host(|h| h.closures.get(id).map(|c| c.src.join("\n")))
+                }
+                _ => None,
+            };
+            let params = src
+                .and_then(|src| crate::parser::parse(&src).ok())
+                .and_then(|mut def| match def.pop() {
+                    Some(Expr::Function { params, .. }) => Some(params),
+                    _ => None,
+                });
+            let Some(params) = params else {
+                return Ok(null());
+            };
+            let bare = Expr::Function {
+                params,
+                body: Box::new(Expr::Null),
+            };
+            let global = with_host(|h| h.global.clone());
+            in_env(global, || eval_expr(&bare))
         }
         "formalArgs" => {
             let f = a.req(0, "def")?;
@@ -15186,6 +15233,16 @@ fn function_src(v: &Value) -> Option<Vec<String>> {
 /// that rendering (see [`crate::deparse`]).
 fn format_function(v: &Value) -> Vec<String> {
     match data(v) {
+        // R's `PrintSpecial`: a primitive shows the header of its stand-in
+        // closure (see `primargs`) and then the `.Primitive` call, with the
+        // space `deparse` leaves after the header doubling the separator; one
+        // with no stand-in (`if`, `[`) is the bare `.Primitive` call.
+        RData::Builtin(name) if crate::compiler::is_r_primitive(&name) => {
+            vec![match crate::primargs::formals(&name) {
+                Some(formals) => format!("function {formals}  .Primitive(\"{name}\")"),
+                None => format!(".Primitive(\"{name}\")"),
+            }]
+        }
         RData::Builtin(name) => vec![format!("function (...) .Primitive(\"{name}\")")],
         RData::Closure { id, .. } => with_host(|h| h.closures.get(id).map(|c| c.src.clone()))
             .filter(|s| !s.is_empty())

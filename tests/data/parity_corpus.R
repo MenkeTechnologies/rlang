@@ -2688,3 +2688,12 @@ for (i in 1:2) `for`(j, 1:2, cat(i * j, "")); cat("\n"); n <- 0; `while`(n < 3, 
 `repeat`({ n <- n + 1; if (n > 5) break }); print(n); print(`+`(1, 2)); print(`-`(5)); print(`%%`(7, 3))
 print(quote(`if`(a, b, c))); print(quote(`+`(x, 1))); print(quote(`(`(x))); print(quote(`{`(a, b)))
 print(quote(`<-`(x, 1))); print(quote(`[`(x, 1))); print(quote(`for`(i, s, b))); print(quote(`-`(a)))
+#==#
+# A primitive prints the formals R keeps for it in front of the .Primitive
+# call; one with none prints the bare call. args() is a closure with those
+# formals and a NULL body.
+print(sum); print(length); print(c); print(`+`); print(round); print(log); print(rep); print(`[`)
+print(max); print(is.na); print(sqrt); print(`%*%`); print(seq_len)
+args(sum); args(length); print(args("if")); print(args("max")); print(is.function(args(sum)))
+f <- function(a, b = 2, ...) a + b; args(f); g <- args(f); print(formals(g)$b); print(body(args(f)))
+print(environmentName(environment(args(sum)))); print(args(1)); print(deparse(sum)); print(deparse(args(f)))

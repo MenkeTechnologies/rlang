@@ -329,14 +329,17 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `Rscript` runs with `keep.source = FALSE`, so R re-renders the parse tree
   rather than echoing the original text, and rlang reproduces those layout rules
   — the header on its own line, four-space block indentation, an `if` inside
-  `{ }` split across lines, and the 60-column wrap. Two gaps remain. A closure
-  whose environment is not the global one omits R's trailing
-  `<environment: 0x…>` line, which carries a process address that could not match
-  anyway. And a *primitive* prints as `function (...) .Primitive("name")` instead
-  of with R's real formals (`function (..., na.rm = FALSE)  .Primitive("sum")`),
-  because rlang has no per-builtin formals table — the reference corpus's
-  signatures describe what rlang reads, not what R declares. `deparse(sum)` is
-  exact.
+  `{ }` split across lines, and the 60-column wrap. A closure whose environment
+  is not the global one omits R's trailing `<environment: 0x…>` line, which
+  carries a process address that could not match anyway. An R *primitive*
+  prints as R's `PrintSpecial` prints it — the formals R keeps for it in
+  `.ArgsEnv` / `.GenericArgsEnv` (`src/primargs.rs`, read off R 4.6) then the
+  `.Primitive` call (`function (..., na.rm = FALSE)  .Primitive("sum")`), or the
+  bare call for one with none (`.Primitive("[")`) — and `args()` returns those
+  formals as a closure. A base function that is a *closure* in R but a Rust
+  builtin here (`paste`, `force`) still prints as `function (...)
+  .Primitive("name")`, since rlang has no R source for its formals.
+  `deparse(sum)` is exact.
 - **`str()` and `dput()` are native; `summary()` is not.** `dput` and
   `deparse` of a value port `deparse.c`'s value cases: inline names, `structure()`
   for other attributes, typed `NA`s, 15-digit doubles and the `width.cutoff`
