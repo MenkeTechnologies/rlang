@@ -344,10 +344,9 @@ impl Parser {
                     self.pos += 1;
                     let args = self.args(&Tok::RParen)?;
                     self.expect(Tok::RParen)?;
-                    e = Expr::Call {
-                        fun: Box::new(e),
-                        args,
-                    };
+                    // A backtick-quoted keyword or operator head (`` `if`(a, b) ``) is
+                    // the same call its syntax spells, so it gets the same node.
+                    e = call_syntax(e, args);
                 }
                 Tok::LBracket => {
                     self.pos += 1;

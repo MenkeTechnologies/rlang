@@ -2678,3 +2678,13 @@ e <- quote(f(1, 2, 3)); print(e[-2]); print(e[2:3])
 e <- quote(if (a) b else c); e[[2]] <- quote(x > 1); print(e); e[[4]] <- NULL; print(e)
 print(call("+", 1, 2)); print(as.call(list(as.name("max"), 1, 5))); print(names(quote(f(1))))
 f <- function() { z <- 7; eval(quote(a * z), list(a = 3)) }; print(f())
+#==#
+# A call with a backtick-quoted keyword or operator head is the call its
+# syntax spells: `if`(a, b, c) is if (a) b else c, and evaluates lazily.
+print(`if`(TRUE, "yes", stop("never"))); print(`if`(FALSE, 1, 2)); print(is.null(`if`(FALSE, 1)))
+print(`(`(5)); print(`{`(x <- 1, x + 1)); `<-`(y, 3); print(y); `<<-`(z, 4); print(z)
+print(`&&`(TRUE, FALSE)); print(`||`(TRUE, stop("never"))); print(`[`(c(5, 6), 2)); print(`[[`(list(7, 8), 2))
+for (i in 1:2) `for`(j, 1:2, cat(i * j, "")); cat("\n"); n <- 0; `while`(n < 3, n <- n + 1); print(n)
+`repeat`({ n <- n + 1; if (n > 5) break }); print(n); print(`+`(1, 2)); print(`-`(5)); print(`%%`(7, 3))
+print(quote(`if`(a, b, c))); print(quote(`+`(x, 1))); print(quote(`(`(x))); print(quote(`{`(a, b)))
+print(quote(`<-`(x, 1))); print(quote(`[`(x, 1))); print(quote(`for`(i, s, b))); print(quote(`-`(a)))

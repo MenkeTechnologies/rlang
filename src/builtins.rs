@@ -888,7 +888,6 @@ fn part_expr(v: &Value) -> Result<Option<Expr>, String> {
 /// operator or a keyword symbol deparses — and evaluates — as that syntax:
 /// `as.call(list(as.name("-"), quote(a), quote(b)))` is `a - b`.
 fn call_from_parts(parts: Vec<(Option<String>, Value)>) -> Result<Expr, String> {
-    use crate::ast::{BinOp, IndexKind, UnOp};
     let mut it = parts.into_iter();
     let (_, head) = it
         .next()
@@ -901,106 +900,7 @@ fn call_from_parts(parts: Vec<(Option<String>, Value)>) -> Result<Expr, String> 
         });
     }
     let fun = part_expr(&head)?.ok_or_else(|| "invalid argument list".to_string())?;
-    let Expr::Ident(op) = &fun else {
-        return Ok(Expr::Call { fun: Box::new(fun), args });
-    };
-    // Only an untagged, fully supplied argument list has a syntactic spelling.
-    let plain: Option<Vec<Expr>> = match args.iter().all(|a| a.name.is_none()) {
-        true => args.iter().map(|a| a.value.clone()).collect(),
-        false => None,
-    };
-    let b = Box::new;
-    let binop = match op.as_str() {
-        "+" => Some(BinOp::Add),
-        "-" => Some(BinOp::Sub),
-        "*" => Some(BinOp::Mul),
-        "/" => Some(BinOp::Div),
-        "^" => Some(BinOp::Pow),
-        "<" => Some(BinOp::Lt),
-        ">" => Some(BinOp::Gt),
-        "<=" => Some(BinOp::Le),
-        ">=" => Some(BinOp::Ge),
-        "==" => Some(BinOp::Eq),
-        "!=" => Some(BinOp::Ne),
-        "&" => Some(BinOp::And),
-        "|" => Some(BinOp::Or),
-        "&&" => Some(BinOp::And2),
-        "||" => Some(BinOp::Or2),
-        ":" => Some(BinOp::Colon),
-        _ => None,
-    };
-    let built = match (op.as_str(), plain) {
-        (_, Some(v)) if binop.is_some() && v.len() == 2 => binop.map(|op| Expr::Binary {
-            op,
-            lhs: b(v[0].clone()),
-            rhs: b(v[1].clone()),
-        }),
-        ("-" | "+" | "!", Some(v)) if v.len() == 1 => {
-            let op = match op.as_str() {
-                "-" => UnOp::Neg,
-                "+" => UnOp::Plus,
-                _ => UnOp::Not,
-            };
-            Some(Expr::Unary { op, operand: b(v[0].clone()) })
-        }
-        (s, Some(v)) if s.len() >= 2 && s.starts_with('%') && s.ends_with('%') && v.len() == 2 => {
-            // The lexer strips the `%`s; `%%` and `%/%` lex to "" and "/".
-            let name = match s {
-                "%%" => String::new(),
-                "%/%" => "/".to_string(),
-                other => other[1..other.len() - 1].to_string(),
-            };
-            Some(Expr::Special { name, lhs: b(v[0].clone()), rhs: b(v[1].clone()) })
-        }
-        ("(", Some(v)) if v.len() == 1 => Some(Expr::Paren(b(v[0].clone()))),
-        ("{", Some(v)) => Some(Expr::Block(v)),
-        ("if", Some(v)) if v.len() == 2 || v.len() == 3 => Some(Expr::If {
-            cond: b(v[0].clone()),
-            then: b(v[1].clone()),
-            els: v.get(2).cloned().map(b),
-        }),
-        ("while", Some(v)) if v.len() == 2 => Some(Expr::While {
-            cond: b(v[0].clone()),
-            body: b(v[1].clone()),
-        }),
-        ("repeat", Some(v)) if v.len() == 1 => Some(Expr::Repeat(b(v[0].clone()))),
-        ("for", Some(v)) if v.len() == 3 => match &v[0] {
-            Expr::Ident(var) => Some(Expr::For {
-                var: var.clone(),
-                seq: b(v[1].clone()),
-                body: b(v[2].clone()),
-            }),
-            _ => None,
-        },
-        ("<-" | "<<-", Some(v)) if v.len() == 2 => Some(Expr::Assign {
-            target: b(v[0].clone()),
-            value: b(v[1].clone()),
-            super_assign: op == "<<-",
-        }),
-        ("$" | "@", Some(v)) if v.len() == 2 => match &v[1] {
-            Expr::Ident(n) | Expr::Str(n) => Some(Expr::Index {
-                kind: if op == "$" { IndexKind::Dollar } else { IndexKind::At },
-                obj: b(v[0].clone()),
-                args: vec![Arg { name: None, value: Some(Expr::Str(n.clone())) }],
-            }),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(e) = built {
-        return Ok(e);
-    }
-    // `[` / `[[` keep tags and empty subscripts (`x[, 1]`, `x[i, drop = FALSE]`).
-    if matches!(op.as_str(), "[" | "[[") && args.first().is_some_and(|a| a.name.is_none()) {
-        if let Some(obj) = args[0].value.clone() {
-            return Ok(Expr::Index {
-                kind: if op == "[" { IndexKind::Single } else { IndexKind::Double },
-                obj: b(obj),
-                args: args[1..].to_vec(),
-            });
-        }
-    }
-    Ok(Expr::Call { fun: b(fun), args })
+    Ok(crate::ast::call_syntax(fun, args))
 }
 
 /// A list turned back into a call — the inverse of [`lang_as_list`].
