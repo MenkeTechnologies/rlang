@@ -2643,3 +2643,8 @@ r <- try(tryCatch(stop("x"), finally = 1), silent = TRUE); cat(r)
 r <- try(tryCatch(stop("x"), warning = function(w) 1), silent = TRUE); cat(r)
 print(tryCatch(tryCatch(stop("inner"), warning = function(w) "w"), error = function(e) conditionCall(e)))
 r <- try(stop("zz"), silent = TRUE); print(conditionCall(attr(r, "condition"))); cat(r)
+#==#
+# `%in%` is a function value like any other operator.
+f <- `%in%`; print(f(1, 1:2)); print(Reduce(`%in%`, list(1:3, 2:5))); print(sapply(list(1, 5), `%in%`, 1:3))
+print(Map(`%in%`, list(1, 9), list(1:3, 1:3))); print(do.call(`%in%`, list(c("a", "z"), letters)))
+print(`%in%`(factor(c("a", "q")), c("a", "b"))); print(is.primitive(`%in%`)); print(typeof(`%in%`))

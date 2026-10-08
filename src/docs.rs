@@ -1790,6 +1790,11 @@ pub const OPERATORS: &[Entry] = &[
         "x$name\n`$`(x, name)",
         "The element of a named list or vector bound to `name`, or NULL when there is none. rlang also answers on an atomic vector, where R raises \"$ operator is invalid for atomic vectors\".",
     ),
+    (
+        "%in%",
+        "x %in% table\n`%in%`(x, table)",
+        "TRUE for each element of x that occurs in table — match(x, table, nomatch = 0) > 0. Factors match on their labels. As a function value it is callable like any other, as in Reduce(`%in%`, …).",
+    ),
 ];
 
 #[cfg(test)]

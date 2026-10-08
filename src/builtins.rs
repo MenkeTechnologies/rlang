@@ -3899,7 +3899,7 @@ thread_local! {
 /// The operators reachable as functions through their backtick names.
 pub const OPERATORS: &[&str] = &[
     "+", "-", "*", "/", "^", "%%", "%/%", "==", "!=", "<", ">", "<=", ">=", "&", "|", "!", ":",
-    "[", "[[", "$",
+    "[", "[[", "$", "%in%",
 ];
 
 /// Every primitive rlang implements; also the corpus the LSP completes from.
@@ -9615,6 +9615,12 @@ fn call_operator(
     match name {
         "[" => return index_single(&first, &args[1..]),
         "[[" => return index_double(&first, &args[1..]),
+        // `%in%` reached as a function value (`Reduce(`%in%`, …)`); the infix
+        // spelling compiles straight to the same `value_in`.
+        "%in%" => {
+            let table = vals.get(1).cloned().ok_or("argument \"table\" is missing, with no default")?;
+            return Ok(value_in(&first, &table));
+        }
         "$" => {
             let key = vals.get(1).and_then(str1).unwrap_or_default();
             let names = names_of(&first);

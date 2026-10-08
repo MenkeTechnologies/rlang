@@ -3336,3 +3336,17 @@ Error in try(tryCatch(stop("x"), warning = function(w) 1), silent = TRUE) :
 doTryCatch(return(expr), name, parentenv, handler)
 doTryCatch(return(expr), name, parentenv, handler)
 Error in try(stop("zz"), silent = TRUE) : zz
+#==#
+[1] TRUE
+[1] FALSE  TRUE  TRUE
+[1]  TRUE FALSE
+[[1]]
+[1] TRUE
+
+[[2]]
+[1] FALSE
+
+[1] TRUE TRUE
+[1]  TRUE FALSE
+[1] FALSE
+[1] "closure"
