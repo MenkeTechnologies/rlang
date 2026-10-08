@@ -3323,3 +3323,16 @@ g5()
 [1]  3 10
 [1] 11
 k(n - 1)
+#==#
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): boom>
+<simpleWarning in doTryCatch(return(expr), name, parentenv, handler): ww>
+value[[3L]](cond)
+value[[3L]](cond)
+f()
+Error in tryCatchList(expr, classes, parentenv, handlers) : x
+Error in try(tryCatch(stop("x"), warning = function(w) 1), silent = TRUE) : 
+  x
+doTryCatch(return(expr), name, parentenv, handler)
+doTryCatch(return(expr), name, parentenv, handler)
+Error in try(stop("zz"), silent = TRUE) : zz

@@ -2629,3 +2629,17 @@ withCallingHandlers({ a <- 1; warning("w"); a <- 2 }, warning = function(w) invo
 r <- withRestarts({ b <- 10; invokeRestart("rr", 3) }, rr = function(v) v); print(c(r, b))
 h <- function() { v <- 0; tryCatch({ v <- 1; stop("e") }, error = function(e) v <<- v + 10); v }; print(h())
 k <- function(n) tryCatch(if (n > 0) k(n - 1) else sys.call(), error = function(e) e); print(k(2))
+#==#
+# tryCatch and try are R code: a condition raised directly in expr names the
+# doTryCatch() frame tryCatch's helpers make (tryCatchList() with no
+# handlers), a handler runs as value[[3L]](cond), an unhandled condition keeps
+# its own call on the way out, and try() reports a doTryCatch call as its own.
+e <- tryCatch(stop("boom"), error = function(e) e); print(conditionCall(e)); print(e)
+print(tryCatch(warning("ww"), warning = function(w) w))
+tryCatch(stop("a"), error = function(e) print(sys.call()))
+tryCatch(stop("m"), warning = function(w) 1, error = function(e) print(sys.call()))
+f <- function() stop("in f"); print(tryCatch(f(), error = function(e) conditionCall(e)))
+r <- try(tryCatch(stop("x"), finally = 1), silent = TRUE); cat(r)
+r <- try(tryCatch(stop("x"), warning = function(w) 1), silent = TRUE); cat(r)
+print(tryCatch(tryCatch(stop("inner"), warning = function(w) "w"), error = function(e) conditionCall(e)))
+r <- try(stop("zz"), silent = TRUE); print(conditionCall(attr(r, "condition"))); cat(r)

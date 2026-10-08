@@ -14097,11 +14097,55 @@ fn resignal_condition(name: &str, cond: Value) -> Result<Value, String> {
 /// The call now running is the lazy function's, so the expression was written
 /// one context below the top of the stack.
 fn run_lazy_body(body: &Value) -> Result<Value, String> {
+    run_lazy_body_at(body, with_host(|h| h.calls.len().saturating_sub(1)))
+}
+
+/// [`run_lazy_body`] for a body written where the context stack stood `depth`
+/// deep — for a caller that has pushed contexts of its own since its call.
+fn run_lazy_body_at(body: &Value, depth: usize) -> Result<Value, String> {
     if !matches!(data(body), RData::Closure { .. }) {
         return call_value(body, Vec::new(), None);
     }
-    let depth = with_host(|h| h.calls.len().saturating_sub(1));
     crate::host::eval_promise_thunk(body, depth)
+}
+
+/// Forget the recorded error — its call, class vector and condition object —
+/// because a handler has taken it (or nothing was raised), so the next error
+/// starts its record afresh.
+fn take_error_record() {
+    with_host(|h| {
+        h.clear_error_call();
+        h.error_classes.clear();
+    });
+}
+
+/// The function contexts R's `tryCatch` code makes below its own, outermost
+/// first. With `handler: None` they are the ones `expr` is forced under;
+/// with `Some(j)` (1-based, in the order the handlers were written) the ones
+/// handler `j` runs under, ending with its own `value[[3L]](cond)`.
+///
+/// `tryCatch` calls `tryCatchList(expr, classes, parentenv, handlers)`, which
+/// peels the *last* handler off into `tryCatchOne(tryCatchList(…), …)` until
+/// one is left, so the first-written handler is the innermost; each
+/// `tryCatchOne` forces its `expr` inside `doTryCatch(return(expr), …)`. With
+/// no handlers `tryCatchList` forces `expr` itself.
+fn try_catch_contexts(nh: usize, handler: Option<usize>) -> Vec<&'static str> {
+    const LIST: &str = "tryCatchList(expr, classes, parentenv, handlers)";
+    const LIST_REST: &str = "tryCatchList(expr, names[-nh], parentenv, handlers[-nh])";
+    const ONE_LAST: &str = "tryCatchOne(tryCatchList(expr, names[-nh], parentenv, handlers[-nh]), names[nh], parentenv, handlers[[nh]])";
+    const ONE_FIRST: &str = "tryCatchOne(expr, names, parentenv, handlers[[1L]])";
+    const DO: &str = "doTryCatch(return(expr), name, parentenv, handler)";
+    let stop = handler.unwrap_or(1);
+    let mut out = vec![LIST];
+    for _ in (stop + 1..=nh).rev() {
+        out.extend([ONE_LAST, DO, LIST_REST]);
+    }
+    match handler {
+        None if nh >= 1 => out.extend([ONE_FIRST, DO]),
+        None => {}
+        Some(j) => out.extend([if j > 1 { ONE_LAST } else { ONE_FIRST }, "value[[3L]](cond)"]),
+    }
+    out
 }
 
 /// `conditionCall(cond)` as source, the form the context stack and the
@@ -14140,19 +14184,29 @@ fn try_catch(a: &Args) -> Result<Value, String> {
             muffle: None,
         })
     });
-    let out = run_lazy_body(&body);
+    // R's `tryCatch` is R code: `expr` is forced under the frames its helpers
+    // make, so a condition raised directly in it names `doTryCatch(…)` (or
+    // `tryCatchList(…)` when there are no handlers), as R's does.
+    let base = with_host(|h| h.calls.len());
+    for c in try_catch_contexts(handlers.len(), None) {
+        push_context(&c);
+    }
+    let out = run_lazy_body_at(&body, base.saturating_sub(1));
+    with_host(|h| h.calls.truncate(base));
     // The error's own call comes off the host with its classes: the unwind has
     // already cut the context stack back past the frame that raised it, so the
     // condition handed to the handler can only be built from what was recorded.
+    // It stays recorded until a handler here takes the error: one this frame
+    // does not handle carries its own call and object on outward.
     let (raised, raised_call, raised_cond) = with_host(|h| {
         h.handlers.pop();
-        let call = h.error_call.clone();
-        let cond = h.error_condition.take();
-        h.clear_error_call();
-        (std::mem::take(&mut h.error_classes), call, cond)
+        (h.error_classes.clone(), h.error_call.clone(), h.error_condition.clone())
     });
     let result = match out {
-        Ok(v) => Ok(v),
+        Ok(v) => {
+            take_error_record();
+            Ok(v)
+        }
         // A restart transfer is passing through on its way to the frame that
         // established it; `finally` still runs, but no handler here may claim it.
         Err(msg) if restart_in_flight() => Err(msg),
@@ -14168,9 +14222,11 @@ fn try_catch(a: &Args) -> Result<Value, String> {
             };
             match handlers
                 .iter()
-                .find(|(c, _)| classes.iter().any(|k| k == c))
+                .enumerate()
+                .find(|(_, (c, _))| classes.iter().any(|k| k == c))
             {
-                Some((_, f)) => {
+                Some((j, (_, f))) => {
+                    take_error_record();
                     let cond = match raised_cond {
                         // A signalled object reaches the handler as itself.
                         Some(c) => c,
@@ -14180,7 +14236,13 @@ fn try_catch(a: &Args) -> Result<Value, String> {
                             raised_call.clone(),
                         ),
                     };
-                    call_value(f, vec![(None, cond)], None)
+                    // `tryCatchOne` calls the handler as `value[[3L]](cond)`.
+                    for c in try_catch_contexts(handlers.len(), Some(j + 1)) {
+                        push_context(&c);
+                    }
+                    let out = call_value(f, vec![(None, cond)], None);
+                    with_host(|h| h.calls.truncate(base));
+                    out
                 }
                 // Nothing here handles it — keep unwinding.
                 None => Err(msg),
@@ -14256,12 +14318,49 @@ fn suppress_conditions(a: &Args, class: &str) -> Result<Value, String> {
     out
 }
 
+/// The `tryCatch` call `try`'s body makes, as R deparses it.
+const TRY_TRYCATCH_CALL: &str = r#"tryCatch(expr, error = function(e) {
+    call <- conditionCall(e)
+    if (!is.null(call)) {
+        if (identical(call[[1L]], quote(doTryCatch)))
+            call <- sys.call(-4L)
+        dcall <- deparse(call, nlines = 1L)
+        prefix <- paste("Error in", dcall, ": ")
+        LONG <- 75L
+        sm <- strsplit(conditionMessage(e), "\n")[[1L]]
+        w <- 14L + nchar(dcall, type = "w") + nchar(sm[1L], type = "w")
+        if (is.na(w))
+            w <- 14L + nchar(dcall, type = "b") + nchar(sm[1L],
+                type = "b")
+        if (w > LONG)
+            prefix <- paste0(prefix, "\n  ")
+    }
+    else prefix <- "Error : "
+    msg <- paste0(prefix, conditionMessage(e), "\n")
+    .Internal(seterrmessage(msg[1L]))
+    if (!silent && isTRUE(getOption("show.error.messages"))) {
+        cat(msg, file = outFile)
+        .Internal(printDeferredWarnings())
+    }
+    invisible(structure(msg, class = "try-error", condition = e))
+})"#;
+
 /// `try(expr, silent = FALSE)` — run `expr`, and on error return the message as
 /// an invisible `"try-error"` string instead of aborting.
 fn r_try(a: &Args) -> Result<Value, String> {
     let body = a.req(0, "expr")?;
     let silent = a.named("silent").and_then(|v| lgl1(&v)).unwrap_or(false);
-    match run_lazy_body(&body) {
+    // `try` is `tryCatch(expr, error = function(e) …)`: `expr` is forced under
+    // that call and the frames `tryCatch` makes, so an error raised directly
+    // in it names `doTryCatch(…)` — which `try` then reports as its own call.
+    let (own_call, base) = with_host(|h| (h.current_call_source(), h.calls.len()));
+    push_context(TRY_TRYCATCH_CALL);
+    for c in try_catch_contexts(1, None) {
+        push_context(c);
+    }
+    let out = run_lazy_body_at(&body, base.saturating_sub(1));
+    with_host(|h| h.calls.truncate(base));
+    match out {
         Ok(v) => Ok(v),
         // A restart transfer is not an error and `try` does not catch one.
         Err(msg) if restart_in_flight() => Err(msg),
@@ -14277,7 +14376,12 @@ fn r_try(a: &Args) -> Result<Value, String> {
             // `try`'s own R code folds the message onto an indented second
             // line when `14 + width(call) + width(first message line)` passes
             // its `LONG` of 75 — the same allowance `errors.c` gives.
-            let text = match raised_call.as_deref().and_then(|c| c.lines().next()) {
+            // `if (identical(call[[1L]], quote(doTryCatch))) call <- sys.call(-4L)`
+            let shown = match &raised_call {
+                Some(c) if c.starts_with("doTryCatch(") => own_call,
+                other => other.clone(),
+            };
+            let text = match shown.as_deref().and_then(|c| c.lines().next()) {
                 Some(c) => {
                     let first = msg.split('\n').next().unwrap_or("");
                     let w = 14
