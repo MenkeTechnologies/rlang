@@ -2361,14 +2361,7 @@ pub fn force_value(v: &Value) -> Result<Value, String> {
     // print(as.integer("x")) : NAs introduced by coercion`), and only the
     // walkers that ask "whose expression is this?" — `substitute`, `sys.call`
     // — look past it to the frame that wrote the argument.
-    HIDDEN.with(|s| s.borrow_mut().push((depth, with_host(|h| h.calls.len()))));
-    FORCING.with(|f| f.set(true));
-    let out = call_value(&thunk, Vec::new(), None);
-    FORCING.with(|f| f.set(false));
-    HIDDEN.with(|s| {
-        s.borrow_mut().pop();
-    });
-    let out = out?;
+    let out = eval_promise_thunk(&thunk, depth)?;
     with_host(|h| {
         retain(&mut h.heap, &out);
         if let Some(o) = h.get_mut(v) {
@@ -2378,6 +2371,22 @@ pub fn force_value(v: &Value) -> Result<Value, String> {
         }
     });
     Ok(out)
+}
+
+/// Run a promise's `thunk` — a zero-argument closure over the environment that
+/// wrote the expression — the way R evaluates a promise: in that environment
+/// itself, with no frame of its own, and with the contexts from `depth` (how
+/// deep the stack stood where the expression was written) to here hidden from
+/// the walkers that ask whose expression it is.
+pub fn eval_promise_thunk(thunk: &Value, depth: usize) -> Result<Value, String> {
+    HIDDEN.with(|s| s.borrow_mut().push((depth, with_host(|h| h.calls.len()))));
+    FORCING.with(|f| f.set(true));
+    let out = call_value(thunk, Vec::new(), None);
+    FORCING.with(|f| f.set(false));
+    HIDDEN.with(|s| {
+        s.borrow_mut().pop();
+    });
+    out
 }
 
 /// R's `findFun`: the first binding of `name`, from the current frame outward,

@@ -14015,7 +14015,7 @@ fn with_restarts(a: &Args) -> Result<Value, String> {
         })
         .collect();
     let ids = push_restarts(specs);
-    let out = call_value(&body, Vec::new(), None);
+    let out = run_lazy_body(&body);
     let group = with_host(|h| h.restarts.pop()).unwrap_or_default();
     let Err(e) = out else { return out };
     // A transfer to one of *our* restarts stops here and becomes this call's
@@ -14088,6 +14088,22 @@ fn resignal_condition(name: &str, cond: Value) -> Result<Value, String> {
     Ok(out)
 }
 
+/// Run an argument the compiler deferred for a lazy base function —
+/// `tryCatch`'s `expr` and `finally`, `try`, `withCallingHandlers`,
+/// `withRestarts`, the `suppress*` family (see the compiler's
+/// `thunk_lazy_args`). Those are closures in R, and the argument is a promise:
+/// it runs in the caller's own environment, so `tryCatch(x <- f())` binds `x`
+/// there, and `sys.call()` / `parent.frame()` inside it answer for the caller.
+/// The call now running is the lazy function's, so the expression was written
+/// one context below the top of the stack.
+fn run_lazy_body(body: &Value) -> Result<Value, String> {
+    if !matches!(data(body), RData::Closure { .. }) {
+        return call_value(body, Vec::new(), None);
+    }
+    let depth = with_host(|h| h.calls.len().saturating_sub(1));
+    crate::host::eval_promise_thunk(body, depth)
+}
+
 /// `conditionCall(cond)` as source, the form the context stack and the
 /// `Error in` line carry calls in. `NULL` (or anything not a call) is none.
 fn condition_call_source(cond: &Value) -> Option<String> {
@@ -14124,7 +14140,7 @@ fn try_catch(a: &Args) -> Result<Value, String> {
             muffle: None,
         })
     });
-    let out = call_value(&body, Vec::new(), None);
+    let out = run_lazy_body(&body);
     // The error's own call comes off the host with its classes: the unwind has
     // already cut the context stack back past the frame that raised it, so the
     // condition handed to the handler can only be built from what was recorded.
@@ -14176,7 +14192,7 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     // still prints 42.
     if let Some(f) = finally {
         let vis = with_host(|h| h.visible);
-        call_value(&f, Vec::new(), None)?;
+        run_lazy_body(&f)?;
         with_host(|h| h.visible = vis);
     }
     result
@@ -14209,7 +14225,7 @@ fn with_calling_handlers(a: &Args) -> Result<Value, String> {
             muffle: None,
         })
     });
-    let out = call_value(&body, Vec::new(), None);
+    let out = run_lazy_body(&body);
     with_host(|h| {
         h.handlers.pop();
     });
@@ -14233,7 +14249,7 @@ fn suppress_conditions(a: &Args, class: &str) -> Result<Value, String> {
             muffle: Some(class.to_string()),
         })
     });
-    let out = call_value(&body, Vec::new(), None);
+    let out = run_lazy_body(&body);
     with_host(|h| {
         h.handlers.pop();
     });
@@ -14245,7 +14261,7 @@ fn suppress_conditions(a: &Args, class: &str) -> Result<Value, String> {
 fn r_try(a: &Args) -> Result<Value, String> {
     let body = a.req(0, "expr")?;
     let silent = a.named("silent").and_then(|v| lgl1(&v)).unwrap_or(false);
-    match call_value(&body, Vec::new(), None) {
+    match run_lazy_body(&body) {
         Ok(v) => Ok(v),
         // A restart transfer is not an error and `try` does not catch one.
         Err(msg) if restart_in_flight() => Err(msg),

@@ -2611,3 +2611,21 @@ f <- factor(c("a", "b")); print(factor(f, levels = c("b", "a"), labels = c("B", 
 print(factor(c("a", "b"), levels = c("a", "b", NA), exclude = NULL))
 print(levels(factor(factor(c("p", "q", "r"))[c(1, 3)])))
 print(as.character(factor(c("a", NA), exclude = NULL)))
+#==#
+# The body of tryCatch / try / withCallingHandlers / withRestarts / suppress*
+# is a promise: it runs in the caller's environment, so its assignments land
+# there, and sys.call() / parent.frame() inside it answer for the caller.
+tryCatch(x <- 5, error = function(e) 1); print(x)
+f <- function() { suppressWarnings(y <- 2); y }; print(f())
+f2 <- function() { tryCatch({ z <- 3 }, finally = { z <- z + 1 }); z }; print(f2())
+f3 <- function() { try(w <- 9, silent = TRUE); environment() }
+print(exists("w", envir = f3(), inherits = FALSE))
+g <- function() tryCatch(sys.call(), error = function(e) 1); print(g())
+g2 <- function() tryCatch(parent.frame(), error = function(e) 1); print(identical(g2(), globalenv()))
+g3 <- function() suppressWarnings(sys.call()); print(g3())
+g4 <- function() withCallingHandlers(sys.call()); print(g4())
+g5 <- function() try(sys.call()); print(g5())
+withCallingHandlers({ a <- 1; warning("w"); a <- 2 }, warning = function(w) invokeRestart("muffleWarning")); print(a)
+r <- withRestarts({ b <- 10; invokeRestart("rr", 3) }, rr = function(v) v); print(c(r, b))
+h <- function() { v <- 0; tryCatch({ v <- 1; stop("e") }, error = function(e) v <<- v + 10); v }; print(h())
+k <- function(n) tryCatch(if (n > 0) k(n - 1) else sys.call(), error = function(e) e); print(k(2))
