@@ -194,9 +194,12 @@ run that compared nothing — no cases generated, or an oracle that never answer
   environment), `topenv()` (the global environment is rlang's one top level),
   `local()`, `globalenv()`, `environmentName()`, `parent.frame()`, `ls`/`objects` with
   `all.names`, `assign`/`get`/`exists` with `envir`, `eval(expr, envir)`, `$`
-  and `[[` on an environment. `sys.nframe()` and `sys.frame(n)` are not: a
-  builtin pushes no frame in rlang where R's closures do, so the numbering they
-  report would not be R's. `baseenv()`/`emptyenv()` have no rlang-side
+  and `[[` on an environment. `sys.nframe()` counts the call contexts the
+  compiler opens for every function R implements as a closure — `print`,
+  `sapply`, the frames `tryCatch` makes — so its depth is R's, except under
+  `local()`, which compiles to one closure call where R's goes through
+  `eval.parent` and `eval` (R answers 7 for `print(local(sys.nframe()))`,
+  rlang 2). `sys.frame(n)` is not implemented. `baseenv()`/`emptyenv()` have no rlang-side
   representation and go to the CRAN bridge, and `environmentName` knows only
   the global environment's name — every other frame is anonymous, which is the
   empty string R gives one too.

@@ -4337,6 +4337,7 @@ pub const PRIMITIVES: &[&str] = &[
     "args",
     "body",
     "sys.function",
+    "sys.nframe",
     "eval",
     "evalq",
     ".rlang_substitute",
@@ -9743,6 +9744,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
         }
         "match.arg" => match_arg(&a),
+        "sys.nframe" => Ok(scalar_int(with_host(|h| h.nframe()) as i64)),
         // `sys.function()` is the closure being executed, not its call.
         "sys.function" => Ok(with_host(|h| {
             match h.innermost_call().and_then(|f| f.fun.clone()) {

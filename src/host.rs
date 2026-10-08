@@ -1512,6 +1512,26 @@ impl RHost {
             .map_or(0, |i| i + 1)
     }
 
+    /// R's `sys.nframe()`: how many function contexts lie at and below the
+    /// one `sys.nframe()` was written in — `framedepth` of the context whose
+    /// frame is the caller's, found by the same search `sys.call()` makes. A
+    /// context below it counts whether or not it has been entered: a promise
+    /// forced inside `print(f())` runs `f` with `print`'s context beneath it.
+    pub fn nframe(&self) -> usize {
+        let found = self
+            .calls
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(i, _)| !ctx_hidden(*i))
+            .skip(1)
+            .find(|(_, c)| c.closure && c.entered);
+        match found {
+            Some((k, _)) => self.calls[..=k].iter().filter(|c| c.closure).count(),
+            None => 0,
+        }
+    }
+
     pub fn enclosing_source(&self) -> Option<String> {
         self.enclosing_source_from(1)
     }

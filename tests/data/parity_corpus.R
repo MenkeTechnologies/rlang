@@ -2729,3 +2729,12 @@ try(stop("boom"), silent = TRUE); print(geterrmessage()); f <- function() stop("
 r <- tryCatch(stop(simpleError("obj")), error = function(e) 2); cat(geterrmessage()); try(stop(), silent = TRUE); print(geterrmessage())
 r <- tryCatch(log("a"), error = function(e) 3); print(geterrmessage()); try(stop(simpleError("cnd")), silent = TRUE); print(geterrmessage())
 r <- tryCatch(warning("w"), warning = function(w) 4); print(geterrmessage())
+#==#
+# sys.nframe(): the depth of the frame it was written in, counting every
+# function context beneath it — a base closure like print included.
+print(sys.nframe()); f <- function() sys.nframe(); print(f()); x <- f(); print(x)
+g <- function() f(); print(g()); h <- function() { n <- sys.nframe(); n }; y <- h(); print(y)
+k <- function(v) v; z <- k(f()); print(z); w <- k(sys.nframe()); print(w); m <- function() k(sys.nframe()); print(m())
+r <- function(n) if (n == 0) sys.nframe() else r(n - 1); print(r(3)); print(sapply(1:2, function(i) sys.nframe()))
+print(tryCatch(sys.nframe(), error = function(e) -1)); q <- function() tryCatch(sys.nframe(), error = function(e) -1); print(q())
+print(do.call(f, list())); print(Reduce(function(a, b) sys.nframe(), 1:2))

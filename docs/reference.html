@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 351 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 352 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 383 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 384 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 351 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 352 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">38</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">79</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">80</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">32</span></li>
       </ul>
     </section>
@@ -1827,7 +1827,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">79 entries</p>
+      <p class="chapter-meta">80 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -2241,6 +2241,12 @@
         <pre><code class="lang-r r">sys.function()
 </code></pre>
         <p>The closure being executed — the function itself, not its call.</p>
+      </article>
+      <article class="doc-entry" id="doc-sys-nframe">
+        <h3><a class="doc-anchor" href="#doc-sys-nframe">#</a> <code>sys.nframe</code></h3>
+        <pre><code class="lang-r r">sys.nframe()
+</code></pre>
+        <p>The number of function frames up to and including the one sys.nframe() was written in: 0 at top level, 1 in a function called from there. A base function that is a closure in R counts as a frame (print(f()) runs f two deep), as R counts it.</p>
       </article>
       <article class="doc-entry" id="doc-eval">
         <h3><a class="doc-anchor" href="#doc-eval">#</a> <code>eval</code></h3>

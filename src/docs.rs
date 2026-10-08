@@ -1701,6 +1701,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "The closure being executed — the function itself, not its call.",
     ),
     (
+        "sys.nframe",
+        "sys.nframe()",
+        "The number of function frames up to and including the one sys.nframe() was written in: 0 at top level, 1 in a function called from there. A base function that is a closure in R counts as a frame (print(f()) runs f two deep), as R counts it.",
+    ),
+    (
         "eval",
         "eval(expr, envir)",
         "Run an expression that was held rather than evaluated. With envir it runs in that environment, reading and binding there; without one it runs where the caller stands, so eval(quote(v + 1)) sees the caller's v and eval(quote(w <- 7)) binds there. A value that is not an expression is already evaluated and comes back unchanged. The result keeps the visibility the expression left it with.",

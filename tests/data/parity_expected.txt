@@ -3532,3 +3532,18 @@ Error in f() : deep
 [1] "non-numeric argument to mathematical function"
 [1] "Error : cnd\n"
 [1] "Error : cnd\n"
+#==#
+[1] 0
+[1] 2
+[1] 1
+[1] 3
+[1] 1
+[1] 2
+[1] 0
+[1] 2
+[1] 5
+[1] 4 4
+[1] 0
+[1] 2
+[1] 3
+[1] 3
