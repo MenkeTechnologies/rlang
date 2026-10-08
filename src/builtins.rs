@@ -2912,6 +2912,12 @@ fn matrix_subscript(x: &Value, idx: &Value) -> Result<Option<Vec<Option<i64>>>, 
     if d.len() < 2 || id.len() != 2 || id[1] != d.len() {
         return Ok(None);
     }
+    // R's `do_subset_dflt` converts only a character, integer or double matrix
+    // (`strmat2intmat`, `mat2indsub`); a logical matrix — `m[m > 2]` — is an
+    // ordinary logical subscript whatever its shape.
+    if !matches!(kind(idx), RKind::Str | RKind::Int | RKind::Dbl) {
+        return Ok(None);
+    }
     let (rows, cols) = (id[0], id[1]);
     let oob = || "subscript out of bounds".to_string();
     let dn = dimnames_of(x);

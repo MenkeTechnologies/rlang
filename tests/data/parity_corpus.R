@@ -2589,3 +2589,9 @@ print(class(attr(r, "condition"))); cat(r)
 print(withCallingHandlers(tryCatch(stop(errorCondition("q", class = "z", data = 5)), z = function(e) e$data), z = function(e) cat("calling\n")))
 x <- tryCatch(stop("plain"), error = function(e) e)
 print(tryCatch(stop(x), error = function(e) identical(e, x)))
+#==#
+# A logical matrix subscript is an ordinary logical index, not a coordinate
+# table, even when its column count equals the array's rank.
+m <- matrix(1:4, 2); print(m[m > 2])
+m[m > 2] <- 0L; print(m); print(which(m == 0))
+a <- matrix(c(5, 6, 7, 8), 2); a[matrix(c(TRUE, FALSE, FALSE, TRUE), 2)] <- NA; print(a)
