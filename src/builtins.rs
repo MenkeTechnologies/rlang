@@ -4269,6 +4269,7 @@ pub const PRIMITIVES: &[&str] = &[
     "withCallingHandlers",
     "try",
     "on.exit",
+    "geterrmessage",
     "conditionMessage",
     "conditionCall",
     "simpleError",
@@ -9249,6 +9250,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             });
             Ok(null())
         }
+        "geterrmessage" => Ok(scalar_str(with_host(|h| h.errmessage.clone()))),
         "conditionMessage" => Ok(scalar_str(
             element_field(&a.req(0, "c")?, "message")
                 .and_then(|m| str1(&m))
@@ -14618,6 +14620,12 @@ fn try_catch(a: &Args) -> Result<Value, String> {
             } else {
                 raised
             };
+            // An error raised from a message was written into R's `errbuf` (what
+            // `geterrmessage()` reads) as it was raised; a signalled condition
+            // object, and a warning or message, was not.
+            if raised_cond.is_none() && classes.iter().any(|c| c == "error") {
+                with_host(|h| h.errmessage = msg.clone());
+            }
             match handlers
                 .iter()
                 .enumerate()
@@ -14790,6 +14798,8 @@ fn r_try(a: &Args) -> Result<Value, String> {
                 }
                 None => format!("Error : {msg}\n"),
             };
+            // `.Internal(seterrmessage(msg[1L]))`, whether or not it is shown.
+            with_host(|h| h.errmessage = text.clone());
             if !silent {
                 crate::host::emit_stderr(&text);
             }

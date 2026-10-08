@@ -1475,6 +1475,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "Register expr to be evaluated when the enclosing closure exits, whether it returns normally or unwinds with an error. Without add = TRUE a later on.exit replaces the registered expression instead of joining it.",
     ),
     (
+        "geterrmessage",
+        "geterrmessage()",
+        "The last error message: the text of an error raised from a message, as it was raised (even one a tryCatch handler then took), or the whole \"Error in <call> : …\" line try() made for its last error; \"\" before any. A condition object signalled with stop(cond) and caught leaves it unchanged.",
+    ),
+    (
         "conditionMessage",
         "conditionMessage(c)",
         "The message string carried by a condition object.",

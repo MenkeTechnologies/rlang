@@ -568,6 +568,11 @@ pub struct RHost {
     /// exiting handler that very object, extra fields and all; only a condition
     /// rlang raised from a message is rebuilt from `error_classes`.
     pub error_condition: Option<Value>,
+    /// What `geterrmessage()` answers — R's `errbuf`. An error raised from a
+    /// message writes the message there before any handler sees it, and
+    /// `try` overwrites it with the whole `Error in <call> : …` line it
+    /// reports; a condition object signalled by `stop(cond)` leaves it alone.
+    pub errmessage: String,
     /// The call the pending error was raised in — R's `errorcall`. Held as
     /// whole R source: the `Error in <call> :` line shows its first line, and
     /// the condition object the error carries needs the rest. It has to be taken where the error is
@@ -759,6 +764,7 @@ impl RHost {
             error: None,
             error_classes: Vec::new(),
             error_condition: None,
+            errmessage: String::new(),
             error_call: None,
             error_trace: Vec::new(),
             error_call_known: false,

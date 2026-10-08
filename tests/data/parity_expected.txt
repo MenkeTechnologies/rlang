@@ -3522,3 +3522,13 @@ NULL
 [1] TRUE
 [1] TRUE
 [1] TRUE
+#==#
+[1] ""
+[1] "first"
+[1] "Error in try(stop(\"boom\"), silent = TRUE) : boom\n"
+Error in f() : deep
+Error in f() : deep
+[1] "Error in try(stop(), silent = TRUE) : \n"
+[1] "non-numeric argument to mathematical function"
+[1] "Error : cnd\n"
+[1] "Error : cnd\n"

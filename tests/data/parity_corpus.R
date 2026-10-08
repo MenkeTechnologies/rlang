@@ -2720,3 +2720,12 @@ f <- function(x) x; h <- function(x) x; k <- function(x) x + 1; m <- local(funct
 print(identical(f, f)); print(identical(f, h)); print(identical(f, k)); print(identical(f, m)); print(identical(f, sum))
 mk <- function() function(y) y; print(identical(mk(), mk())); a <- mk(); print(identical(a, a))
 print(identical(as.name("x"), quote(x))); print(identical(call("sum", 1), quote(sum(1)))); print(identical(list(sum, quote(z)), list(sum, quote(z))))
+#==#
+# geterrmessage(): "" before any error; an error raised from a message
+# writes its text as it is raised, even when a tryCatch handler takes it; try()
+# replaces it with the Error in <call> : line it made; stop(cond) leaves it.
+print(geterrmessage()); r <- tryCatch(stop("first"), error = function(e) 1); print(geterrmessage())
+try(stop("boom"), silent = TRUE); print(geterrmessage()); f <- function() stop("deep"); try(f(), silent = TRUE); cat(geterrmessage())
+r <- tryCatch(stop(simpleError("obj")), error = function(e) 2); cat(geterrmessage()); try(stop(), silent = TRUE); print(geterrmessage())
+r <- tryCatch(log("a"), error = function(e) 3); print(geterrmessage()); try(stop(simpleError("cnd")), silent = TRUE); print(geterrmessage())
+r <- tryCatch(warning("w"), warning = function(w) 4); print(geterrmessage())
