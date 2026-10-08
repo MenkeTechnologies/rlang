@@ -2658,3 +2658,11 @@ cat(1:10, sep = c(",", ";")); cat("\n")
 cat(1:3, c("a", "b"), sep = c("-", "+", "|")); cat("\n")
 cat("a", character(0), "b\n"); cat(NULL, "x\n"); cat("a", NULL, "b\n")
 cat(1:5, fill = 6)
+#==#
+# ...length(), ...elt() and ...names() read the calling frame's `...`.
+g <- function(...) ...length(); print(g(1, 2, 3)); print(g())
+h <- function(...) ...names(); print(h(a = 1, 2)); print(h(1, 2)); print(h())
+e <- function(...) ...elt(2); print(e(1, "two", 3))
+print(tryCatch(...length(), error = function(e) conditionMessage(e)))
+print(tryCatch(e(1), error = function(e) conditionMessage(e)))
+k <- function(...) ...elt(0); print(tryCatch(k(1), error = function(e) conditionMessage(e)))

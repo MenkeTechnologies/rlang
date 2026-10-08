@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 344 primitive functions and 21 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 347 primitive functions and 21 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 365 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 368 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 344 primitives and 21 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 347 primitives and 21 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">38</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">16</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">74</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">77</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">21</span></li>
       </ul>
     </section>
@@ -1815,7 +1815,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">74 entries</p>
+      <p class="chapter-meta">77 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -1893,6 +1893,24 @@
         <pre><code class="lang-r r">nargs()
 </code></pre>
         <p>How many arguments the caller passed to the function this is called from, counting each element of ... separately and counting nothing for a formal left to its default. Zero at top level.</p>
+      </article>
+      <article class="doc-entry" id="doc-dots-length">
+        <h3><a class="doc-anchor" href="#doc-dots-length">#</a> <code>...length</code></h3>
+        <pre><code class="lang-r r">...length()
+</code></pre>
+        <p>The number of arguments in the calling function's ..., found from the calling frame outward; an error where there is no ... to look in.</p>
+      </article>
+      <article class="doc-entry" id="doc-dots-elt">
+        <h3><a class="doc-anchor" href="#doc-dots-elt">#</a> <code>...elt</code></h3>
+        <pre><code class="lang-r r">...elt(n)
+</code></pre>
+        <p>The n-th argument in ..., forced — the function form of ..1, ..2, …. A non-positive n or one past the end is an error.</p>
+      </article>
+      <article class="doc-entry" id="doc-dots-names">
+        <h3><a class="doc-anchor" href="#doc-dots-names">#</a> <code>...names</code></h3>
+        <pre><code class="lang-r r">...names()
+</code></pre>
+        <p>The tags of the arguments in ..., with "" for an untagged one, or NULL when none is tagged.</p>
       </article>
       <article class="doc-entry" id="doc-return">
         <h3><a class="doc-anchor" href="#doc-return">#</a> <code>return</code></h3>

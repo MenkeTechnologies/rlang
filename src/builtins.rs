@@ -4165,6 +4165,9 @@ pub const PRIMITIVES: &[&str] = &[
     "new.env",
     "missing",
     "nargs",
+    "...length",
+    "...elt",
+    "...names",
     "return",
     "UseMethod",
     "NextMethod",
@@ -9057,6 +9060,44 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_int(
                 with_host(|h| h.innermost_call().map_or(0, |f| f.args.len())) as i64,
             ))
+        }
+        // R's `do_dotsLength` / `do_dotsElt` / `do_dotsNames`: the `...` found
+        // from the calling frame outward, an error where there is none.
+        "...length" | "...elt" | "...names" => {
+            let (has_dots, dots) = with_host(|h| (h.lookup("...").is_some(), h.dots()));
+            if !has_dots {
+                return Err("incorrect context: the current call has no '...' to look in".into());
+            }
+            match name {
+                "...length" => Ok(scalar_int(dots.len() as i64)),
+                "...elt" => {
+                    let n = num1(&a.req(0, "n")?).unwrap_or(f64::NAN);
+                    if !(n >= 1.0) {
+                        return Err(format!(
+                            "indexing '...' with non-positive index {}",
+                            n as i64
+                        ));
+                    }
+                    match dots.get(n as usize - 1) {
+                        Some((_, v)) => crate::host::force_value(v),
+                        None => Err(format!(
+                            "the ... list contains fewer than {} elements",
+                            n as i64
+                        )),
+                    }
+                }
+                // All-empty names are no names at all.
+                _ => {
+                    let names: Vec<Option<String>> = dots
+                        .iter()
+                        .map(|(t, _)| Some(t.clone().unwrap_or_default()))
+                        .collect();
+                    Ok(match names.iter().all(|n| n.as_deref() == Some("")) {
+                        true => null(),
+                        false => mk_str(names),
+                    })
+                }
+            }
         }
         "return" => {
             let v = a.get(0, "value").unwrap_or_else(null);

@@ -47,8 +47,17 @@ pub fn find(name: &str) -> Option<&'static Entry> {
 /// dropped — otherwise `%*%`, `[` and `$` would all anchor to the empty string.
 /// Letters keep their case, since R names are case-sensitive and HTML ids are
 /// too: `NROW` and `nrow` are different functions and need different anchors.
+/// The `...` of `...length` and its kin is spelled `dots`, since leading dashes
+/// are trimmed and `...length` would otherwise anchor where `length` does.
 pub fn slug(name: &str) -> String {
     let mut out = String::with_capacity(name.len() * 4);
+    let name = match name.strip_prefix("...") {
+        Some(rest) if !rest.is_empty() => {
+            out.push_str("dots-");
+            rest
+        }
+        _ => name,
+    };
     for ch in name.chars() {
         let piece = match ch {
             c if c.is_ascii_alphanumeric() => {
@@ -1402,6 +1411,21 @@ const ENVIRONMENTS: &[Entry] = &[
         "nargs",
         "nargs()",
         "How many arguments the caller passed to the function this is called from, counting each element of ... separately and counting nothing for a formal left to its default. Zero at top level.",
+    ),
+    (
+        "...length",
+        "...length()",
+        "The number of arguments in the calling function's ..., found from the calling frame outward; an error where there is no ... to look in.",
+    ),
+    (
+        "...elt",
+        "...elt(n)",
+        "The n-th argument in ..., forced — the function form of ..1, ..2, …. A non-positive n or one past the end is an error.",
+    ),
+    (
+        "...names",
+        "...names()",
+        "The tags of the arguments in ..., with \"\" for an untagged one, or NULL when none is tagged.",
     ),
     (
         "return",
