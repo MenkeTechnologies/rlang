@@ -2666,3 +2666,15 @@ e <- function(...) ...elt(2); print(e(1, "two", 3))
 print(tryCatch(...length(), error = function(e) conditionMessage(e)))
 print(tryCatch(e(1), error = function(e) conditionMessage(e)))
 k <- function(...) ...elt(0); print(tryCatch(k(1), error = function(e) conditionMessage(e)))
+#==#
+# A call subassigns and subsets like the list of its parts; call() and
+# as.call() build one, and eval() takes a list as its environment.
+e <- quote(f(x, y = 2)); e[[1]] <- as.name("g"); print(e)
+e[[3]] <- 10; print(e); e$y <- 5; print(e); e[["n"]] <- TRUE; print(e); print(names(e))
+e <- quote(a + b); e[[1]] <- as.name("-"); print(e); print(eval(e, list(a = 5, b = 2)))
+cl <- call("sum", 1, 2); print(cl); cl[[4]] <- 3; print(cl); print(eval(cl))
+e <- quote(f(x)); e[[2]] <- quote(y + 1); print(e); print(as.list(e))
+e <- quote(f(1, 2, 3)); print(e[-2]); print(e[2:3])
+e <- quote(if (a) b else c); e[[2]] <- quote(x > 1); print(e); e[[4]] <- NULL; print(e)
+print(call("+", 1, 2)); print(as.call(list(as.name("max"), 1, 5))); print(names(quote(f(1))))
+f <- function() { z <- 7; eval(quote(a * z), list(a = 3)) }; print(f())

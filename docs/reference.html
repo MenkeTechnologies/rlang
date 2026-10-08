@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 347 primitive functions and 21 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 349 primitive functions and 21 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 368 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 370 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,11 +130,11 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 347 primitives and 21 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 349 primitives and 21 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
-        <li><a href="#ch-Construction-and-coercion">Construction and coercion</a> <span class="chapter-count">15</span></li>
+        <li><a href="#ch-Construction-and-coercion">Construction and coercion</a> <span class="chapter-count">17</span></li>
         <li><a href="#ch-Attributes-and-metadata">Attributes and metadata</a> <span class="chapter-count">20</span></li>
         <li><a href="#ch-Output-and-the-inlineminusRust-FFI">Output and the inline-Rust FFI</a> <span class="chapter-count">25</span></li>
         <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
@@ -151,7 +151,7 @@
     </section>
     <section class="tutorial-section" id="ch-Construction-and-coercion">
       <h2>Construction and coercion</h2>
-      <p class="chapter-meta">15 entries</p>
+      <p class="chapter-meta">17 entries</p>
       <article class="doc-entry" id="doc-c">
         <h3><a class="doc-anchor" href="#doc-c">#</a> <code>c</code></h3>
         <pre><code class="lang-r r">c(...)
@@ -235,6 +235,18 @@
         <pre><code class="lang-r r">as.list(x)
 </code></pre>
         <p>A list of x's elements, keeping the names. An atomic vector becomes a list of length-1 vectors.</p>
+      </article>
+      <article class="doc-entry" id="doc-call">
+        <h3><a class="doc-anchor" href="#doc-call">#</a> <code>call</code></h3>
+        <pre><code class="lang-r r">call(name, ...)
+</code></pre>
+        <p>The unevaluated call of the function named by the string `name` on the already-evaluated arguments: call("round", 10.5) is round(10.5). A call headed by an operator is that syntax, so call("+", 1, 2) prints as 1 + 2.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-call">
+        <h3><a class="doc-anchor" href="#doc-as-call">#</a> <code>as.call</code></h3>
+        <pre><code class="lang-r r">as.call(x)
+</code></pre>
+        <p>The call made of a list: its first element is the function and the rest, tagged by the list's names, are the arguments. A call is returned unchanged.</p>
       </article>
       <article class="doc-entry" id="doc-unlist">
         <h3><a class="doc-anchor" href="#doc-unlist">#</a> <code>unlist</code></h3>

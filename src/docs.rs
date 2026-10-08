@@ -159,6 +159,16 @@ const CONSTRUCTION: &[Entry] = &[
         "A list of x's elements, keeping the names. An atomic vector becomes a list of length-1 vectors.",
     ),
     (
+        "call",
+        "call(name, ...)",
+        "The unevaluated call of the function named by the string `name` on the already-evaluated arguments: call(\"round\", 10.5) is round(10.5). A call headed by an operator is that syntax, so call(\"+\", 1, 2) prints as 1 + 2.",
+    ),
+    (
+        "as.call",
+        "as.call(x)",
+        "The call made of a list: its first element is the function and the rest, tagged by the list's names, are the arguments. A call is returned unchanged.",
+    ),
+    (
         "unlist",
         "unlist(x)",
         "Flatten a list recursively into an atomic vector of the widest type, composing names the way R does: list(a = 1, b = list(2, 3)) unlists to names a, b1, b2.",

@@ -850,6 +850,170 @@ fn lang_text(e: &Expr) -> Vec<String> {
     }
 }
 
+/// A call as the list of its parts — `as.list(quote(f(a = 1)))`. An untagged
+/// part gets an *empty* name, and only when some part is tagged: R heads it
+/// `[[i]]`, where an `NA` name heads `$<NA>`.
+fn lang_as_list(e: &Expr) -> Value {
+    let parts = lang_parts(e);
+    let out = mk_list(parts.iter().map(|(_, v)| v.clone()).collect());
+    if parts.iter().any(|(t, _)| t.is_some()) {
+        let nm = parts
+            .iter()
+            .map(|(t, _)| Some(t.clone().unwrap_or_default()))
+            .collect();
+        set_names(&out, nm);
+    }
+    out
+}
+
+/// One part of a call as the expression it stands for — `None` for an empty
+/// (missing) argument. A constant is the literal that deparses to it.
+fn part_expr(v: &Value) -> Result<Option<Expr>, String> {
+    if matches!(v, Value::Undef) {
+        return Ok(None);
+    }
+    match data(v) {
+        RData::Lang(e) => Ok(Some(e)),
+        RData::Sym(n) if n.is_empty() => Ok(None),
+        RData::Sym(n) => Ok(Some(Expr::Ident(n))),
+        _ => value_as_expr(v)
+            .map(Some)
+            .ok_or_else(|| "invalid argument list".to_string()),
+    }
+}
+
+/// R's `as.call(list)`: the call whose function is the first element and whose
+/// arguments are the rest, tagged by the list's names. The tree is the one the
+/// parser builds for the same call written out, so a call headed by an
+/// operator or a keyword symbol deparses — and evaluates — as that syntax:
+/// `as.call(list(as.name("-"), quote(a), quote(b)))` is `a - b`.
+fn call_from_parts(parts: Vec<(Option<String>, Value)>) -> Result<Expr, String> {
+    use crate::ast::{BinOp, IndexKind, UnOp};
+    let mut it = parts.into_iter();
+    let (_, head) = it
+        .next()
+        .ok_or_else(|| "invalid argument list".to_string())?;
+    let mut args = Vec::new();
+    for (name, v) in it {
+        args.push(Arg {
+            name: name.filter(|n| !n.is_empty()),
+            value: part_expr(&v)?,
+        });
+    }
+    let fun = part_expr(&head)?.ok_or_else(|| "invalid argument list".to_string())?;
+    let Expr::Ident(op) = &fun else {
+        return Ok(Expr::Call { fun: Box::new(fun), args });
+    };
+    // Only an untagged, fully supplied argument list has a syntactic spelling.
+    let plain: Option<Vec<Expr>> = match args.iter().all(|a| a.name.is_none()) {
+        true => args.iter().map(|a| a.value.clone()).collect(),
+        false => None,
+    };
+    let b = Box::new;
+    let binop = match op.as_str() {
+        "+" => Some(BinOp::Add),
+        "-" => Some(BinOp::Sub),
+        "*" => Some(BinOp::Mul),
+        "/" => Some(BinOp::Div),
+        "^" => Some(BinOp::Pow),
+        "<" => Some(BinOp::Lt),
+        ">" => Some(BinOp::Gt),
+        "<=" => Some(BinOp::Le),
+        ">=" => Some(BinOp::Ge),
+        "==" => Some(BinOp::Eq),
+        "!=" => Some(BinOp::Ne),
+        "&" => Some(BinOp::And),
+        "|" => Some(BinOp::Or),
+        "&&" => Some(BinOp::And2),
+        "||" => Some(BinOp::Or2),
+        ":" => Some(BinOp::Colon),
+        _ => None,
+    };
+    let built = match (op.as_str(), plain) {
+        (_, Some(v)) if binop.is_some() && v.len() == 2 => binop.map(|op| Expr::Binary {
+            op,
+            lhs: b(v[0].clone()),
+            rhs: b(v[1].clone()),
+        }),
+        ("-" | "+" | "!", Some(v)) if v.len() == 1 => {
+            let op = match op.as_str() {
+                "-" => UnOp::Neg,
+                "+" => UnOp::Plus,
+                _ => UnOp::Not,
+            };
+            Some(Expr::Unary { op, operand: b(v[0].clone()) })
+        }
+        (s, Some(v)) if s.len() >= 2 && s.starts_with('%') && s.ends_with('%') && v.len() == 2 => {
+            // The lexer strips the `%`s; `%%` and `%/%` lex to "" and "/".
+            let name = match s {
+                "%%" => String::new(),
+                "%/%" => "/".to_string(),
+                other => other[1..other.len() - 1].to_string(),
+            };
+            Some(Expr::Special { name, lhs: b(v[0].clone()), rhs: b(v[1].clone()) })
+        }
+        ("(", Some(v)) if v.len() == 1 => Some(Expr::Paren(b(v[0].clone()))),
+        ("{", Some(v)) => Some(Expr::Block(v)),
+        ("if", Some(v)) if v.len() == 2 || v.len() == 3 => Some(Expr::If {
+            cond: b(v[0].clone()),
+            then: b(v[1].clone()),
+            els: v.get(2).cloned().map(b),
+        }),
+        ("while", Some(v)) if v.len() == 2 => Some(Expr::While {
+            cond: b(v[0].clone()),
+            body: b(v[1].clone()),
+        }),
+        ("repeat", Some(v)) if v.len() == 1 => Some(Expr::Repeat(b(v[0].clone()))),
+        ("for", Some(v)) if v.len() == 3 => match &v[0] {
+            Expr::Ident(var) => Some(Expr::For {
+                var: var.clone(),
+                seq: b(v[1].clone()),
+                body: b(v[2].clone()),
+            }),
+            _ => None,
+        },
+        ("<-" | "<<-", Some(v)) if v.len() == 2 => Some(Expr::Assign {
+            target: b(v[0].clone()),
+            value: b(v[1].clone()),
+            super_assign: op == "<<-",
+        }),
+        ("$" | "@", Some(v)) if v.len() == 2 => match &v[1] {
+            Expr::Ident(n) | Expr::Str(n) => Some(Expr::Index {
+                kind: if op == "$" { IndexKind::Dollar } else { IndexKind::At },
+                obj: b(v[0].clone()),
+                args: vec![Arg { name: None, value: Some(Expr::Str(n.clone())) }],
+            }),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(e) = built {
+        return Ok(e);
+    }
+    // `[` / `[[` keep tags and empty subscripts (`x[, 1]`, `x[i, drop = FALSE]`).
+    if matches!(op.as_str(), "[" | "[[") && args.first().is_some_and(|a| a.name.is_none()) {
+        if let Some(obj) = args[0].value.clone() {
+            return Ok(Expr::Index {
+                kind: if op == "[" { IndexKind::Single } else { IndexKind::Double },
+                obj: b(obj),
+                args: args[1..].to_vec(),
+            });
+        }
+    }
+    Ok(Expr::Call { fun: b(fun), args })
+}
+
+/// A list turned back into a call — the inverse of [`lang_as_list`].
+fn list_as_call(list: &Value) -> Result<Value, String> {
+    let names = names_of(list);
+    let parts: Vec<(Option<String>, Value)> = elements(list)
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| (names.get(i).cloned().flatten(), v))
+        .collect();
+    Ok(mk_lang(call_from_parts(parts)?))
+}
+
 /// The expression behind a language object, for a caller that needs the tree
 /// rather than the value: `Some` for a call or a name, and for a constant the
 /// literal it came from, so `as.list(quote(f(1)))` can take its elements apart.
@@ -2768,6 +2932,12 @@ fn resolve_index(
 
 /// `x[...]` — subsetting, which keeps the container type and the names.
 fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    // `e[i]` of a call is the call made of the selected parts: `quote(f(1, 2,
+    // 3))[-2]` is `f(2, 3)`, and `[2:3]` makes `1` the function.
+    if let RData::Lang(e) = data(x) {
+        let parts = index_single(&lang_as_list(&e), args)?;
+        return list_as_call(&parts);
+    }
     let supplied: Vec<&Value> = args
         .iter()
         .filter(|(_, v)| !matches!(v, Value::Undef))
@@ -3351,6 +3521,13 @@ fn assign_index(
     single_slot: bool,
     inplace: bool,
 ) -> Result<Value, String> {
+    // A call is a pairlist in R and subassigns like a list of its parts:
+    // `e[[1]] <- as.name("g")` renames the function, `e$y <- 5` sets or adds
+    // a tagged argument.
+    if let RData::Lang(e) = data(x) {
+        let list = assign_index(&lang_as_list(&e), args, value, single_slot, false)?;
+        return list_as_call(&list);
+    }
     // `a[i, j, …] <- v`: turn the N-D selection into linear column-major
     // positions and reuse the 1-D path (which promotes type and preserves the
     // `dim` attribute through `copy_of`). Mirrors `array_index` for reads.
@@ -4068,6 +4245,8 @@ pub const PRIMITIVES: &[&str] = &[
     "as.logical",
     "as.vector",
     "as.list",
+    "call",
+    "as.call",
     "list",
     "unlist",
     "lapply",
@@ -4466,23 +4645,37 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             });
             Ok(out)
         }
+        // `call(name, ...)`: the call of the function named `name` with the
+        // (already evaluated) arguments, as `do_call` builds it.
+        "call" => {
+            let name = a
+                .all
+                .first()
+                .map(|(_, v)| v.clone())
+                .filter(|v| kind(v) == RKind::Str && len(v) == 1)
+                .and_then(|v| str1(&v))
+                .ok_or_else(|| "first argument must be a character string".to_string())?;
+            let head = with_host(|h| h.alloc(RData::Sym(name)));
+            let mut parts = vec![(None, head)];
+            parts.extend(a.all.iter().skip(1).cloned());
+            Ok(mk_lang(call_from_parts(parts)?))
+        }
+        // `as.call(x)`: a list's first element called on the rest; a call is
+        // already one.
+        "as.call" => {
+            let x = a.req(0, "x")?;
+            match data(&x) {
+                RData::Lang(_) => Ok(x),
+                RData::List(_) if len(&x) > 0 => list_as_call(&x),
+                _ => Err("invalid argument list".into()),
+            }
+        }
         "as.list" => {
             let x = a.req(0, "x")?;
             // A call becomes the list of its parts, tagged where an argument
             // was named — `as.list(quote(f(a = 1)))` keeps the `a`.
             if let RData::Lang(e) = data(&x) {
-                let parts = lang_parts(&e);
-                let out = mk_list(parts.iter().map(|(_, v)| v.clone()).collect());
-                // An untagged argument becomes an *empty* name, not a missing
-                // one: R heads it `[[i]]`, where an `NA` name heads `$<NA>`.
-                if parts.iter().any(|(t, _)| t.is_some()) {
-                    let nm = parts
-                        .iter()
-                        .map(|(t, _)| Some(t.clone().unwrap_or_default()))
-                        .collect();
-                    set_names(&out, nm);
-                }
-                return Ok(out);
+                return Ok(lang_as_list(&e));
             }
             let out = mk_list(elements(&x));
             let nm = names_of(&x);
@@ -4506,6 +4699,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "names" => {
             let x = a.req(0, "x")?;
+            // A call's names are its argument tags, as its part list has them.
+            if let RData::Lang(e) = data(&x) {
+                let parts = lang_as_list(&e);
+                return Ok(with_host(|h| h.attr(&parts, "names")).unwrap_or_else(null));
+            }
             let nm = names_of(&x);
             // A zero-length vector can still *carry* a names attribute, and R
             // reports it as `character(0)` rather than `NULL`; `names_of`
@@ -9375,7 +9573,30 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let Some(e) = lang_of(&x) else { return Ok(x) };
             // `envir = e` runs the expression *in* that environment; without
             // one it runs where the caller stands.
-            match a.get(1, "envir").and_then(|v| env_of(&v)) {
+            // A list `envir` is R's: a fresh environment of its named elements,
+            // enclosed by `enclos` (by default where `eval` was called).
+            let envir = a.get(1, "envir");
+            let list_env = match &envir {
+                Some(l) if kind(l) == RKind::List => {
+                    let parent = match a.get(2, "enclos") {
+                        Some(p) => env_of(&p).ok_or("invalid 'enclos' argument")?,
+                        None => with_host(|h| h.env()),
+                    };
+                    let env = Rc::new(std::cell::RefCell::new(crate::host::EnvData {
+                        vars: NameMap::default(),
+                        parent: Some(parent),
+                    }));
+                    let names = names_of(l);
+                    for (i, v) in elements(l).into_iter().enumerate() {
+                        if let Some(Some(n)) = names.get(i).filter(|n| n.as_deref() != Some("")) {
+                            with_host(|h| h.bind(&env, n, v));
+                        }
+                    }
+                    Some(env)
+                }
+                _ => None,
+            };
+            match list_env.or_else(|| envir.as_ref().and_then(env_of)) {
                 Some(env) => in_env(env, || eval_expr(&e)),
                 None => eval_expr(&e),
             }
