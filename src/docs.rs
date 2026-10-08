@@ -582,6 +582,11 @@ const SUMMARIES: &[Entry] = &[
         "Sample quantiles, a port of R's quantile.default: all nine types (7, interpolating (1 - h) * x[lo] + h * x[hi], is the default), names from formatC(100 * probs, format = \"fg\", digits = digits) plus a percent sign, an empty name and a missing value for a missing prob. A missing value in x is an error unless na.rm = TRUE; an ordered factor takes type 1 or 3 and gives an ordered factor.",
     ),
     (
+        "summary",
+        "summary(object, maxsum, digits, quantile.type = 7)",
+        "R's summary.default: for a numeric vector the minimum, quartiles, mean and maximum (quantile type quantile.type, rounded to digits significant digits when given) and the count of NAs; for a logical one its mode and value counts; for a character one its length, distinct and blank counts and nchar range; for a factor each level's count, the least frequent pooled as (Other) past maxsum levels. All but the factor's print as a table, a numeric one to getOption(\"digits\") - 3 significant digits. A matrix, list or data frame is summarised in the embedded R.",
+    ),
+    (
         "cor",
         "cor(x, y)",
         "The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.",

@@ -4217,6 +4217,7 @@ pub const PRIMITIVES: &[&str] = &[
     "mean",
     "median",
     "quantile",
+    "summary",
     "cor",
     "cov",
     "rle",
@@ -6506,6 +6507,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }))
         }
         "quantile" => in_method("quantile.default", || quantile_default(&a)),
+        "summary" => summary_default(&a),
         "sweep" => sweep(&a),
         "rowsum" => in_method("rowsum.default", || rowsum_default(&a)),
         // `.Internal(row(dim(x)))` / `col`: the integer matrix of each
@@ -12418,6 +12420,194 @@ fn median_of(x: &[Option<f64>]) -> Option<f64> {
     })
 }
 
+// ── summary ─────────────────────────────────────────────────────────────
+
+/// R's `summary.default` (with `summary.factor` for a factor): the six-number
+/// summary of a numeric vector, the mode and value counts of a logical one,
+/// the length, distinct and blank counts and `nchar` range of a character one,
+/// and the level counts of a factor — each with its count of `NA`s appended
+/// when there are any. All but the factor's are classed
+/// `c("summaryDefault", "table")`. A matrix, list or data frame takes R's own
+/// methods, in the embedded R.
+fn summary_default(a: &Args) -> Result<Value, String> {
+    let object = a.req(0, "object")?;
+    if is_factor(&object) {
+        let maxsum = a.get(1, "maxsum").and_then(|v| num1(&v)).unwrap_or(100.0) as usize;
+        return summary_factor(&object, maxsum);
+    }
+    if with_host(|h| h.attr(&object, "dim")).is_some() || kind(&object) == RKind::List {
+        return cran_call("summary", &a.all);
+    }
+    let qtype = a.named("quantile.type").unwrap_or_else(|| scalar_dbl(7.0));
+    let nas = as_lgl(&call_primitive("is.na", vec![(None, object.clone())])?);
+    let nna = nas.iter().filter(|b| **b == Some(true)).count();
+    let keep = mk_lgl(nas.iter().map(|b| Some(*b != Some(true))).collect());
+    let present = index_single(&object, &[(None, keep)])?;
+    let (vals, names): (Vec<Value>, Vec<&str>) = match kind(&object) {
+        RKind::Lgl => {
+            // `c(Mode = "logical", table(object, exclude = NULL, useNA = "ifany"))`
+            // with the NA cell named "NAs": a character vector.
+            let xs = as_lgl(&object);
+            let count = |w: Option<bool>| xs.iter().filter(|b| **b == w).count();
+            let mut v = vec![scalar_str("logical")];
+            let mut n = vec!["Mode"];
+            for (w, label) in [(Some(false), "FALSE"), (Some(true), "TRUE")] {
+                if count(w) > 0 {
+                    v.push(scalar_str(count(w).to_string()));
+                    n.push(label);
+                }
+            }
+            if nna > 0 {
+                v.push(scalar_str(nna.to_string()));
+                n.push("NAs");
+            }
+            (v, n)
+        }
+        RKind::Int | RKind::Dbl => {
+            let qq = call_primitive(
+                "quantile",
+                vec![
+                    (None, present.clone()),
+                    (Some("names".into()), scalar_lgl(false)),
+                    (Some("type".into()), qtype),
+                ],
+            )?;
+            let mean = call_primitive("mean", vec![(None, present)])?;
+            let mut qq: Vec<Option<f64>> = as_dbl(&qq);
+            qq.insert(3, as_dbl(&mean).first().copied().flatten());
+            if let Some(d) = a.named("digits").and_then(|d| num1(&d)) {
+                qq = as_dbl(&call_primitive(
+                    "signif",
+                    vec![(None, mk_dbl(qq)), (None, scalar_dbl(d))],
+                )?);
+            }
+            let mut v = vec![mk_dbl(qq)];
+            if nna > 0 {
+                v.push(scalar_dbl(nna as f64));
+            }
+            let mut n = vec!["Min.", "1st Qu.", "Median", "Mean", "3rd Qu.", "Max."];
+            if nna > 0 {
+                n.push("NAs");
+            }
+            (v, n)
+        }
+        RKind::Str => {
+            let xs: Vec<String> = as_str(&present).into_iter().flatten().collect();
+            let mut distinct = xs.clone();
+            distinct.sort();
+            distinct.dedup();
+            let blank = xs
+                .iter()
+                .filter(|s| s.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n')))
+                .count();
+            let widths: Vec<usize> = xs.iter().map(|s| s.chars().count()).collect();
+            let int = |n: Option<usize>| mk_int(vec![n.map(|n| n as i64)]);
+            let mut v = vec![
+                int(Some(nas.len())),
+                int(Some(distinct.len())),
+                int(Some(blank)),
+                int(widths.iter().min().copied()),
+                int(widths.iter().max().copied()),
+            ];
+            let mut n = vec!["Length", "N.unique", "N.blank", "Min.nchar", "Max.nchar"];
+            if nna > 0 {
+                v.push(int(Some(nna)));
+                n.push("NAs");
+            }
+            (v, n)
+        }
+        _ => {
+            // `c(Length = length(object), Class = class(object), Mode = mode(object))`
+            let n = len(&object).to_string();
+            let class = call_primitive("class", vec![(None, object.clone())])?;
+            let mode = call_primitive("mode", vec![(None, object.clone())])?;
+            (vec![scalar_str(n), class, mode], vec!["Length", "Class", "Mode"])
+        }
+    };
+    let out = concat(&Args::new(vals.into_iter().map(|v| (None, v)).collect()));
+    set_names(&out, names.into_iter().map(|n| Some(n.to_string())).collect());
+    let cls = mk_str(vec![Some("summaryDefault".into()), Some("table".into())]);
+    with_host(|h| h.set_attr(&out, "class", cls));
+    Ok(out)
+}
+
+/// R's `summary.factor(object, maxsum = 100L)`: each level's count, named by
+/// the level; past `maxsum` levels (one fewer when there are `NA`s) the least
+/// frequent are pooled as `(Other)`, and the `NA` count follows as `NAs`.
+fn summary_factor(object: &Value, maxsum: usize) -> Result<Value, String> {
+    let levels = levels_of(object);
+    let codes = as_int(object);
+    let nna = codes.iter().filter(|c| c.is_none()).count();
+    let maxsum = if nna > 0 { maxsum.saturating_sub(1) } else { maxsum };
+    let mut tt: Vec<(String, i64)> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let n = codes.iter().filter(|c| **c == Some(i as i64 + 1)).count();
+            (l.clone(), n as i64)
+        })
+        .collect();
+    if tt.len() > maxsum {
+        // `sort.list(tt, decreasing = TRUE)` is stable, so ties keep level order.
+        let mut order: Vec<usize> = (0..tt.len()).collect();
+        order.sort_by(|&i, &j| tt[j].1.cmp(&tt[i].1));
+        let cut = maxsum.saturating_sub(1);
+        let other: i64 = order[cut..].iter().map(|&i| tt[i].1).sum();
+        let mut kept: Vec<(String, i64)> = order[..cut].iter().map(|&i| tt[i].clone()).collect();
+        kept.push(("(Other)".into(), other));
+        tt = kept;
+    }
+    if nna > 0 {
+        tt.push(("NAs".into(), nna as i64));
+    }
+    let out = mk_int(tt.iter().map(|(_, n)| Some(*n)).collect());
+    set_names(&out, tt.into_iter().map(|(l, _)| Some(l)).collect());
+    Ok(out)
+}
+
+/// What `print.summaryDefault` shows for a numeric summary: `format.summaryDefault`
+/// — the finite values `zapsmall`ed to `digits + 4` digits, the whole formatted
+/// to `digits` significant digits (`max(3, getOption("digits") - 3)`), and the
+/// `NAs` count appended as its own text.
+fn format_summary_default(v: &Value) -> Result<Value, String> {
+    let digits = (crate::host::print_digits() as f64 - 3.0).max(3.0);
+    let names = names_of(v);
+    let mut xs = as_dbl(v);
+    let mut labels = names.clone();
+    let nna = match names.iter().position(|n| n.as_deref() == Some("NAs")) {
+        Some(m) => {
+            labels.remove(m);
+            Some(xs.remove(m))
+        }
+        None => None,
+    };
+    let finite: Vec<usize> = (0..xs.len())
+        .filter(|&i| xs[i].is_some_and(f64::is_finite))
+        .collect();
+    let small = call_primitive(
+        "zapsmall",
+        vec![
+            (None, mk_dbl(finite.iter().map(|&i| xs[i]).collect())),
+            (Some("digits".into()), scalar_dbl(digits + 4.0)),
+        ],
+    )?;
+    for (k, z) in finite.iter().zip(as_dbl(&small)) {
+        xs[*k] = z;
+    }
+    let body = mk_dbl(xs);
+    set_names(&body, labels.clone());
+    let text = call_primitive("format", vec![(None, body), (Some("digits".into()), scalar_dbl(digits))])?;
+    let mut out = as_str(&text);
+    if let Some(n) = nna {
+        out.push(Some(as_str(&mk_dbl(vec![n])).remove(0).unwrap_or_default()));
+        labels.push(Some("NAs".into()));
+    }
+    let out = mk_str(out);
+    set_names(&out, labels);
+    Ok(out)
+}
+
+
 /// R's `quantile.default` (stats/R/quantile.R), all nine `type`s.
 ///
 /// `x` may not hold a missing value unless `na.rm` drops them; a missing
@@ -15412,6 +15602,16 @@ fn format_value_body(v: &Value) -> Vec<String> {
             0 => vec!["<0-length hexmode>".into()],
             _ => format_value(&format_hexmode(v, None, false)),
         };
+    }
+    // `print.summaryDefault`: a numeric summary as `format.summaryDefault`
+    // renders it, a logical, character or integer one as itself — unquoted,
+    // laid out as the named vector it is (`print.table` with no `dim`).
+    if classes.iter().any(|c| c == "summaryDefault") {
+        let text = match kind(v) {
+            RKind::Dbl => format_summary_default(v).unwrap_or_else(|_| v.clone()),
+            _ => v.clone(),
+        };
+        return with_print_quote(false, || format_vector(&text));
     }
     let rank = with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d));
     if rank <= 1 && classes.iter().any(|c| c == "table") {

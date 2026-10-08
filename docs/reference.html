@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 354 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 355 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 386 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 387 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 354 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 355 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -139,7 +139,7 @@
         <li><a href="#ch-Output-and-the-inlineminusRust-FFI">Output and the inline-Rust FFI</a> <span class="chapter-count">25</span></li>
         <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
-        <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">18</span></li>
+        <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">19</span></li>
         <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">50</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">32</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">39</span></li>
@@ -711,7 +711,7 @@
     </section>
     <section class="tutorial-section" id="ch-Numeric-summaries">
       <h2>Numeric summaries</h2>
-      <p class="chapter-meta">18 entries</p>
+      <p class="chapter-meta">19 entries</p>
       <article class="doc-entry" id="doc-weighted-mean">
         <h3><a class="doc-anchor" href="#doc-weighted-mean">#</a> <code>weighted.mean</code></h3>
         <pre><code class="lang-r r">weighted.mean(x, w, na.rm = FALSE)
@@ -747,6 +747,12 @@
         <pre><code class="lang-r r">quantile(x, probs = seq(0, 1, 0.25), na.rm = FALSE, names = TRUE, type = 7, digits = 7, fuzz)
 </code></pre>
         <p>Sample quantiles, a port of R's quantile.default: all nine types (7, interpolating (1 - h) * x[lo] + h * x[hi], is the default), names from formatC(100 * probs, format = "fg", digits = digits) plus a percent sign, an empty name and a missing value for a missing prob. A missing value in x is an error unless na.rm = TRUE; an ordered factor takes type 1 or 3 and gives an ordered factor.</p>
+      </article>
+      <article class="doc-entry" id="doc-summary">
+        <h3><a class="doc-anchor" href="#doc-summary">#</a> <code>summary</code></h3>
+        <pre><code class="lang-r r">summary(object, maxsum, digits, quantile.type = 7)
+</code></pre>
+        <p>R's summary.default: for a numeric vector the minimum, quartiles, mean and maximum (quantile type quantile.type, rounded to digits significant digits when given) and the count of NAs; for a logical one its mode and value counts; for a character one its length, distinct and blank counts and nchar range; for a factor each level's count, the least frequent pooled as (Other) past maxsum levels. All but the factor's print as a table, a numeric one to getOption("digits") - 3 significant digits. A matrix, list or data frame is summarised in the embedded R.</p>
       </article>
       <article class="doc-entry" id="doc-cor">
         <h3><a class="doc-anchor" href="#doc-cor">#</a> <code>cor</code></h3>

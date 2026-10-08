@@ -2774,3 +2774,12 @@ print(as.character(as.hexmode(c(1, 255)))); print(as.hexmode(c("ff", "0x1A", "7"
 print(as.hexmode(c(1, NA, 16))); print(format(as.hexmode(-1L))); print(as.hexmode(integer(0))); print(identical(as.hexmode(h), h))
 err <- function(e) conditionMessage(e); print(tryCatch(as.hexmode(1.5), error = err)); print(tryCatch(as.hexmode("zz"), error = err)); print(tryCatch(as.hexmode(TRUE), error = err))
 m <- as.hexmode(matrix(c(1L, 20L, 300L, 4000L), 2)); print(format(m)); print(as.hexmode(255)[1]); print(as.hexmode(c(5, 6))[2])
+#==#
+# summary(): the six-number summary of a numeric vector (NAs counted),
+# printed to getOption("digits") - 3 significant digits; logical, character
+# and factor summaries count their values.
+summary(c(1, 2, 3, 4, 100)); summary(c(1.5, NA, 3)); summary(1:10); print(summary(c(0.001234, 123456)))
+summary(c(TRUE, FALSE, NA)); summary(c(TRUE, TRUE)); summary(c("a", "b", "b", " ", NA)); summary(factor(c("x", "y", "x", NA)))
+s <- summary(c(2, 4, 9)); print(class(s)); print(unclass(s)); print(names(s)); print(s[["Mean"]]); print(summary(c(1, 2), digits = 2))
+summary(numeric(0)); summary(c(-1e-12, 1, 2)); summary(factor(c("a", "b", "c", "a")), maxsum = 2); summary(c(10.123456, 20.987654))
+options(digits = 10); summary(c(1.123456789, 2.2)); options(digits = 7); summary(c(NA_real_, NA_real_))

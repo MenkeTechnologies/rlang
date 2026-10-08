@@ -343,10 +343,12 @@ run that compared nothing — no cases generated, or an oracle that never answer
   builtin here (`paste`, `force`) still prints as `function (...)
   .Primitive("name")`, since rlang has no R source for its formals.
   `deparse(sum)` is exact.
-- **`str()` and `dput()` are native; `summary()` is not.** `dput` and
+- **`str()`, `dput()` and `summary()` are native.** `dput` and
   `deparse` of a value port `deparse.c`'s value cases: inline names, `structure()`
   for other attributes, typed `NA`s, 15-digit doubles and the `width.cutoff`
-  wrap. `summary()` has no primitive and runs in the embedded GNU R.
+  wrap. `summary()` ports `summary.default` and `summary.factor` with the
+  `summaryDefault` print method for vectors and factors; a matrix, list or
+  data frame still goes to the embedded GNU R.
 - **`hexmode` is native except for its bitwise methods.** `as.hexmode`, and
   `format`, `print`, `as.character` and `[` of a `hexmode`, port R's methods;
   `!`, `&` and `|` on one (R's bitwise `!.hexmode`, `&.hexmode`, `|.hexmode`)
