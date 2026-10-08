@@ -2765,3 +2765,12 @@ print(unsplit(lapply(split(x, g), rev), g)); print(unsplit(list(c("p", "q", "r")
 w <- c(a = 1, b = 2, c = 3); print(unsplit(split(w, c(1, 2, 1)), c(1, 2, 1)))
 print(unsplit(list(1:2, 9L), c(1, 2, 1, 2, 1)[1:3])); print(unsplit(split(c(TRUE, FALSE, NA), c("x", "y", "x")), c("x", "y", "x")))
 print(unsplit(lapply(split(1:6, rep(1:2, 3)), cumsum), rep(1:2, 3)))
+#==#
+# as.hexmode(): an integer vector classed hexmode that formats, prints and
+# converts to hexadecimal digits, zero-padded to a common width.
+print(as.hexmode(255)); print(as.hexmode(c(1, 255, 4096))); h <- as.hexmode(c(a = 10L, b = 300L)); print(h); h
+print(format(as.hexmode(c(1, 255)))); print(format(as.hexmode(255), width = 4)); print(format(as.hexmode(c(10, 255)), upper.case = TRUE))
+print(as.character(as.hexmode(c(1, 255)))); print(as.hexmode(c("ff", "0x1A", "7"))); print(class(as.hexmode(3L))); print(unclass(as.hexmode("10")))
+print(as.hexmode(c(1, NA, 16))); print(format(as.hexmode(-1L))); print(as.hexmode(integer(0))); print(identical(as.hexmode(h), h))
+err <- function(e) conditionMessage(e); print(tryCatch(as.hexmode(1.5), error = err)); print(tryCatch(as.hexmode("zz"), error = err)); print(tryCatch(as.hexmode(TRUE), error = err))
+m <- as.hexmode(matrix(c(1L, 20L, 300L, 4000L), 2)); print(format(m)); print(as.hexmode(255)[1]); print(as.hexmode(c(5, 6))[2])

@@ -1030,6 +1030,11 @@ const STRINGS: &[Entry] = &[
         "Parse each string as an integer in the given base, accepting an optional 0x or 0X prefix at base 16. Unparseable strings become NA.",
     ),
     (
+        "as.hexmode",
+        "as.hexmode(x)",
+        "An integer vector classed hexmode: integers as they are, whole doubles through as.integer, strings read as base-16 digits; anything else is an error. It formats (format(x, width, upper.case)), prints and converts with as.character as hexadecimal digits, zero-padded to a common width, and keeps its class when subset with [.",
+    ),
+    (
         "strrep",
         "strrep(x, times)",
         "Repeat each string `times` times, with both arguments recycled.",

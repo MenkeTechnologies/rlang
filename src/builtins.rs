@@ -1866,6 +1866,101 @@ fn c_strtoi(s: &str, base: u32) -> Option<i64> {
         .then_some(v as i64)
 }
 
+// ── hexmode ─────────────────────────────────────────────────────────────
+
+/// Whether `x` carries the `hexmode` class.
+fn is_hexmode(x: &Value) -> bool {
+    class_of(x).iter().any(|c| c == "hexmode")
+}
+
+/// R's `as.hexmode`: an integer vector classed `"hexmode"` — an integer `x`
+/// as it is, a double one through `as.integer` when every element is whole or
+/// `NA` (`all(is.na(x) | x == as.integer(x))`, an `NA` answer being the `if`
+/// error), and a character one through `strtoi(x, 16L)` when no element fails
+/// to read or reads negative.
+fn as_hexmode(x: &Value) -> Result<Value, String> {
+    if is_hexmode(x) {
+        return Ok(x.clone());
+    }
+    let classed = |v: Value| {
+        let cls = scalar_str("hexmode");
+        with_host(|h| h.set_attr(&v, "class", cls));
+        v
+    };
+    match kind(x) {
+        RKind::Int => return Ok(classed(copy_of(x))),
+        RKind::Dbl => {
+            // `as.integer` is NA outside int's range, which makes the
+            // comparison NA rather than FALSE.
+            let as_integer =
+                |v: f64| (v > i32::MIN as f64 && v < i32::MAX as f64 + 1.0).then(|| v.trunc() as i64);
+            let xs = as_dbl(x);
+            let whole: Vec<Option<bool>> = xs
+                .iter()
+                .map(|v| match v {
+                    None => Some(true),
+                    Some(v) if v.is_nan() => Some(true),
+                    Some(v) => as_integer(*v).map(|i| i as f64 == *v),
+                })
+                .collect();
+            if whole.contains(&Some(false)) {
+                // falls through to the error below
+            } else if whole.contains(&None) {
+                return Err("missing value where TRUE/FALSE needed".into());
+            } else {
+                let ints = xs.iter().map(|v| v.filter(|v| !v.is_nan()).and_then(as_integer));
+                return Ok(classed(mk_int(ints.collect())));
+            }
+        }
+        RKind::Str => {
+            let z: Vec<Option<i64>> = as_str(x)
+                .iter()
+                .map(|s| s.as_deref().and_then(|s| c_strtoi(s, 16)))
+                .collect();
+            if z.iter().all(|v| v.is_some_and(|v| v >= 0)) {
+                return Ok(classed(mk_int(z)));
+            }
+        }
+        _ => {}
+    }
+    Err("'x' cannot be coerced to class \"hexmode\"".into())
+}
+
+/// One element as `sprintf("%x")` writes an `int`: a negative one as its
+/// two's-complement bit pattern.
+fn hex_digits(v: i64, width: usize, upper: bool) -> String {
+    let u = v as i32 as u32;
+    match upper {
+        true => format!("{u:0width$X}"),
+        false => format!("{u:0width$x}"),
+    }
+}
+
+/// R's `format.hexmode(x, width = NULL, upper.case = FALSE)`: each element in
+/// hexadecimal, zero-padded to `width` or, without one, to the widest element
+/// when there is more than one; `NA` stays `NA`, and `dim`, `dimnames` and
+/// `names` carry over.
+fn format_hexmode(x: &Value, width: Option<f64>, upper: bool) -> Value {
+    let xs = as_int(x);
+    let width = match width {
+        Some(w) => w.max(0.0) as usize,
+        None if xs.iter().flatten().count() > 1 => xs
+            .iter()
+            .flatten()
+            .map(|&v| hex_digits(v, 0, upper).len())
+            .max()
+            .unwrap_or(0),
+        None => 0,
+    };
+    let out = mk_str(xs.iter().map(|v| v.map(|v| hex_digits(v, width, upper))).collect());
+    for name in ["dim", "dimnames", "names"] {
+        if let Some(a) = with_host(|h| h.attr(x, name)) {
+            with_host(|h| h.set_attr(&out, name, a));
+        }
+    }
+    out
+}
+
 fn binop_warning(msg: &str) -> Result<(), String> {
     signal_warning_in(msg, None)
 }
@@ -2855,6 +2950,21 @@ fn resolve_index(
 
 /// `x[...]` — subsetting, which keeps the container type and the names.
 fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, String> {
+    // `[.hexmode`: the default subset, then `oldClass(y) <- oldClass(x)`.
+    if is_hexmode(x) {
+        let plain = copy_of(x);
+        let cls = with_host(|h| {
+            let none = h.null();
+            let cls = h.attr(x, "class");
+            h.set_attr(&plain, "class", none);
+            cls
+        });
+        let y = index_single(&plain, args)?;
+        if let Some(c) = cls {
+            with_host(|h| h.set_attr(&y, "class", c));
+        }
+        return Ok(y);
+    }
     // `e[i]` of a call is the call made of the selected parts: `quote(f(1, 2,
     // 3))[-2]` is `f(2, 3)`, and `[2:3]` makes `1` the function.
     if let RData::Lang(e) = data(x) {
@@ -4224,6 +4334,7 @@ pub const PRIMITIVES: &[&str] = &[
     "casefold",
     "chartr",
     "strtoi",
+    "as.hexmode",
     "strrep",
     "encodeString",
     "make.unique",
@@ -4540,6 +4651,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "as.character" => {
             let x = a.req(0, "x")?;
+            // `as.character.hexmode(x, keepStr = FALSE)`: unpadded hex digits,
+            // with `x`'s names and dims only under `keepStr`.
+            if is_hexmode(&x) {
+                let out = mk_str(as_int(&x).iter().map(|v| v.map(|v| hex_digits(v, 0, false))).collect());
+                if a.named("keepStr").and_then(|v| lgl1(&v)) == Some(true) {
+                    for name in ["dim", "dimnames", "names"] {
+                        if let Some(at) = with_host(|h| h.attr(&x, name)) {
+                            with_host(|h| h.set_attr(&out, name, at));
+                        }
+                    }
+                }
+                return Ok(out);
+            }
             // A name is its own text; a call is its parts, each deparsed —
             // `as.character(quote(f(1)))` is `c("f", "1")`.
             if let Some(e) = lang_of(&x) {
@@ -5562,6 +5686,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "format" => {
             let x = a.req(0, "x")?;
+            // `format.hexmode(x, width = NULL, upper.case = FALSE)`.
+            if is_hexmode(&x) {
+                let width = a.get(1, "width").filter(|w| !is_null(w)).and_then(|w| num1(&w));
+                let upper = a.named("upper.case").and_then(|v| lgl1(&v)).unwrap_or(false);
+                return Ok(format_hexmode(&x, width, upper));
+            }
             // `format` of a function is its deparsed source, like `deparse`.
             if let Some(src) = function_src(&x) {
                 return Ok(mk_str(src.into_iter().map(Some).collect()));
@@ -7804,6 +7934,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 &xv,
             )
         }
+        "as.hexmode" => as_hexmode(&a.req(0, "x")?),
         "strtoi" => {
             let x = as_str(&a.req(0, "x")?);
             // R's `do_strtoi`: the default base is 0 (C's prefix-sniffing
@@ -15246,7 +15377,7 @@ fn has_print_layout(v: &Value) -> bool {
     class_of(v).iter().any(|c| {
         matches!(
             c.as_str(),
-            "factor" | "ordered" | "table" | "rle" | "condition" | "restart"
+            "factor" | "ordered" | "table" | "rle" | "condition" | "restart" | "hexmode"
         )
     })
 }
@@ -15274,6 +15405,13 @@ fn format_value_body(v: &Value) -> Vec<String> {
     let classes = class_of(v);
     if classes.iter().any(|c| c == "factor") {
         return format_factor(v);
+    }
+    // `print.hexmode`: the formatted digits, or a note for an empty one.
+    if classes.iter().any(|c| c == "hexmode") {
+        return match len(v) {
+            0 => vec!["<0-length hexmode>".into()],
+            _ => format_value(&format_hexmode(v, None, false)),
+        };
     }
     let rank = with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d));
     if rank <= 1 && classes.iter().any(|c| c == "table") {

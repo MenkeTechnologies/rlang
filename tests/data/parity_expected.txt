@@ -3601,3 +3601,29 @@ list()
 [1] 1 9 2
 [1]  TRUE FALSE    NA
 [1]  1  2  4  6  9 12
+#==#
+[1] "ff"
+[1] "0001" "00ff" "1000"
+    a     b 
+"00a" "12c" 
+    a     b 
+"00a" "12c" 
+[1] "01" "ff"
+[1] "00ff"
+[1] "0A" "FF"
+[1] "1"  "ff"
+[1] "ff" "1a" "07"
+[1] "hexmode"
+[1] 16
+[1] "01" NA   "10"
+[1] "ffffffff"
+<0-length hexmode>
+[1] TRUE
+[1] "'x' cannot be coerced to class \"hexmode\""
+[1] "'x' cannot be coerced to class \"hexmode\""
+[1] "'x' cannot be coerced to class \"hexmode\""
+     [,1]  [,2] 
+[1,] "001" "12c"
+[2,] "014" "fa0"
+[1] "ff"
+[1] "6"

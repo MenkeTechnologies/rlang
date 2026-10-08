@@ -347,6 +347,11 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `deparse` of a value port `deparse.c`'s value cases: inline names, `structure()`
   for other attributes, typed `NA`s, 15-digit doubles and the `width.cutoff`
   wrap. `summary()` has no primitive and runs in the embedded GNU R.
+- **`hexmode` is native except for its bitwise methods.** `as.hexmode`, and
+  `format`, `print`, `as.character` and `[` of a `hexmode`, port R's methods;
+  `!`, `&` and `|` on one (R's bitwise `!.hexmode`, `&.hexmode`, `|.hexmode`)
+  are not: they act logically, so `as.hexmode(12) & as.hexmode(10)` is `TRUE`
+  where R gives the hexmode `"8"`.
 
 ## Text
 
