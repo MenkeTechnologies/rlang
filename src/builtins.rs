@@ -4791,52 +4791,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_int(code))
         }
         "cat" => {
-            let sep = a
-                .named("sep")
-                .and_then(|v| str1(&v))
-                .unwrap_or_else(|| " ".into());
-            // R's `do_cat` walks the `...` objects, not a flattened element
-            // list: a separator goes before every non-empty object after the
-            // first, and between the elements within one. The two are not the
-            // same — a leading zero-length argument still earns its successor a
-            // separator, so `cat(NULL, "x")` prints " x", while
-            // `cat("a", NULL, "b")` prints "a b" and not "a  b".
-            let objs: Vec<&Value> = a
-                .all
-                .iter()
-                .filter(|(t, _)| !CAT_CONTROL_ARGS.contains(&t.as_deref().unwrap_or("")))
-                .map(|(_, v)| v)
-                .collect();
-            let mut out = String::new();
-            for (i, v) in objs.iter().enumerate() {
-                let n = len(v);
-                if i != 0 && n > 0 {
-                    out.push_str(&sep);
+            let text = match cat_text(&a) {
+                Ok(t) => t,
+                // A list or a function has no `cat` representation. R rejects
+                // it *after* writing everything up to that point.
+                Err((written, e)) => {
+                    crate::host::emit(&written);
+                    return Err(e);
                 }
-                if n == 0 {
-                    continue;
-                }
-                // A list or a function has no `cat` representation. R rejects it
-                // *after* writing everything up to that point, so flush first.
-                if let Some(kind) = uncatable(v) {
-                    crate::host::emit(&out);
-                    return Err(format!(
-                        "argument {} (type '{kind}') cannot be handled by 'cat'",
-                        i + 1
-                    ));
-                }
-                for (k, s) in as_str(v).into_iter().enumerate() {
-                    out.push_str(&s.unwrap_or_else(|| "NA".into()));
-                    if k + 1 < n {
-                        out.push_str(&sep);
-                    }
-                }
-            }
-            // R ends `cat` output with a newline whenever the separator itself
-            // contains one — `cat(c("a", "b"), sep = "\n")` prints three lines'
-            // worth of output, not two.
-            let tail = if sep.contains('\n') { "\n" } else { "" };
-            let text = format!("{out}{tail}");
+            };
             // `file = ""` is stdout, which is the default; a path writes there
             // instead, truncating unless `append = TRUE`. Without this the text
             // went to stdout and the file was never created, so a later
@@ -10610,6 +10573,116 @@ fn choose(n: f64, k: f64) -> f64 {
 
 /// `cat`'s own named arguments, which are not part of the `...` it prints.
 const CAT_CONTROL_ARGS: &[&str] = &["sep", "fill", "file", "append", "labels"];
+
+/// The text `cat(...)` writes — a port of R's `do_cat`.
+///
+/// The `...` objects are walked, not a flattened element list: a separator
+/// goes before every non-`NULL` object after the first (so `cat(NULL, "x")`
+/// prints " x" while `cat("a", NULL, "b")` prints "a b"), and between the
+/// elements within one. `sep` is recycled along the elements written. With
+/// `fill` (`TRUE` meaning the 80-column width, a number that many columns) an
+/// element that would run past the width starts a new line, headed by the next
+/// of `labels` when given, and the output ends with a newline — as it also
+/// does whenever any `sep` contains one.
+///
+/// An object `cat` cannot write is an error carrying what was written before
+/// it, which R has already sent to the connection.
+fn cat_text(a: &Args) -> Result<String, (String, String)> {
+    let sep: Vec<String> = match a.named("sep") {
+        Some(v) => as_str(&v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect(),
+        None => vec![" ".into()],
+    };
+    let nlsep = sep.iter().any(|s| s.contains('\n'));
+    // `pwidth`: `None` is R's SIZE_MAX, no filling at all.
+    let fill = a.named("fill");
+    let fill_int = fill.as_ref().and_then(num1).map_or(0, |f| f as i64);
+    let pwidth: Option<usize> = match &fill {
+        None => None,
+        Some(f) if kind(f) == RKind::Lgl => (lgl1(f) == Some(true)).then_some(80),
+        Some(_) if fill_int <= 0 => {
+            signal_warning("non-positive 'fill' argument will be ignored").map_err(|e| (String::new(), e))?;
+            None
+        }
+        Some(_) => Some(fill_int as usize),
+    };
+    let labels: Vec<String> = a
+        .named("labels")
+        .map(|v| as_str(&v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect())
+        .unwrap_or_default();
+    let sep_width = |ntot: usize| match sep.is_empty() {
+        true => 0,
+        false => crate::strwidth::display_width(&sep[ntot % sep.len()]),
+    };
+    let objs: Vec<&Value> = a
+        .all
+        .iter()
+        .filter(|(t, _)| !CAT_CONTROL_ARGS.contains(&t.as_deref().unwrap_or("")))
+        .map(|(_, v)| v)
+        .collect();
+    let mut out = String::new();
+    let (mut width, mut ntot, mut nlines) = (0usize, 0usize, 0usize);
+    // `cat_newline`: a line break, then the next label if there are any.
+    let newline = |out: &mut String, width: &mut usize, nlines: usize| {
+        out.push('\n');
+        *width = 0;
+        if !labels.is_empty() {
+            let l = &labels[nlines % labels.len()];
+            out.push_str(l);
+            out.push(' ');
+            *width += crate::strwidth::display_width(l) + 1;
+        }
+    };
+    for (iobj, v) in objs.iter().enumerate() {
+        if iobj != 0 && kind(v) != RKind::Null && !sep.is_empty() {
+            out.push_str(&sep[ntot % sep.len()]);
+        }
+        if iobj != 0 && kind(v) != RKind::Null {
+            ntot += 1;
+        }
+        let n = len(v);
+        if n == 0 {
+            continue;
+        }
+        if !labels.is_empty() && iobj == 0 && fill_int > 0 {
+            let l = &labels[nlines % labels.len()];
+            out.push_str(l);
+            out.push(' ');
+            width += crate::strwidth::display_width(l) + 1;
+            nlines += 1;
+        }
+        if let Some(kind) = uncatable(v) {
+            let msg = format!("argument {} (type '{kind}') cannot be handled by 'cat'", iobj + 1);
+            return Err((out, msg));
+        }
+        let items: Vec<String> = as_str(v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect();
+        let mut w = items[0].len();
+        let mut sepw = sep_width(ntot);
+        if iobj > 0 && pwidth.is_some_and(|p| width + w + sepw > p) {
+            newline(&mut out, &mut width, nlines);
+            nlines += 1;
+        }
+        for i in 0..n {
+            out.push_str(&items[i]);
+            width += w + sepw;
+            if i + 1 < n {
+                if !sep.is_empty() {
+                    out.push_str(&sep[ntot % sep.len()]);
+                }
+                w = items[i + 1].len();
+                sepw = sep_width(ntot);
+                if pwidth.is_some_and(|p| width + w + sepw > p) {
+                    newline(&mut out, &mut width, nlines);
+                    nlines += 1;
+                }
+                ntot += 1;
+            }
+        }
+    }
+    if pwidth.is_some() || nlsep {
+        out.push('\n');
+    }
+    Ok(out)
+}
 
 /// The R type name `cat` reports for a value it cannot print, or `None` when it
 /// can. R handles atomic vectors and symbols only; everything else is an error.

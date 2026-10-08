@@ -2648,3 +2648,13 @@ r <- try(stop("zz"), silent = TRUE); print(conditionCall(attr(r, "condition")));
 f <- `%in%`; print(f(1, 1:2)); print(Reduce(`%in%`, list(1:3, 2:5))); print(sapply(list(1, 5), `%in%`, 1:3))
 print(Map(`%in%`, list(1, 9), list(1:3, 1:3))); print(do.call(`%in%`, list(c("a", "z"), letters)))
 print(`%in%`(factor(c("a", "q")), c("a", "b"))); print(is.primitive(`%in%`)); print(typeof(`%in%`))
+#==#
+# cat(): fill wraps at the given (or 80-column) width and ends with a newline,
+# labels head each line, and sep is recycled along the elements written.
+cat("a", "b", fill = TRUE); cat("x\n")
+cat(paste("word", 1:30), fill = 40)
+cat(paste("item", 1:12), fill = 30, labels = paste0("(", letters[1:4], ")"))
+cat(1:10, sep = c(",", ";")); cat("\n")
+cat(1:3, c("a", "b"), sep = c("-", "+", "|")); cat("\n")
+cat("a", character(0), "b\n"); cat(NULL, "x\n"); cat("a", NULL, "b\n")
+cat(1:5, fill = 6)
