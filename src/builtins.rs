@@ -9270,7 +9270,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 "...length" => Ok(scalar_int(dots.len() as i64)),
                 "...elt" => {
                     let n = num1(&a.req(0, "n")?).unwrap_or(f64::NAN);
-                    if !(n >= 1.0) {
+                    if n.is_nan() || n < 1.0 {
                         return Err(format!(
                             "indexing '...' with non-positive index {}",
                             n as i64
@@ -14530,7 +14530,7 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     // `tryCatchList(…)` when there are no handlers), as R's does.
     let base = with_host(|h| h.calls.len());
     for c in try_catch_contexts(handlers.len(), None) {
-        push_context(&c);
+        push_context(c);
     }
     let out = run_lazy_body_at(&body, base.saturating_sub(1));
     with_host(|h| h.calls.truncate(base));
@@ -14579,7 +14579,7 @@ fn try_catch(a: &Args) -> Result<Value, String> {
                     };
                     // `tryCatchOne` calls the handler as `value[[3L]](cond)`.
                     for c in try_catch_contexts(handlers.len(), Some(j + 1)) {
-                        push_context(&c);
+                        push_context(c);
                     }
                     let out = call_value(f, vec![(None, cond)], None);
                     with_host(|h| h.calls.truncate(base));
