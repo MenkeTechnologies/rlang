@@ -270,7 +270,7 @@ R source → lexer → parser (AST) → lower to fusevm bytecode → fusevm VM +
 | Piece | How |
 | --- | --- |
 | **fusevm-hosted** | No local `vm.rs` / `jit.rs`. R lowers to fusevm bytecode and runs on the shared three-tier Cranelift JIT; `jit-disk-cache` persists native code across runs. |
-| **Native control flow** | Loops and branches lower to native fusevm jumps over native integer counters, so hot loops trace-compile. |
+| **Native control flow** | Loops and branches lower to native fusevm jumps over native integer counters, so `--aot` can lower a scalar loop to register arithmetic (the tracing JIT is off). |
 | **Vectors on the host heap** | Every R value is a `Value::Obj` handle into the `RHost` heap, because R has no scalars and any value can carry attributes. |
 | **Environments by reference** | Frames are `Rc<RefCell<..>>` environments chained to their enclosure — R's lexical scoping, and what lets `<<-` reach the defining frame. |
 | **R truthiness** | A condition must be a single non-`NA` logical, so conditions normalize through a `TRUTHY` op before a native branch. |
