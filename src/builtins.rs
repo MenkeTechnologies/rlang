@@ -1892,8 +1892,9 @@ fn as_hexmode(x: &Value) -> Result<Value, String> {
         RKind::Dbl => {
             // `as.integer` is NA outside int's range, which makes the
             // comparison NA rather than FALSE.
-            let as_integer =
-                |v: f64| (v > i32::MIN as f64 && v < i32::MAX as f64 + 1.0).then(|| v.trunc() as i64);
+            let as_integer = |v: f64| {
+                (v > i32::MIN as f64 && v < i32::MAX as f64 + 1.0).then(|| v.trunc() as i64)
+            };
             let xs = as_dbl(x);
             let whole: Vec<Option<bool>> = xs
                 .iter()
@@ -1908,7 +1909,9 @@ fn as_hexmode(x: &Value) -> Result<Value, String> {
             } else if whole.contains(&None) {
                 return Err("missing value where TRUE/FALSE needed".into());
             } else {
-                let ints = xs.iter().map(|v| v.filter(|v| !v.is_nan()).and_then(as_integer));
+                let ints = xs
+                    .iter()
+                    .map(|v| v.filter(|v| !v.is_nan()).and_then(as_integer));
                 return Ok(classed(mk_int(ints.collect())));
             }
         }
@@ -1952,7 +1955,11 @@ fn format_hexmode(x: &Value, width: Option<f64>, upper: bool) -> Value {
             .unwrap_or(0),
         None => 0,
     };
-    let out = mk_str(xs.iter().map(|v| v.map(|v| hex_digits(v, width, upper))).collect());
+    let out = mk_str(
+        xs.iter()
+            .map(|v| v.map(|v| hex_digits(v, width, upper)))
+            .collect(),
+    );
     for name in ["dim", "dimnames", "names"] {
         if let Some(a) = with_host(|h| h.attr(x, name)) {
             with_host(|h| h.set_attr(&out, name, a));
@@ -4134,8 +4141,7 @@ thread_local! {
 /// The operators reachable as functions through their backtick names.
 pub const OPERATORS: &[&str] = &[
     "+", "-", "*", "/", "^", "%%", "%/%", "==", "!=", "<", ">", "<=", ">=", "&", "|", "!", ":",
-    "[", "[[", "$", "%in%", "if", "for", "while", "repeat", "{", "(", "<-", "<<-", "=",
-    "&&", "||",
+    "[", "[[", "$", "%in%", "if", "for", "while", "repeat", "{", "(", "<-", "<<-", "=", "&&", "||",
 ];
 
 /// Every primitive rlang implements; also the corpus the LSP completes from.
@@ -4655,7 +4661,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `as.character.hexmode(x, keepStr = FALSE)`: unpadded hex digits,
             // with `x`'s names and dims only under `keepStr`.
             if is_hexmode(&x) {
-                let out = mk_str(as_int(&x).iter().map(|v| v.map(|v| hex_digits(v, 0, false))).collect());
+                let out = mk_str(
+                    as_int(&x)
+                        .iter()
+                        .map(|v| v.map(|v| hex_digits(v, 0, false)))
+                        .collect(),
+                );
                 if a.named("keepStr").and_then(|v| lgl1(&v)) == Some(true) {
                     for name in ["dim", "dimnames", "names"] {
                         if let Some(at) = with_host(|h| h.attr(&x, name)) {
@@ -5689,8 +5700,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = a.req(0, "x")?;
             // `format.hexmode(x, width = NULL, upper.case = FALSE)`.
             if is_hexmode(&x) {
-                let width = a.get(1, "width").filter(|w| !is_null(w)).and_then(|w| num1(&w));
-                let upper = a.named("upper.case").and_then(|v| lgl1(&v)).unwrap_or(false);
+                let width = a
+                    .get(1, "width")
+                    .filter(|w| !is_null(w))
+                    .and_then(|w| num1(&w));
+                let upper = a
+                    .named("upper.case")
+                    .and_then(|v| lgl1(&v))
+                    .unwrap_or(false);
                 return Ok(format_hexmode(&x, width, upper));
             }
             // `format` of a function is its deparsed source, like `deparse`.
@@ -9488,12 +9505,23 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     _ => fields.push((t.clone(), v.clone())),
                 }
             }
-            let mut classes: Vec<Option<String>> = a.named("class").map(|c| as_str(&c)).unwrap_or_default();
-            let kind = if name == "errorCondition" { "error" } else { "warning" };
+            let mut classes: Vec<Option<String>> =
+                a.named("class").map(|c| as_str(&c)).unwrap_or_default();
+            let kind = if name == "errorCondition" {
+                "error"
+            } else {
+                "warning"
+            };
             classes.extend([Some(kind.to_string()), Some("condition".to_string())]);
             let (names, values): (Vec<Option<String>>, Vec<Value>) = fields.into_iter().unzip();
             let out = mk_list(values);
-            set_names(&out, names.into_iter().map(|n| Some(n.unwrap_or_default())).collect());
+            set_names(
+                &out,
+                names
+                    .into_iter()
+                    .map(|n| Some(n.unwrap_or_default()))
+                    .collect(),
+            );
             let cls = mk_str(classes);
             with_host(|h| h.set_attr(&out, "class", cls));
             Ok(out)
@@ -10014,8 +10042,12 @@ fn call_keyword_value(name: &str, args: &[(Option<String>, Value)]) -> Result<Va
     let force = |i: usize| crate::host::force_value(&args[i].1);
     let arity = |want: usize| match args.len() {
         n if n == want => Ok(()),
-        1 => Err(format!("1 argument passed to '{name}' which requires {want}")),
-        n => Err(format!("{n} arguments passed to '{name}' which requires {want}")),
+        1 => Err(format!(
+            "1 argument passed to '{name}' which requires {want}"
+        )),
+        n => Err(format!(
+            "{n} arguments passed to '{name}' which requires {want}"
+        )),
     };
     match name {
         "(" => {
@@ -10087,7 +10119,10 @@ fn call_operator(
         // `%in%` reached as a function value (`Reduce(`%in%`, …)`); the infix
         // spelling compiles straight to the same `value_in`.
         "%in%" => {
-            let table = vals.get(1).cloned().ok_or("argument \"table\" is missing, with no default")?;
+            let table = vals
+                .get(1)
+                .cloned()
+                .ok_or("argument \"table\" is missing, with no default")?;
             return Ok(value_in(&first, &table));
         }
         "$" => {
@@ -11109,7 +11144,10 @@ const CAT_CONTROL_ARGS: &[&str] = &["sep", "fill", "file", "append", "labels"];
 /// it, which R has already sent to the connection.
 fn cat_text(a: &Args) -> Result<String, (String, String)> {
     let sep: Vec<String> = match a.named("sep") {
-        Some(v) => as_str(&v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect(),
+        Some(v) => as_str(&v)
+            .into_iter()
+            .map(|s| s.unwrap_or_else(|| "NA".into()))
+            .collect(),
         None => vec![" ".into()],
     };
     let nlsep = sep.iter().any(|s| s.contains('\n'));
@@ -11120,14 +11158,20 @@ fn cat_text(a: &Args) -> Result<String, (String, String)> {
         None => None,
         Some(f) if kind(f) == RKind::Lgl => (lgl1(f) == Some(true)).then_some(80),
         Some(_) if fill_int <= 0 => {
-            signal_warning("non-positive 'fill' argument will be ignored").map_err(|e| (String::new(), e))?;
+            signal_warning("non-positive 'fill' argument will be ignored")
+                .map_err(|e| (String::new(), e))?;
             None
         }
         Some(_) => Some(fill_int as usize),
     };
     let labels: Vec<String> = a
         .named("labels")
-        .map(|v| as_str(&v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect())
+        .map(|v| {
+            as_str(&v)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect()
+        })
         .unwrap_or_default();
     let sep_width = |ntot: usize| match sep.is_empty() {
         true => 0,
@@ -11171,10 +11215,16 @@ fn cat_text(a: &Args) -> Result<String, (String, String)> {
             nlines += 1;
         }
         if let Some(kind) = uncatable(v) {
-            let msg = format!("argument {} (type '{kind}') cannot be handled by 'cat'", iobj + 1);
+            let msg = format!(
+                "argument {} (type '{kind}') cannot be handled by 'cat'",
+                iobj + 1
+            );
             return Err((out, msg));
         }
-        let items: Vec<String> = as_str(v).into_iter().map(|s| s.unwrap_or_else(|| "NA".into())).collect();
+        let items: Vec<String> = as_str(v)
+            .into_iter()
+            .map(|s| s.unwrap_or_else(|| "NA".into()))
+            .collect();
         let mut w = items[0].len();
         let mut sepw = sep_width(ntot);
         if iobj > 0 && pwidth.is_some_and(|p| width + w + sepw > p) {
@@ -11382,7 +11432,9 @@ fn r_factor(args: &[(Option<String>, Value)]) -> Result<Value, String> {
         .collect();
     let bound = crate::host::match_args(&params, args)?;
     let arg = |n: &str| bound.iter().find(|(p, _)| p == n).map(|(_, v)| v.clone());
-    let x = arg("x").filter(|v| kind(v) != RKind::Null).unwrap_or_else(|| mk_str(Vec::new()));
+    let x = arg("x")
+        .filter(|v| kind(v) != RKind::Null)
+        .unwrap_or_else(|| mk_str(Vec::new()));
     let labels_of_x = as_str_labels(&x);
     // `missing(levels)`: the distinct values in sorted order — a factor's in its
     // own level order, keeping only the levels that occur — with `NA` last.
@@ -11424,7 +11476,8 @@ fn r_factor(args: &[(Option<String>, Value)]) -> Result<Value, String> {
         None => vec![None],
     };
     levels.retain(|l| !exclude.contains(l));
-    let position = |key: &Option<String>| levels.iter().position(|l| l == key).map(|p| p as i64 + 1);
+    let position =
+        |key: &Option<String>| levels.iter().position(|l| l == key).map(|p| p as i64 + 1);
     let mut codes: Vec<Option<i64>> = labels_of_x.iter().map(position).collect();
     let levels = match arg("labels") {
         None => levels,
@@ -11450,7 +11503,9 @@ fn r_factor(args: &[(Option<String>, Value)]) -> Result<Value, String> {
                 nlevs
             } else if labels.len() == 1 {
                 let stem = labels[0].clone().unwrap_or_else(|| "NA".into());
-                (1..=levels.len()).map(|i| Some(format!("{stem}{i}"))).collect()
+                (1..=levels.len())
+                    .map(|i| Some(format!("{stem}{i}")))
+                    .collect()
             } else {
                 return Err(format!(
                     "invalid 'labels'; length {} should be 1 or {}",
@@ -12521,11 +12576,17 @@ fn summary_default(a: &Args) -> Result<Value, String> {
             let n = len(&object).to_string();
             let class = call_primitive("class", vec![(None, object.clone())])?;
             let mode = call_primitive("mode", vec![(None, object.clone())])?;
-            (vec![scalar_str(n), class, mode], vec!["Length", "Class", "Mode"])
+            (
+                vec![scalar_str(n), class, mode],
+                vec!["Length", "Class", "Mode"],
+            )
         }
     };
     let out = concat(&Args::new(vals.into_iter().map(|v| (None, v)).collect()));
-    set_names(&out, names.into_iter().map(|n| Some(n.to_string())).collect());
+    set_names(
+        &out,
+        names.into_iter().map(|n| Some(n.to_string())).collect(),
+    );
     let cls = mk_str(vec![Some("summaryDefault".into()), Some("table".into())]);
     with_host(|h| h.set_attr(&out, "class", cls));
     Ok(out)
@@ -12538,7 +12599,11 @@ fn summary_factor(object: &Value, maxsum: usize) -> Result<Value, String> {
     let levels = levels_of(object);
     let codes = as_int(object);
     let nna = codes.iter().filter(|c| c.is_none()).count();
-    let maxsum = if nna > 0 { maxsum.saturating_sub(1) } else { maxsum };
+    let maxsum = if nna > 0 {
+        maxsum.saturating_sub(1)
+    } else {
+        maxsum
+    };
     let mut tt: Vec<(String, i64)> = levels
         .iter()
         .enumerate()
@@ -12596,7 +12661,10 @@ fn format_summary_default(v: &Value) -> Result<Value, String> {
     }
     let body = mk_dbl(xs);
     set_names(&body, labels.clone());
-    let text = call_primitive("format", vec![(None, body), (Some("digits".into()), scalar_dbl(digits))])?;
+    let text = call_primitive(
+        "format",
+        vec![(None, body), (Some("digits".into()), scalar_dbl(digits))],
+    )?;
     let mut out = as_str(&text);
     if let Some(n) = nna {
         out.push(Some(as_str(&mk_dbl(vec![n])).remove(0).unwrap_or_default()));
@@ -12606,7 +12674,6 @@ fn format_summary_default(v: &Value) -> Result<Value, String> {
     set_names(&out, labels);
     Ok(out)
 }
-
 
 /// R's `quantile.default` (stats/R/quantile.R), all nine `type`s.
 ///
@@ -14860,7 +14927,11 @@ fn resignal_condition(name: &str, cond: Value) -> Result<Value, String> {
     let call = condition_call_source(&cond);
     let classes = class_of(&cond);
     let warn = name == "warning";
-    let muffle = if warn { "muffleWarning" } else { "muffleMessage" };
+    let muffle = if warn {
+        "muffleWarning"
+    } else {
+        "muffleMessage"
+    };
     match signal_object_with_muffle(&cond, &classes, muffle)? {
         Signalled::Unwind => {
             raise_condition(text, classes, call, Some(cond));
@@ -14930,7 +15001,10 @@ fn try_catch_contexts(nh: usize, handler: Option<usize>) -> Vec<&'static str> {
     match handler {
         None if nh >= 1 => out.extend([ONE_FIRST, DO]),
         None => {}
-        Some(j) => out.extend([if j > 1 { ONE_LAST } else { ONE_FIRST }, "value[[3L]](cond)"]),
+        Some(j) => out.extend([
+            if j > 1 { ONE_LAST } else { ONE_FIRST },
+            "value[[3L]](cond)",
+        ]),
     }
     out
 }
@@ -14987,7 +15061,11 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     // does not handle carries its own call and object on outward.
     let (raised, raised_call, raised_cond) = with_host(|h| {
         h.handlers.pop();
-        (h.error_classes.clone(), h.error_call.clone(), h.error_condition.clone())
+        (
+            h.error_classes.clone(),
+            h.error_call.clone(),
+            h.error_condition.clone(),
+        )
     });
     let result = match out {
         Ok(v) => {
