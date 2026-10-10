@@ -1223,7 +1223,10 @@ impl Compiler {
             Expr::For { var, seq, body } => self.for_loop(b, var, seq, body)?,
             Expr::Break => {
                 if self.loops.is_empty() {
-                    return Err("no loop for break/next, jumping to top level".into());
+                    // R reports this when the `break` is *evaluated*, as an
+                    // ordinary error a `tryCatch` can see — not when the
+                    // program is read.
+                    return self.no_loop_error(b);
                 }
                 let j = b.emit(Op::Jump(0), 0);
                 self.loops.last_mut().unwrap().breaks.push(j);
@@ -1233,7 +1236,7 @@ impl Compiler {
             }
             Expr::Next => {
                 if self.loops.is_empty() {
-                    return Err("no loop for break/next, jumping to top level".into());
+                    return self.no_loop_error(b);
                 }
                 let j = b.emit(Op::Jump(0), 0);
                 self.loops.last_mut().unwrap().continues.push(j);
@@ -1246,6 +1249,27 @@ impl Compiler {
             } => self.assign(b, target, value, *super_assign)?,
         }
         Ok(())
+    }
+
+    /// Lower a construct R only rejects when it is *evaluated* to the error R
+    /// raises for it, so a `tryCatch` sees it and a branch never taken is
+    /// harmless.
+    fn runtime_error(&mut self, b: &mut ChunkBuilder, msg: &str) -> Result<(), String> {
+        self.expr(
+            b,
+            &Expr::Call {
+                fun: Box::new(Expr::Ident("stop".into())),
+                args: vec![Arg {
+                    name: None,
+                    value: Some(Expr::Str(msg.into())),
+                }],
+            },
+        )
+    }
+
+    /// A `break`/`next` written outside any loop.
+    fn no_loop_error(&mut self, b: &mut ChunkBuilder) -> Result<(), String> {
+        self.runtime_error(b, "no loop for break/next, jumping to top level")
     }
 
     /// Patch every `break`/`next` recorded for the innermost loop.
@@ -1741,7 +1765,8 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::REPLACE, 5), 0);
                 self.assign_stack(b, &inner, sup)
             }
-            other => Err(format!("invalid assignment target: {other:?}")),
+            // A target that is no name, index or call is R's runtime error.
+            _ => self.runtime_error(b, "invalid (do_set) left-hand side to assignment"),
         }
     }
 
@@ -1830,7 +1855,7 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(ops::REPLACE, 5), 0);
                 self.assign_stack(b, &inner, sup)
             }
-            other => Err(format!("invalid nested assignment target: {other:?}")),
+            _ => self.runtime_error(b, "target of assignment expands to non-language object"),
         }
     }
 }
@@ -2177,7 +2202,12 @@ mod tests {
     }
 
     #[test]
-    fn break_outside_a_loop_is_a_compile_error() {
-        assert!(compile(&parse("break").unwrap()).is_err());
+    fn break_outside_a_loop_is_a_runtime_error() {
+        // R reports it when the `break` is evaluated, as a condition a
+        // `tryCatch` can handle, so the program still compiles and the
+        // `break` lowers to a call of `stop`.
+        let ops = ops_of("break");
+        assert!(!ops.is_empty());
+        assert!(!ops.iter().any(|o| matches!(o, Op::Jump(_))));
     }
 }

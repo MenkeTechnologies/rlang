@@ -2262,6 +2262,426 @@ fn gen_pastecls(seed: u64) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Round-2 surfaces, second group: structure-driven generators. Where the first
+// group fixes the shape and varies the literals, these draw the *shape* — a
+// nested list, a replacement target, a table — from the RNG.
+// ---------------------------------------------------------------------------
+
+/// A random R value expression: scalars, short vectors (named or not), `NULL`,
+/// and — while `depth` allows — lists of the same, named or not.
+fn rand_value(r: &mut Rng, depth: u32) -> String {
+    let pick = if depth == 0 { r.below(6) } else { r.below(9) };
+    match pick {
+        0 => ii(r).to_string(),
+        1 => format!("{}.5", ii(r)),
+        2 => format!("\"{}\"", ww(r)),
+        3 => format!("c({}, {})", ii(r), ii(r)),
+        4 => format!("c(x = {}, {})", ii(r), ii(r)),
+        5 => "NULL".to_string(),
+        6 => format!("c(\"{}\", \"{}\")", ww(r), ww(r)),
+        _ => {
+            let n = r.range(1, 3) as usize;
+            let tags = ["a", "b", "c", "d"];
+            let named = r.below(3) > 0;
+            let items: Vec<String> = (0..n)
+                .map(|_| {
+                    let v = rand_value(r, depth - 1);
+                    if named && r.below(4) > 0 {
+                        format!("{} = {v}", r.pick(&tags))
+                    } else {
+                        v
+                    }
+                })
+                .collect();
+            format!("list({})", items.join(", "))
+        }
+    }
+}
+
+/// `unlist`, `c`, `rapply`, `sapply` and `lengths` over a random nested list:
+/// the element-naming rules (`a.x`, `a1`, `a`), `recursive`, `use.names`.
+fn gen_unlistx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = rand_value(r, 3);
+    let w = rand_value(r, 2);
+    let guard = |e: String| {
+        format!(
+            "tryCatch(print({e}), error = function(e) cat(\"E:\", conditionMessage(e), \"\\n\"))"
+        )
+    };
+    one(guard(match r.below(10) {
+        0..=2 => format!("unlist({v})"),
+        3 => format!("unlist({v}, use.names = FALSE)"),
+        4 => format!("unlist({v}, recursive = FALSE)"),
+        5 => format!("c({v}, {w})"),
+        6 => format!("c(p = {v}, q = {w})"),
+        7 => format!("lengths(list(A = {v}, B = {w}))"),
+        8 => format!("names(unlist(list(k = {v}, {w})))"),
+        _ => format!("sapply(list({v}, {w}), length)"),
+    }))
+}
+
+/// `str()` over random values — every type's header, the vec.len scaling and
+/// the nested layout.
+fn gen_strx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let v = rand_value(r, 2);
+    let extra = match r.below(6) {
+        0 => ", vec.len = 2".to_string(),
+        1 => ", give.attr = FALSE".to_string(),
+        2 => ", max.level = 1".to_string(),
+        3 => ", give.head = FALSE".to_string(),
+        _ => String::new(),
+    };
+    let more = match r.below(5) {
+        0 => format!(
+            "c({}, {}, {}, {}, {}, {})",
+            ff(r),
+            ff(r),
+            ff(r),
+            ff(r),
+            ff(r),
+            ff(r)
+        ),
+        1 => format!("{}:{}", ii(r), r.range(11, 40)),
+        2 => format!(
+            "factor(c(\"{}\", \"{}\", \"{}\", \"{}\"))",
+            ww(r),
+            ww(r),
+            ww(r),
+            ww(r)
+        ),
+        3 => format!("c({}e{}, {})", ii(r), r.range(3, 9), ff(r)),
+        _ => format!("c(TRUE, NA, FALSE, {})", ["TRUE", "NA"][r.below(2)]),
+    };
+    one(match r.below(3) {
+        0 => format!("str({v}{extra})"),
+        1 => format!("str({more}{extra})"),
+        _ => format!("str(list(a = {v}, b = {more}){extra})"),
+    })
+}
+
+/// Subassignment `x[i] <- v`, `x[[i]] <- v`, `x$n <- v` and replacement
+/// functions over vectors, lists and matrices — printing the result or the
+/// error or warning text the assignment raised.
+fn gen_assignx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let base = match r.below(6) {
+        0 => "x <- 1:6".to_string(),
+        1 => "x <- c(a = 1, b = 2, c = 3)".to_string(),
+        2 => "x <- c(\"p\", \"q\", \"r\")".to_string(),
+        3 => "x <- list(a = 1, b = \"z\", c = 1:2)".to_string(),
+        4 => "x <- matrix(1:6, 2, dimnames = list(c(\"r1\", \"r2\"), c(\"A\", \"B\", \"C\")))"
+            .to_string(),
+        _ => "x <- c(TRUE, FALSE, NA)".to_string(),
+    };
+    let val = match r.below(7) {
+        0 => ii(r).to_string(),
+        1 => format!("{}L", ii(r)),
+        2 => format!("\"{}\"", ww(r)),
+        3 => format!("c({}, {})", ii(r), ii(r)),
+        4 => format!("c({}, {}, {})", ii(r), ii(r), ii(r)),
+        5 => "NULL".to_string(),
+        _ => "NA".to_string(),
+    };
+    let idx = match r.below(9) {
+        0 => r.range(1, 3).to_string(),
+        1 => "7".to_string(),
+        2 => "c(1, 3)".to_string(),
+        3 => "-1".to_string(),
+        4 => "\"a\"".to_string(),
+        5 => "\"new\"".to_string(),
+        6 => "c(TRUE, FALSE)".to_string(),
+        7 => "NA".to_string(),
+        _ => "0".to_string(),
+    };
+    let stmt = match r.below(12) {
+        0..=2 => format!("x[{idx}] <- {val}"),
+        3 => format!("x[[{idx}]] <- {val}"),
+        4 => format!("x[{idx}, ] <- {val}"),
+        5 => format!("x[, {idx}] <- {val}"),
+        6 => format!("x$a <- {val}"),
+        7 => format!(
+            "names(x) <- c(\"u\", \"v\"{})",
+            ["", ", \"w\"", ", \"w\", \"y\", \"z\", \"k\", \"m\""][r.below(3)]
+        ),
+        8 => format!("length(x) <- {}", r.range(0, 9)),
+        9 => format!("dim(x) <- c({}, {})", r.range(1, 4), r.range(1, 4)),
+        10 => format!("is.na(x) <- {idx}"),
+        _ => format!(
+            "attr(x, \"{}\") <- {val}",
+            ["names", "dim", "foo"][r.below(3)]
+        ),
+    };
+    one(format!(
+        "{base}\nres <- withCallingHandlers(tryCatch({{ {stmt}; x }}, \
+         error = function(e) paste(\"E:\", conditionMessage(e))), \
+         warning = function(w) {{ cat(\"W:\", conditionMessage(w), \"\\n\"); invokeRestart(\"muffleWarning\") }})\n\
+         print(res)"
+    ))
+}
+
+/// `table` with random margins, `dnn`, `useNA`, `exclude`, then a derived
+/// summary: arithmetic, `margin.table`, `prop.table`, names, indexing.
+fn gen_tablex(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let col = |r: &mut Rng, pool: &[&str]| {
+        let n = r.range(3, 7) as usize;
+        let items: Vec<String> = (0..n)
+            .map(|_| match r.below(8) {
+                0 => "NA".to_string(),
+                _ => format!("\"{}\"", r.pick(pool)),
+            })
+            .collect();
+        format!("c({})", items.join(", "))
+    };
+    let g1 = col(r, &["a", "b", "c"]);
+    let g2 = col(r, &["x", "y"]);
+    let opts = match r.below(6) {
+        0 => ", useNA = \"always\"".to_string(),
+        1 => ", useNA = \"ifany\"".to_string(),
+        2 => ", exclude = NULL".to_string(),
+        3 => ", exclude = \"a\"".to_string(),
+        4 => ", dnn = c(\"first\", \"second\")".to_string(),
+        _ => String::new(),
+    };
+    let two = r.below(2) == 0;
+    let setup = if two {
+        format!("g1 <- {g1}\ng2 <- {g2}\nn <- min(length(g1), length(g2))\nt <- table(g1[1:n], g2[1:n]{opts})")
+    } else {
+        format!("g1 <- {g1}\nt <- table(g1{opts})")
+    };
+    let probe = match r.below(9) {
+        0 => "print(t)",
+        1 => "print(t * 2L)",
+        2 => "print(names(dimnames(t)))",
+        3 => "print(dim(t))",
+        4 => "print(margin.table(t, 1))",
+        5 => "print(round(prop.table(t), 2))",
+        6 => "print(t[1])",
+        7 => "print(as.vector(t))",
+        _ => "print(summary(as.vector(t)))",
+    };
+    one(format!("{setup}\n{probe}"))
+}
+
+/// Regular expressions: back-references, look-around, anchors, classes, the
+/// `\\U`/`\\L` replacement escapes, and the functions that take them.
+fn gen_regexx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    // Backslashes are built with intToUtf8 because `Rscript -e` unescapes a
+    // doubled one, which would make the two harnesses disagree about the input.
+    let subject = match r.below(6) {
+        0 => "aabbcc",
+        1 => "hello world",
+        2 => "abcabc",
+        3 => "x1y22z333",
+        4 => "CamelCaseWords",
+        _ => "a.b.c",
+    };
+    let pat = match r.below(14) {
+        0 => "(.)BS1",
+        1 => "(a)(b)BS2BS1",
+        2 => "(?<=a)b",
+        3 => "a(?=b)",
+        4 => "(?<![a-z])[a-z]",
+        5 => "[0-9]+",
+        6 => "^.",
+        7 => ".$",
+        8 => "(?<=[a-z])(?=[A-Z])",
+        9 => "BSw+",
+        10 => "(BSw)(BSw)",
+        11 => "BS.",
+        12 => "o|l+",
+        _ => "[aeiou]",
+    };
+    let perl = pat.contains("(?") || r.below(3) == 0;
+    let rep = ["X", "<BS0>", "BS1-BS1", "BSUBS1", "[BS1]"][r.below(5)];
+    let call = match r.below(8) {
+        0 | 1 => format!(
+            "gsub(p, \"{rep}\", s{})",
+            if perl { ", perl = TRUE" } else { "" }
+        ),
+        2 => format!(
+            "sub(p, \"{rep}\", s{})",
+            if perl { ", perl = TRUE" } else { "" }
+        ),
+        3 => format!("grepl(p, s{})", if perl { ", perl = TRUE" } else { "" }),
+        4 => format!(
+            "regmatches(s, gregexpr(p, s{}))",
+            if perl { ", perl = TRUE" } else { "" }
+        ),
+        5 => format!("strsplit(s, p{})", if perl { ", perl = TRUE" } else { "" }),
+        6 => format!(
+            "as.integer(regexpr(p, s{}))",
+            if perl { ", perl = TRUE" } else { "" }
+        ),
+        _ => format!(
+            "lengths(gregexpr(p, s{}))",
+            if perl { ", perl = TRUE" } else { "" }
+        ),
+    };
+    let rep_lit = |t: &str| t.replace("BS", "\" , bs, \"");
+    // Build the pattern and the replacement as paste0 calls over `bs`.
+    let build = |t: &str| format!("paste0(\"{}\")", t.replace("BS", "\", bs, \""));
+    let _ = rep_lit;
+    let call = call
+        .replace("p,", &format!("{},", build(pat)))
+        .replace("(p)", &format!("({})", build(pat)))
+        .replace(&format!("\"{rep}\""), &build(rep));
+    let _ = call.len();
+    one(format!(
+        "bs <- intToUtf8(92)\ns <- \"{subject}\"\ntryCatch(print({call}), error = function(e) cat(\"E:\", conditionMessage(e), \"\\n\"))"
+    ))
+}
+
+/// `cut` over random break vectors with every option, and `table` of the result.
+fn gen_cutx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(3, 8);
+    let xs: Vec<String> = (0..n).map(|_| format!("{}", r.range(0, 12))).collect();
+    let x = format!("c({})", xs.join(", "));
+    let nb = r.range(2, 4) as usize;
+    let mut brk: Vec<i64> = (0..nb).map(|_| r.range(0, 12)).collect();
+    brk.sort();
+    if r.below(5) > 0 {
+        brk.dedup();
+    }
+    let breaks = if r.below(4) == 0 {
+        format!("{}", r.range(2, 4))
+    } else {
+        format!(
+            "c({})",
+            brk.iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut opts = String::new();
+    if r.below(2) == 0 {
+        opts.push_str(", right = FALSE");
+    }
+    if r.below(2) == 0 {
+        opts.push_str(", include.lowest = TRUE");
+    }
+    if r.below(4) == 0 {
+        opts.push_str(", dig.lab = 2");
+    }
+    if r.below(5) == 0 {
+        opts.push_str(", ordered_result = TRUE");
+    }
+    if r.below(6) == 0 {
+        opts.push_str(", labels = FALSE");
+    }
+    let call = format!("cut({x}, {breaks}{opts})");
+    one(format!(
+        "tryCatch({}, error = function(e) cat(\"E:\", conditionMessage(e), \"\\n\"))",
+        match r.below(3) {
+            0 => format!("print({call})"),
+            1 => format!("print(table({call}))"),
+            _ => format!("print(levels({call}))"),
+        }
+    ))
+}
+
+/// The apply family over random matrices and named lists: result shape,
+/// dimnames, names and names-of-dimnames, `simplify`, extra arguments.
+fn gen_applyx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (nr, nc) = (r.range(2, 3), r.range(2, 4));
+    let named = r.below(3);
+    let dn = match named {
+        0 => String::new(),
+        1 => format!(", dimnames = list(letters[1:{nr}], LETTERS[1:{nc}])"),
+        _ => format!(", dimnames = list(r = letters[1:{nr}], c = LETTERS[1:{nc}])"),
+    };
+    let m = format!("matrix(1:{}, {nr}{dn})", nr * nc);
+    let f = *r.pick(&[
+        "sum",
+        "range",
+        "function(v) v * 2",
+        "function(v) paste(v, collapse = \"-\")",
+        "function(v) list(v)",
+        "function(v) c(lo = min(v), hi = max(v))",
+        "function(v) v[v > 2]",
+        "length",
+    ]);
+    one(match r.below(8) {
+        0 => format!("print(apply({m}, 1, {f}))"),
+        1 => format!("print(apply({m}, 2, {f}))"),
+        2 => format!("print(apply({m}, c(1, 2), function(v) v + 1))"),
+        3 => format!("print(sapply(1:{nc}, function(j) c(a = j, b = j^2)))"),
+        4 => format!("print(sapply(list(p = 1:3, q = 4:6), {f}))"),
+        5 => "print(vapply(list(p = 1:3, q = 4:6), function(v) c(s = sum(v), m = mean(v)), numeric(2)))".to_string(),
+        6 => format!("print(mapply(function(a, b) c(a, b), 1:{nc}, {nc}:1))"),
+        _ => "print(Map(function(a, b) a + b, c(u = 1, v = 2), 3:4))".to_string(),
+    })
+}
+
+/// Error and warning *text* from builtins given the wrong thing, read through
+/// `conditionMessage` so the wording is the thing compared.
+fn gen_errtext2(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let n = r.range(2, 5);
+    let w = ww(r);
+    let both = |e: String| {
+        format!(
+            "tryCatch({e}, warning = function(w) paste(\"W:\", conditionMessage(w)), \
+             error = function(e) paste(\"E:\", conditionMessage(e)))"
+        )
+    };
+    one(both(match r.below(34) {
+        0 => format!(
+            "rep(1:3, times = {})",
+            ["-1", "1:2", "NA", "c(1, 2, 3, 4)"][r.below(4)]
+        ),
+        1 => format!("rep(1:3, each = -{n})"),
+        2 => format!("seq(1, 10, by = {})", ["-1", "0", "NA"][r.below(3)]),
+        3 => format!("seq_len({})", ["-1", "NA", "\"a\"", "c(1, 2)"][r.below(4)]),
+        4 => format!("matrix(1:{}, {})", n * 3 + 1, n),
+        5 => format!("cbind(1:{n}, 1:{})", n + 1),
+        6 => format!("rbind(matrix(1:4, 2), matrix(1:{}, 2))", n * 2 + 2),
+        7 => format!("if (c(TRUE, FALSE)) {n}"),
+        8 => format!(
+            "if ({}) 1",
+            ["NA", "NULL", "\"a\"", "logical(0)"][r.below(4)]
+        ),
+        9 => format!("{n} && c(TRUE, FALSE)"),
+        10 => format!("sum(\"{w}\")"),
+        11 => format!("(1:{n})[[{}]]", n + 3),
+        12 => format!("list(a = 1)${w}$z"),
+        13 => format!("(1:{n})${w}"),
+        14 => format!(
+            "matrix(1:4, 2)[{}]",
+            ["3, 1", "1, 3", "1, 1, 1", "\"a\", 1"][r.below(4)]
+        ),
+        15 => format!("(function(x) x)({})", ["", "1, 2", "y = 2"][r.below(3)]),
+        16 => format!(
+            "stopifnot({})",
+            ["1 == 2", "c(TRUE, FALSE)", "is.character(1)", "NA"][r.below(4)]
+        ),
+        17 => format!("match.arg(\"{w}\", c(\"alpha\", \"beta\"))"),
+        18 => format!("get(\"{w}_nope\")"),
+        19 => format!("do.call(\"{w}_nofun\", list())"),
+        20 => format!("lapply(1:{n}, \"{w}_nofun\")"),
+        21 => format!("vapply(1:{n}, function(i) \"a\", numeric(1))"),
+        22 => format!("vapply(1:{n}, function(i) 1:2, numeric(1))"),
+        23 => format!("Reduce(\"+\", list(1, \"{w}\"))"),
+        24 => format!("as.integer(list(1, 1:{n}))"),
+        25 => format!("vector(\"{w}\", {n})"),
+        26 => format!("{{ x <- 1:{n}; names(x) <- letters[1:{}]; x }}", n + 2),
+        27 => format!("{{ x <- 1:{n}; x[1:2] <- 1:{}; x }}", n + 1),
+        28 => "{ x <- 1:6; x[c(-1, 2)] }".to_string(),
+        29 => format!("{{ m <- matrix(0, 2, 2); m[, 1] <- 1:{}; m }}", n + 1),
+        30 => format!("{{ x <- 1:3; dim(x) <- c({n}, {n}); x }}"),
+        31 => format!("apply(1:{n}, 1, sum)"),
+        32 => format!("factorial({})", ["-1", "171", "\"a\""][r.below(3)]),
+        _ => format!("strtoi(\"{w}\", {})", ["99", "1", "36"][r.below(3)]),
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
 
@@ -2339,6 +2759,14 @@ enum Mode {
     Rapplyx,
     Numtype,
     Pastecls,
+    Unlistx,
+    Strx,
+    Assignx,
+    Tablex,
+    Regexx,
+    Cutx,
+    Applyx,
+    Errtext2,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -2414,6 +2842,14 @@ const ALL_MODES: &[Mode] = &[
     Mode::Rapplyx,
     Mode::Numtype,
     Mode::Pastecls,
+    Mode::Unlistx,
+    Mode::Strx,
+    Mode::Assignx,
+    Mode::Tablex,
+    Mode::Regexx,
+    Mode::Cutx,
+    Mode::Applyx,
+    Mode::Errtext2,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -2490,6 +2926,14 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Rapplyx => gen_rapplyx(seed),
         Mode::Numtype => gen_numtype(seed),
         Mode::Pastecls => gen_pastecls(seed),
+        Mode::Unlistx => gen_unlistx(seed),
+        Mode::Strx => gen_strx(seed),
+        Mode::Assignx => gen_assignx(seed),
+        Mode::Tablex => gen_tablex(seed),
+        Mode::Regexx => gen_regexx(seed),
+        Mode::Cutx => gen_cutx(seed),
+        Mode::Applyx => gen_applyx(seed),
+        Mode::Errtext2 => gen_errtext2(seed),
     }
 }
 
@@ -2925,6 +3369,14 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Rapplyx => "rapplyx",
         Mode::Numtype => "numtype",
         Mode::Pastecls => "pastecls",
+        Mode::Unlistx => "unlistx",
+        Mode::Strx => "strx",
+        Mode::Assignx => "assignx",
+        Mode::Tablex => "tablex",
+        Mode::Regexx => "regexx",
+        Mode::Cutx => "cutx",
+        Mode::Applyx => "applyx",
+        Mode::Errtext2 => "errtext2",
     }
 }
 

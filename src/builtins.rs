@@ -2000,6 +2000,15 @@ fn binop_warning(msg: &str) -> Result<(), String> {
 /// than the `lapply(…)` the user wrote. A primitive `f` makes no context in R
 /// either, and then the apply function's own call stands, so nothing is pushed.
 fn call_fun(f: &Value, args: Vec<(Option<String>, Value)>, call: &str) -> Result<Value, String> {
+    // The apply family takes `FUN` through `match.fun`, so a name is looked up
+    // as a function and a name that is not one has `match.fun`'s own message.
+    let resolved;
+    let f = if kind(f) == RKind::Str || !with_host(|h| h.is_function(f)) {
+        resolved = match_fun(f)?;
+        &resolved
+    } else {
+        f
+    };
     if !matches!(data(f), RData::Closure { .. }) {
         return call_value(f, args, None);
     }
@@ -2897,6 +2906,10 @@ fn b_dollar(vm: &mut VM, _: u8) -> Value {
     }
     match data(&x) {
         RData::Environment(e) => e.borrow().vars.get(&name).cloned().unwrap_or_else(null),
+        // `$` is for lists and environments; an atomic vector refuses it.
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) => {
+            abort(vm, "$ operator is invalid for atomic vectors".to_string())
+        }
         _ => {
             let names = names_of(&x);
             match names
@@ -2948,7 +2961,7 @@ fn resolve_index(
             let nums = as_dbl(idx);
             if nums.iter().flatten().any(|x| *x < 0.0) {
                 if nums.iter().flatten().any(|x| *x > 0.0) {
-                    return Err("can't mix positive and negative subscripts".into());
+                    return Err("only 0's may be mixed with negative subscripts".into());
                 }
                 let drop: Vec<usize> = nums
                     .iter()
@@ -3007,26 +3020,30 @@ fn index_single(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     // N-dimensional indexing `a[i, j, …]` when the subscript count matches the
     // array's `dim` rank (covers 2-D matrices and 3-D+ arrays alike).
     if args.len() >= 2 {
-        if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
-            let d: Vec<usize> = as_int(&dim)
+        // `drop =` is an option, not a subscript: `m["r1", , drop = FALSE]`
+        // still indexes a 2-D matrix with exactly two subscripts.
+        let subs: Vec<(Option<String>, Value)> = args
+            .iter()
+            .filter(|(t, _)| t.as_deref() != Some("drop"))
+            .cloned()
+            .collect();
+        let drop = args
+            .iter()
+            .find(|(t, _)| t.as_deref() == Some("drop"))
+            .and_then(|(_, v)| as_lgl(v).first().copied().flatten())
+            .unwrap_or(true);
+        let d: Option<Vec<usize>> = with_host(|h| h.attr(x, "dim")).map(|dim| {
+            as_int(&dim)
                 .iter()
                 .map(|e| e.unwrap_or(0) as usize)
-                .collect();
-            // `drop =` is an option, not a subscript: `m["r1", , drop = FALSE]`
-            // still indexes a 2-D matrix with exactly two subscripts.
-            let subs: Vec<(Option<String>, Value)> = args
-                .iter()
-                .filter(|(t, _)| t.as_deref() != Some("drop"))
-                .cloned()
-                .collect();
-            let drop = args
-                .iter()
-                .find(|(t, _)| t.as_deref() == Some("drop"))
-                .and_then(|(_, v)| as_lgl(v).first().copied().flatten())
-                .unwrap_or(true);
-            if d.len() == subs.len() {
-                return array_index(x, &subs, &d, drop);
-            }
+                .collect()
+        });
+        match d {
+            Some(d) if d.len() == subs.len() => return array_index(x, &subs, &d, drop),
+            // Two or more subscripts that do not match the rank — or any on a
+            // plain vector — are R's `incorrect number of dimensions`.
+            _ if subs.len() >= 2 => return Err("incorrect number of dimensions".into()),
+            _ => {}
         }
     }
     if supplied.is_empty() {
@@ -3308,6 +3325,9 @@ fn array_positions(
                 // Unlike a vector, an array has no room to grow into: a
                 // subscript past a margin, or a label the margin lacks, is
                 // R's "subscript out of bounds" (NA still selects NA).
+                if matches!(data(v), RData::Str(_)) && dimnames.iter().all(|m| m.is_none()) {
+                    return Err("no 'dimnames' attribute for array".into());
+                }
                 let oob = match data(v) {
                     RData::Lgl(b) if b.len() > dims[d] => {
                         return Err("(subscript) logical subscript too long".into())
@@ -3747,6 +3767,17 @@ fn assign_index(
     // `a[i, j, …] <- v`: turn the N-D selection into linear column-major
     // positions and reuse the 1-D path (which promotes type and preserves the
     // `dim` attribute through `copy_of`). Mirrors `array_index` for reads.
+    // Two or more subscripts need a matrix or array of that rank.
+    if args.len() >= 2 && !single_slot {
+        match with_host(|h| h.attr(x, "dim")) {
+            None if args.len() == 2 => {
+                return Err("incorrect number of subscripts on matrix".into())
+            }
+            None => return Err("incorrect number of subscripts".into()),
+            Some(d) if len(&d) != args.len() => return Err("incorrect number of subscripts".into()),
+            Some(_) => {}
+        }
+    }
     if args.len() >= 2 && single_slot {
         // `m[[i, j]] <- v` addresses exactly one cell, per dimension, by
         // `get1index` — R's `do_subassign2_dflt`, with its own wording.
@@ -3794,6 +3825,13 @@ fn assign_index(
                 .collect();
             if d.len() == args.len() {
                 let (pos, _) = array_positions(args, &d, &dimnames_of(x))?;
+                // Unlike a vector, an array refuses a replacement that does
+                // not tile the selection.
+                if !pos.is_empty() && len(value) > 0 && pos.len() % len(value) != 0 {
+                    return Err(
+                        "number of items to replace is not a multiple of replacement length".into(),
+                    );
+                }
                 let lin: Vec<Option<i64>> =
                     pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
                 return assign_index(x, &[(None, mk_int(lin))], value, false, inplace);
@@ -3803,6 +3841,63 @@ fn assign_index(
     let Some((_, idx)) = args.iter().find(|(_, v)| !matches!(v, Value::Undef)) else {
         return Ok(x.clone());
     };
+    // `x[[NA]] <- v`: an integer or logical `NA` reaches `integerOneIndex` as
+    // `INT_MIN`, which that function reads as a negative subscript.
+    if single_slot
+        && len(idx) == 1
+        && matches!(kind(idx), RKind::Lgl | RKind::Int)
+        && as_int(idx)[0].is_none()
+    {
+        return Err("attempt to select more than one element in integerOneIndex".into());
+    }
+    // An atomic target takes exactly one value through `[[<-`, and R checks
+    // that before it looks at the subscript.
+    if single_slot && kind(x) != RKind::List && kind(x) != RKind::Null && len(value) > 1 {
+        return Err("more elements supplied than there are to replace".into());
+    }
+    // `x[[i]] <- v` resolves a numeric `i` through `OneIndex`, whose messages
+    // name that function rather than `get1index`.
+    if single_slot && len(idx) == 0 {
+        return Err("attempt to select less than one element in OneIndex".into());
+    }
+    let one_slot;
+    let idx = if single_slot
+        && len(idx) == 1
+        && matches!(kind(idx), RKind::Lgl | RKind::Int | RKind::Dbl)
+    {
+        let nx = len(x);
+        let at = match as_dbl(idx)[0] {
+            Some(d) if kind(idx) == RKind::Dbl && !d.is_nan() => {
+                if d > 0.0 {
+                    (d - 1.0).max(0.0) as usize
+                } else if d == 0.0 || nx < 2 {
+                    return Err("attempt to select less than one element in OneIndex <real>".into());
+                } else if nx == 2 && d > -3.0 {
+                    (2.0 + d) as usize
+                } else {
+                    return Err("attempt to select more than one element in OneIndex <real>".into());
+                }
+            }
+            Some(d) => integer_one_index(d as i64, nx)?,
+            None => return Err("subscript out of bounds".into()),
+        };
+        one_slot = scalar_int(at as i64 + 1);
+        &one_slot
+    } else {
+        idx
+    };
+    // `x[[c("a", "b")]] <- v` assigns through the nested lists: the first
+    // subscript picks the element, the rest address inside it.
+    if single_slot && args.len() == 1 && len(idx) > 1 {
+        if kind(x) != RKind::List {
+            return Err("attempt to select more than one element in vectorIndex".into());
+        }
+        let first = take_positions(idx, &[Some(0)]);
+        let rest = take_positions(idx, &(1..len(idx)).map(Some).collect::<Vec<_>>());
+        let inner = index_double(x, &[(None, first.clone())])?;
+        let updated = assign_index(&inner, &[(None, rest)], value, true, false)?;
+        return assign_index(x, &[(None, first)], &updated, true, inplace);
+    }
     // `m[cbind(i, j)] <- v` writes one cell per coordinate row, mirroring the
     // read path. `[[` never takes a matrix subscript, so `single_slot` is out.
     if !single_slot && args.len() == 1 {
@@ -3852,6 +3947,9 @@ fn assign_index(
             for p in resolve_index(idx, n.max(highest), &[])? {
                 match p {
                     Some(i) => positions.push(i),
+                    // An `NA` subscript selects nothing to write, which is
+                    // fine for a single value and an error for several.
+                    None if len(value) <= 1 => {}
                     None => return Err("NAs are not allowed in subscripted assignments".into()),
                 }
             }
@@ -3868,6 +3966,11 @@ fn assign_index(
             (true, RKind::List | RKind::Null) => {}
             _ => return Err("replacement has length zero".into()),
         }
+    }
+    // `VectorAssign` warns when the replacement does not tile the selection.
+    if !single_slot && !positions.is_empty() && len(value) > 0 && positions.len() % len(value) != 0
+    {
+        binop_warning("number of items to replace is not a multiple of replacement length")?;
     }
 
     // R's reference-count rule (`REFCNT`, real counting since R 4.0): a value
@@ -3969,9 +4072,15 @@ fn assign_index(
                     }
                 }
             }
+            let was_named = with_host(|h| h.attr(x, "names")).is_some();
             let out = mk_list(items);
             if !names.is_empty() {
                 set_names_attr(&out, names);
+            } else if was_named {
+                // A list emptied of its elements keeps a zero-length `names`:
+                // `named list()`.
+                let empty = mk_str(Vec::new());
+                with_host(|h| h.set_attr(&out, "names", empty));
             }
             return Ok(out);
         }
@@ -4128,7 +4237,18 @@ fn replacement(
             let nm = if is_null(value) {
                 null()
             } else {
-                mk_str(as_str(value))
+                // R's `namesgets`: a longer vector is an error, a shorter one
+                // is padded with `NA`.
+                let mut labels = as_str(value);
+                let nx = len(x);
+                if labels.len() > nx {
+                    return Err(format!(
+                        "'names' attribute [{}] must be the same length as the vector [{nx}]",
+                        labels.len()
+                    ));
+                }
+                labels.resize(nx, None);
+                mk_str(labels)
             };
             with_host(|h| h.set_attr(&out, "names", nm));
             Ok(out)
@@ -4151,6 +4271,7 @@ fn replacement(
                 return Ok(out);
             }
             let dims = as_int(value);
+            warn_coerced_na(value, dims.iter().map(|d| d.is_none()))?;
             if dims.is_empty() {
                 return Err("length-0 dimension vector is invalid".into());
             }
@@ -4183,13 +4304,32 @@ fn replacement(
                 .or_else(|| extra.first())
                 .map(|(_, v)| str1(v).unwrap_or_default())
                 .unwrap_or_default();
+            // The structural attributes go through their own checks.
+            if matches!(key.as_str(), "dim" | "names" | "dimnames") {
+                return replacement(&key, x, &[], value);
+            }
             with_host(|h| h.set_attr(&out, &key, value.clone()));
             Ok(out)
         }
         "length" => {
             let want = num1(value).unwrap_or(0.0) as usize;
+            // An unchanged length leaves the value, attributes and all, alone.
+            if want == len(x) {
+                return Ok(out);
+            }
             let pos: Vec<Option<usize>> = (0..want).map(|i| (i < len(x)).then_some(i)).collect();
-            Ok(take_positions(x, &pos))
+            let out = take_positions(x, &pos);
+            // Growing a named vector names the new slots `""`.
+            let names = names_of(x);
+            if !names.is_empty() {
+                set_names(
+                    &out,
+                    (0..want)
+                        .map(|i| names.get(i).cloned().unwrap_or_else(blank))
+                        .collect(),
+                );
+            }
+            Ok(out)
         }
         "levels" => {
             // Built BEFORE the borrow: `as_str` and `mk_str` each take the host
@@ -4202,6 +4342,30 @@ fn replacement(
             Ok(out)
         }
         "dimnames" => {
+            // R's `dimnamesgets`: an array's margins are labelled by character
+            // vectors of exactly the extent, one per dimension at most.
+            if !is_null(value) {
+                let Some(dim) = with_host(|h| h.attr(x, "dim")) else {
+                    return Err("'dimnames' applied to non-array".into());
+                };
+                let dims = as_int(&dim);
+                let items = elements(value);
+                if items.len() > dims.len() {
+                    return Err(format!(
+                        "length of 'dimnames' [{}] must match that of 'dims' [{}]",
+                        items.len(),
+                        dims.len()
+                    ));
+                }
+                for (k, it) in items.iter().enumerate() {
+                    if !is_null(it) && Some(len(it) as i64) != dims[k] {
+                        return Err(format!(
+                            "length of 'dimnames' [{}] not equal to array extent",
+                            k + 1
+                        ));
+                    }
+                }
+            }
             // Each element is a character vector or `NULL` (that margin has no
             // labels); a `NULL` list drops the attribute entirely.
             let dn = if is_null(value) {
@@ -4230,10 +4394,24 @@ fn replacement(
         // `dimnames` and leave the others as they were.
         "rownames" | "colnames" => {
             let idx = usize::from(fname == "colnames");
-            let ndim = with_host(|h| h.attr(&out, "dim"))
-                .map(|d| len(&d))
-                .unwrap_or(2)
-                .max(idx + 1);
+            let Some(dim) = with_host(|h| h.attr(&out, "dim")) else {
+                return Err(format!(
+                    "attempt to set '{fname}' on an object with no dimensions"
+                ));
+            };
+            let extents = as_int(&dim);
+            if idx >= extents.len() {
+                return Err(format!(
+                    "attempt to set '{fname}' on an object with less than two dimensions"
+                ));
+            }
+            if !is_null(value) && Some(len(value) as i64) != extents[idx] {
+                return Err(format!(
+                    "length of 'dimnames' [{}] not equal to array extent",
+                    idx + 1
+                ));
+            }
+            let ndim = extents.len();
             let old = dimnames_of(&out);
             let mut margins: Vec<Value> = (0..ndim)
                 .map(|k| match old.get(k).cloned().flatten() {
@@ -4307,6 +4485,28 @@ fn replacement(
                     Ok(out)
                 }
             }
+        }
+        // `storage.mode(x) <- "integer"` re-types the data and keeps every
+        // attribute; `mode<-` is the same for the modes rlang has.
+        "storage.mode" | "mode" => {
+            let want = str1(value).unwrap_or_default();
+            let retyped = match want.as_str() {
+                "logical" => mk_lgl(as_lgl(x)),
+                "integer" => mk_int(as_int(x)),
+                "double" | "numeric" => mk_dbl(as_dbl(x)),
+                "character" => mk_str(as_str(x)),
+                "list" => mk_list(elements(x)),
+                other => return Err(format!("invalid value '{other}' for mode")),
+            };
+            for (k, v) in with_host(|h| h.attrs_of(x)) {
+                with_host(|h| h.set_attr(&retyped, &k, v));
+            }
+            Ok(retyped)
+        }
+        // `is.na(x) <- i` sets those elements to `NA`.
+        "is.na" => {
+            let na = mk_lgl(vec![None]);
+            assign_index(x, &[(None, value.clone())], &na, false, false)
         }
         // A user-defined replacement function: `\`f<-\`(x, ..., value)`.
         other => {
@@ -4656,6 +4856,7 @@ pub const PRIMITIVES: &[&str] = &[
     "levels",
     "nlevels",
     "droplevels",
+    "as.table",
     "ordered",
     "as.ordered",
     "is.ordered",
@@ -4865,6 +5066,24 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .get(0, "mode")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| "logical".into());
+            if !matches!(
+                mode.as_str(),
+                "logical"
+                    | "integer"
+                    | "numeric"
+                    | "double"
+                    | "complex"
+                    | "character"
+                    | "list"
+                    | "expression"
+                    | "raw"
+                    | "pairlist"
+                    | "symbol"
+                    | "name"
+                    | "any"
+            ) {
+                return Err(format!("vector: cannot make a vector of mode '{mode}'."));
+            }
             Ok(empty_vector(&mode, vector_length(&a, 1)?))
         }
         "numeric" | "double" => Ok(empty_vector("numeric", vector_length(&a, 0)?)),
@@ -4873,14 +5092,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "logical" => Ok(empty_vector("logical", vector_length(&a, 0)?)),
         "as.numeric" | "as.double" => {
             let x = a.req(0, "x")?;
+            check_list_coercion(&x, "double")?;
             let out = as_dbl(&x);
-            warn_coerced_na(&x, out.iter().map(|e| e.is_none()))?;
+            warn_coerced_na(&flat_strings(&x), out.iter().map(|e| e.is_none()))?;
             Ok(mk_dbl(out))
         }
         "as.integer" => {
             let x = a.req(0, "x")?;
+            check_list_coercion(&x, "integer")?;
             let out = int_range_na(as_int(&x))?;
-            warn_coerced_na(&x, out.iter().map(|e| e.is_none()))?;
+            warn_coerced_na(&flat_strings(&x), out.iter().map(|e| e.is_none()))?;
             Ok(mk_int(out))
         }
         "as.character" => {
@@ -5023,7 +5244,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 _ => unlist(&x),
             };
-            if !use_names && !is_null(&out) {
+            // `use.names = FALSE` drops the names of what `unlist` flattened; a
+            // vector that was never a list comes back as it is.
+            if !use_names && kind(&x) == RKind::List && !is_null(&out) {
                 with_host(|h| {
                     let nl = h.null();
                     h.set_attr(&out, "names", nl)
@@ -6190,8 +6413,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── sequences ───────────────────────────────────────────────────
         "seq_len" => {
             // `length.out` must read as one non-negative whole count.
-            let n = match a.n(0, f64::NAN) {
-                n if n >= 0.0 => n as i64,
+            let arg = a.req(0, "length.out")?;
+            if kind(&arg) == RKind::Str {
+                let n = as_dbl(&arg);
+                warn_coerced_na(&arg, n.iter().map(|e| e.is_none()))?;
+            }
+            if len(&arg) > 1 {
+                signal_warning("first element used of 'length.out' argument")?;
+            }
+            let n = match as_dbl(&arg).first().copied().flatten() {
+                Some(n) if n >= 0.0 => n as i64,
+                None if len(&arg) == 0 => return Err("argument of length 0".into()),
                 _ => return Err("argument must be coercible to non-negative integer".into()),
             };
             Ok(mk_int((1..=n).map(Some).collect()))
@@ -7343,6 +7575,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "expm1"
         | "log1p" | "gamma" | "lgamma" | "factorial" | "lfactorial" => {
             let x = a.req(0, "x")?;
+            // `factorial(x)` is `gamma(x + 1)`, so a bad argument fails in the
+            // addition before it reaches the math function.
+            if matches!(name, "factorial" | "lfactorial")
+                && !matches!(kind(&x), RKind::Lgl | RKind::Int | RKind::Dbl)
+            {
+                return Err("non-numeric argument to binary operator".into());
+            }
             require_numeric(&x)?;
             let f: fn(f64) -> f64 = match name {
                 "abs" => f64::abs,
@@ -9370,6 +9609,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "apply" => {
             let x = a.req(0, "X")?;
+            if with_host(|h| h.attr(&x, "dim")).is_none() {
+                return Err("dim(X) must have a positive length".into());
+            }
             let dims = dims_of(&x);
             let margins: Vec<usize> = as_int(&a.req(1, "MARGIN")?)
                 .into_iter()
@@ -9589,7 +9831,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 // `diag(n)` for a length-1 numeric builds the n×n identity.
                 None if matches!(kind(&x), RKind::Int | RKind::Dbl) && len(&x) == 1 => {
-                    let n = num1(&x).unwrap_or(0.0) as usize;
+                    let want = num1(&x).unwrap_or(0.0);
+                    if want < 0.0 {
+                        return Err("invalid 'nrow' value (< 0)".into());
+                    }
+                    let n = want as usize;
                     let mut vals = vec![Some(0.0); n * n];
                     for i in 0..n {
                         vals[i * n + i] = Some(1.0);
@@ -9736,7 +9982,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(res)
         }
-        "cbind" | "rbind" => Ok(bind_matrix(&a, name == "cbind")),
+        "cbind" | "rbind" => bind_matrix(&a, name == "cbind"),
 
         // ── environments and dispatch ───────────────────────────────────
         "exists" => {
@@ -10326,6 +10572,54 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "cut" => cut(&a),
+        // `as.table(x)`: the table class on an array (a vector becomes
+        // one-dimensional), with letters `A`, `B`, … labelling any margin that
+        // has no `dimnames`.
+        "as.table" => {
+            let x = a.req(0, "x")?;
+            if class_of(&x).iter().any(|c| c == "table") {
+                return Ok(x);
+            }
+            let out = copy_of(&x);
+            let had_dim = with_host(|h| h.attr(&x, "dim")).is_some();
+            let dims: Vec<usize> = match had_dim {
+                true => dims_of(&x),
+                false => vec![len(&x)],
+            };
+            if !had_dim {
+                let names = names_of(&x);
+                let dim = mk_int(vec![Some(len(&x) as i64)]);
+                with_host(|h| {
+                    let nl = h.null();
+                    h.set_attr(&out, "names", nl);
+                    h.set_attr(&out, "dim", dim);
+                });
+                if !names.is_empty() {
+                    let dn = mk_list(vec![mk_str(names)]);
+                    with_host(|h| h.set_attr(&out, "dimnames", dn));
+                }
+            }
+            let have = dimnames_of(&out);
+            if have.iter().all(|m| m.is_none()) || have.len() < dims.len() {
+                let margins = dims
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &d)| match have.get(k).cloned().flatten() {
+                        Some(l) => mk_str(l),
+                        None => mk_str(
+                            (0..d)
+                                .map(|i| Some(spreadsheet_label(i)))
+                                .collect::<Vec<_>>(),
+                        ),
+                    })
+                    .collect();
+                let dn = mk_list(margins);
+                with_host(|h| h.set_attr(&out, "dimnames", dn));
+            }
+            let cls = scalar_str("table");
+            with_host(|h| h.set_attr(&out, "class", cls));
+            Ok(out)
+        }
         "table" => {
             // Every argument but the options is one factor to cross-classify.
             let factors: Vec<(Option<String>, Value)> = a
@@ -10371,8 +10665,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .iter()
                 .map(|(_, x)| {
                     let (levels, mut codes) = classify_factor(x);
-                    // Excluded values are dropped the way `factor(exclude=)`
-                    // drops them: the level goes and its observations become NA.
+                    // A value that was missing to begin with is the only thing
+                    // the `NA` level counts; an excluded one is dropped outright.
+                    let was_missing: Vec<bool> = codes.iter().map(|c| c.is_none()).collect();
                     let kept: Vec<usize> = (0..levels.len())
                         .filter(|&i| !excluded.contains(&levels[i]))
                         .collect();
@@ -10383,10 +10678,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     }
                     let levels: Vec<String> = kept.iter().map(|&i| levels[i].clone()).collect();
                     let mut levels: Vec<Option<String>> = levels.into_iter().map(Some).collect();
-                    if use_na == "always" || (use_na == "ifany" && codes.contains(&None)) {
+                    if use_na == "always" || (use_na == "ifany" && was_missing.contains(&true)) {
                         let at = levels.len();
                         levels.push(None);
-                        codes.iter_mut().for_each(|c| *c = Some(c.unwrap_or(at)));
+                        for (c, missing) in codes.iter_mut().zip(&was_missing) {
+                            if *missing {
+                                *c = Some(at);
+                            }
+                        }
                     }
                     (levels, codes)
                 })
@@ -10423,10 +10722,21 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     None => unnamed.next().flatten(),
                 })
                 .collect();
-            // An explicit `dnn` names the dimensions outright.
+            // An explicit `dnn` names the dimensions outright: `names(dimnames)
+            // <- dnn`, so a longer one is an error and a shorter one leaves the
+            // rest `NA`.
             if let Some(explicit) = a.named("dnn").filter(|v| !is_null(v)) {
-                for (slot, n) in names.iter_mut().zip(as_str(&explicit)) {
-                    *slot = n;
+                let given = as_str(&explicit);
+                if given.len() > names.len() {
+                    return Err(format!(
+                        "'names' attribute [{}] must be the same length as the vector [{}]",
+                        given.len(),
+                        names.len()
+                    ));
+                }
+                let mut given = given.into_iter();
+                for slot in names.iter_mut() {
+                    *slot = given.next().flatten();
                 }
             }
             let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
@@ -10438,10 +10748,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             );
             // The margins are always named — `""` when nothing names them —
             // which is what heads a one-way table with a blank line.
+            let explicit_dnn = a.named("dnn").is_some_and(|v| !is_null(&v));
             let dn_names = mk_str(
                 names
                     .into_iter()
-                    .map(|n| Some(n.unwrap_or_default()))
+                    .map(|n| match (n, explicit_dnn) {
+                        (None, true) => None,
+                        (n, _) => Some(n.unwrap_or_default()),
+                    })
                     .collect(),
             );
             with_host(|h| h.set_attr(&dn, "names", dn_names));
@@ -10989,13 +11303,6 @@ impl Args {
         self.get(i, name)
             .ok_or_else(|| format!("argument \"{name}\" is missing, with no default"))
     }
-    /// A numeric argument with a fallback.
-    fn n(&self, i: usize, default: f64) -> f64 {
-        self.get(i, "length.out")
-            .or_else(|| self.get(i, "n"))
-            .and_then(|v| num1(&v))
-            .unwrap_or(default)
-    }
     /// Every argument from untagged position `i` onward, tags preserved.
     fn rest(&self, i: usize) -> Vec<(Option<String>, Value)> {
         let mut seen = 0usize;
@@ -11054,10 +11361,67 @@ fn numeric_arg(a: &Args, i: usize, name: &str) -> Result<Vec<f64>, String> {
 /// The `length` of `vector()` / `numeric()` / `character()` …, taken from
 /// untagged position `i` or the `length` tag: R's `do_makevector` wants one
 /// non-negative count and calls anything else an "invalid 'length' argument".
+/// R's `coerceVectorList`: a list converts to an atomic vector only when every
+/// element is a length-one atomic value.
+fn check_list_coercion(x: &Value, to: &str) -> Result<(), String> {
+    if kind(x) != RKind::List {
+        return Ok(());
+    }
+    let ok = elements(x)
+        .iter()
+        .all(|e| len(e) == 1 && kind(e) != RKind::List);
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("'list' object cannot be coerced to type '{to}'"))
+    }
+}
+
+/// `x` as a character vector when it is text or a list of one-element texts —
+/// the source `as.numeric` judges "NAs introduced by coercion" against.
+fn flat_strings(x: &Value) -> Value {
+    if kind(x) == RKind::List {
+        let texts: Vec<Option<String>> = elements(x)
+            .iter()
+            .map(|e| match kind(e) {
+                RKind::Str => str1(e),
+                _ => Some(String::new()),
+            })
+            .collect();
+        // A list with any text element is judged element by element: only the
+        // text ones can fail to parse.
+        if elements(x).iter().any(|e| kind(e) == RKind::Str) {
+            return mk_str(texts);
+        }
+        return mk_dbl(Vec::new());
+    }
+    x.clone()
+}
+
+/// `LETTERS[i + 1]`, continuing `AA`, `AB`, … past `Z` as `as.table` does.
+fn spreadsheet_label(i: usize) -> String {
+    let mut n = i + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push((b'A' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    out.iter().rev().collect()
+}
+
 fn vector_length(a: &Args, i: usize) -> Result<usize, String> {
     let Some(v) = a.get(i, "length") else {
         return Ok(0);
     };
+    // Text is coerced (with the usual warning) and `NA` is refused outright.
+    if kind(&v) == RKind::Str {
+        let n = as_dbl(&v);
+        warn_coerced_na(&v, n.iter().map(|e| e.is_none()))?;
+        if n.len() == 1 && n[0].is_none() {
+            return Err("vector size cannot be NA/NaN".into());
+        }
+    }
     match as_dbl(&v).as_slice() {
         [Some(n)] if *n >= 0.0 => Ok(*n as usize),
         _ => Err("invalid 'length' argument".into()),
@@ -11074,8 +11438,6 @@ fn empty_vector(mode: &str, n: usize) -> Value {
     }
 }
 
-/// `c(...)` — concatenate, promoting to the widest type present and building
-/// the combined `names` (including `c(a = 1)` tags).
 /// R's `NameData`: where `NewExtractNames` stands while it names a result.
 #[derive(Default)]
 struct NameData {
@@ -11147,7 +11509,9 @@ fn extract_names(
     nd: &mut NameData,
 ) {
     let mut base = base.to_string();
-    let saved = (nd.seqno, nd.count);
+    // Only a new tag restarts the numbering, and it is the numbering *before*
+    // the restart that gets added back afterwards.
+    let saved = (if tag.is_some() { nd.seqno } else { 0 }, nd.count);
     let tagged = tag.is_some();
     if let Some(t) = tag {
         base = new_base(&base, t);
@@ -11216,6 +11580,8 @@ fn has_names(v: &Value, recurse: bool) -> bool {
     }
 }
 
+/// `c(...)` — concatenate, promoting to the widest type present and building
+/// the combined `names` (including `c(a = 1)` tags).
 fn concat(a: &Args) -> Value {
     let parts: Vec<(Option<String>, Value)> =
         a.all.iter().filter(|(_, v)| !is_null(v)).cloned().collect();
@@ -11368,7 +11734,13 @@ fn simplify(list: &Value) -> Value {
             }
         } else {
             let dim = mk_int(vec![Some(k as i64), Some(items.len() as i64)]);
-            with_host(|h| h.set_attr(&out, "dim", dim));
+            with_host(|h| {
+                // The matrix is labelled by `dimnames`, not by the flattened
+                // element names `c()` produced on the way.
+                let nl = h.null();
+                h.set_attr(&out, "names", nl);
+                h.set_attr(&out, "dim", dim);
+            });
             // R labels the rows with the first result's own names and the
             // columns with the names of what was mapped over.
             let rn = names_of(&items[0]);
@@ -11448,6 +11820,26 @@ fn seq(a: &Args) -> Result<Value, String> {
     // values are. It short-circuits the rest of the signature.
     if let Some(v) = a.named("along.with") {
         return Ok(mk_int((1..=len(&v) as i64).map(Some).collect()));
+    }
+    // `seq.default`'s argument checks, which treat an `NA` as supplied-but-bad
+    // rather than as absent.
+    let scalar_na = |v: &Value| len(v) == 1 && num1(v).map_or(true, f64::is_nan);
+    for (name, pos) in [("from", 0usize), ("to", 1)] {
+        if let Some(v) = a.get(pos, name) {
+            if scalar_na(&v) || num1(&v).is_some_and(|n| !n.is_finite()) {
+                return Err(format!("'{name}' must be a finite number"));
+            }
+        }
+    }
+    if let Some(v) = a.get(2, "by") {
+        if scalar_na(&v) {
+            return Err("invalid '(to - from)/by'".into());
+        }
+    }
+    if let Some(v) = a.named("length.out") {
+        if scalar_na(&v) || num1(&v).is_some_and(|n| n < 0.0) {
+            return Err("'length.out' must be a non-negative number".into());
+        }
     }
     let from = a.get(0, "from").and_then(|v| num1(&v)).unwrap_or(1.0);
     let to = a.get(1, "to").and_then(|v| num1(&v));
@@ -11567,7 +11959,16 @@ fn rep(a: &Args) -> Result<Value, String> {
         None => 1,
     };
     if let Some(t) = a.get(1, "times") {
-        if as_dbl(&t).iter().any(|c| !c.is_some_and(|c| c >= 0.0)) {
+        let counts = as_dbl(&t);
+        // Text is coerced with the usual warning before it is judged.
+        if kind(&t) == RKind::Str {
+            warn_coerced_na(&t, counts.iter().map(|e| e.is_none()))?;
+        }
+        if counts.iter().any(|c| !c.is_some_and(|c| c >= 0.0)) {
+            return Err("invalid 'times' argument".into());
+        }
+        // One count per element (after `each`), or one for the whole vector.
+        if counts.len() > 1 && counts.len() != len(&x) * each {
             return Err("invalid 'times' argument".into());
         }
     }
@@ -12260,7 +12661,7 @@ fn recycle_to(v: &Value, n: usize) -> Value {
 /// no argument supplies a label the result gets no dimnames at all, which is
 /// what makes `rbind(1:3, 4:6)` print `[1,]`/`[2,]` while `rbind(x, x)` prints
 /// `x`/`x`. Unlabelled rows in an otherwise labelled result print as blank.
-fn bind_matrix(a: &Args, by_col: bool) -> Value {
+fn bind_matrix(a: &Args, by_col: bool) -> Result<Value, String> {
     let level = a
         .named("deparse.level")
         .and_then(|v| num1(&v))
@@ -12285,7 +12686,7 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
         .map(|(i, (t, v))| (i, t.clone(), v.clone()))
         .collect();
     if inputs.is_empty() {
-        return null();
+        return Ok(null());
     }
     let is_matrix = |v: &Value| with_host(|h| h.attr(v, "dim")).is_some();
     // The length along the seam: a matrix contributes its cross-margin extent,
@@ -12307,6 +12708,54 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
         .max()
         .unwrap_or(0)
         .max(1);
+    // R's checks, in the order `do_bind` makes them: matrices must agree on the
+    // extent across the seam (the first one decides), and a vector that does
+    // not tile that extent warns.
+    let which = if by_col { "rows" } else { "columns" };
+    let cross_of = |v: &Value| {
+        let (nr, nc) = mat_dim(v);
+        if by_col {
+            nr
+        } else {
+            nc
+        }
+    };
+    let reference = inputs
+        .iter()
+        .find(|(_, _, v)| is_matrix(v))
+        .map(|(_, _, v)| cross_of(v));
+    let arg_no = |at: usize| {
+        a.all
+            .iter()
+            .take(at + 1)
+            .filter(|(t, _)| !BIND_CONTROL_ARGS.contains(&t.as_deref().unwrap_or("")))
+            .count()
+    };
+    for (i, _, v) in &inputs {
+        match (is_matrix(v), reference) {
+            (true, Some(r)) if cross_of(v) != r => {
+                return Err(format!(
+                    "number of {which} of matrices must match (see arg {})",
+                    arg_no(*i)
+                ));
+            }
+            (false, Some(r)) if r > 0 && r % len(v) != 0 => {
+                signal_warning(&format!(
+                    "number of {} of result is not a multiple of vector length (arg {})",
+                    if by_col { "rows" } else { "columns" },
+                    arg_no(*i)
+                ))?;
+            }
+            (false, None) if cross % len(v) != 0 => {
+                signal_warning(&format!(
+                    "number of {} of result is not a multiple of vector length (arg {})",
+                    if by_col { "rows" } else { "columns" },
+                    arg_no(*i)
+                ))?;
+            }
+            _ => {}
+        }
+    }
 
     let mut strips: Vec<Value> = Vec::new();
     let mut seam: Vec<Option<String>> = Vec::new();
@@ -12383,7 +12832,7 @@ fn bind_matrix(a: &Args, by_col: bool) -> Value {
     } else {
         set_dimnames(&out, seam, cross_names);
     }
-    out
+    Ok(out)
 }
 
 /// R's `factor(x = character(), levels, labels = levels, exclude = NA,
@@ -16968,7 +17417,15 @@ fn format_extra_attrs(v: &Value) -> Vec<String> {
     let laid_out = has_print_layout(v);
     let mut out = Vec::new();
     for (k, val) in with_host(|h| h.attrs_of(v)) {
-        if STRUCTURAL.contains(&k.as_str()) || (k == "class" && laid_out) {
+        // `levels` is part of a factor's own layout; on anything else it is an
+        // attribute like any other.
+        let is_factor_levels = k == "levels" && class_of(v).iter().any(|c| c == "factor");
+        // A matrix's own `names` is not its row/column labels, so it is shown.
+        let stray_names = k == "names" && with_host(|h| h.attr(v, "dim")).is_some();
+        let structural = STRUCTURAL.contains(&k.as_str())
+            && !(k == "levels" && !is_factor_levels)
+            && !stray_names;
+        if structural || (k == "class" && laid_out) {
             continue;
         }
         let tag = format!("attr(,\"{k}\")");
@@ -17016,6 +17473,31 @@ fn format_value_body(v: &Value) -> Vec<String> {
         && with_host(|h| h.attr(v, "dimnames"))
             .and_then(|dn| with_host(|h| h.attr(&dn, "names")))
             .is_some();
+    // `print.table` formats the whole array at once (`format(unclass(x))`) and
+    // prints that text right-justified, so every cell shares one decimal count
+    // and one width, down columns that would format alone as a plain matrix.
+    if rank >= 2
+        && classes.iter().any(|c| c == "table")
+        && matches!(kind(v), RKind::Int | RKind::Dbl)
+    {
+        let mut cells = format_elements(v);
+        let width = cells.iter().map(|c| c.chars().count()).max().unwrap_or(0);
+        for c in cells.iter_mut() {
+            *c = format!("{c:>width$}");
+        }
+        let text = mk_str(cells.into_iter().map(Some).collect());
+        for key in ["dim", "dimnames"] {
+            if let Some(a) = with_host(|h| h.attr(v, key)) {
+                with_host(|h| h.set_attr(&text, key, a));
+            }
+        }
+        return with_print_quote(false, || {
+            let prev = PRINT_RIGHT.with(|r| r.replace(true));
+            let out = format_value_body(&text);
+            PRINT_RIGHT.with(|r| r.set(prev));
+            out
+        });
+    }
     if rank <= 1 && (named_dimnames || classes.iter().any(|c| c == "table")) {
         // R heads a 1-D table with the name of its `dimnames` element — the
         // deparsed argument, e.g. `z` for `table(z)` — then the named-vector
@@ -17025,7 +17507,16 @@ fn format_value_body(v: &Value) -> Vec<String> {
             .map(|dn| names_of(&dn))
             .and_then(|n| n.first().cloned().flatten())
             .unwrap_or_default();
-        let mut out = vec![header];
+        if len(v) == 0 {
+            return vec!["< table of extent 0 >".into()];
+        }
+        // Only named `dimnames` give the table a heading line; one with none
+        // (`as.table(c(a = 1))`) starts at its labels.
+        let mut out = if named_dimnames {
+            vec![header]
+        } else {
+            Vec::new()
+        };
         out.extend(format_vector(v));
         return out;
     }
@@ -17200,6 +17691,9 @@ thread_local! {
     /// `print`'s `quote`: off for `print(x, quote = FALSE)` and a `noquote`
     /// object, for the duration of that one print.
     static PRINT_QUOTE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// `print`'s `right`: character cells justify to the right instead of the
+    /// left, as `print.table` asks of the text it has already formatted.
+    static PRINT_RIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Run `f` with `print`'s `quote` set to `quote`, restoring it afterwards.
@@ -17625,7 +18119,7 @@ fn format_matrix(v: &Value, nr: usize, nc: usize) -> Vec<String> {
         .collect();
     // Character matrices are left-justified (cells and column headers alike),
     // like character vectors; numeric matrices are right-justified.
-    let left = kind(v) == RKind::Str;
+    let left = kind(v) == RKind::Str && !PRINT_RIGHT.with(|r| r.get());
     let just = |s: &str, w: usize| crate::strwidth::pad_display(s, w, left);
     let mut out = Vec::with_capacity(nr + 1);
     // With no columns there is nothing after the label gutter, and R does not

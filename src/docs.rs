@@ -1586,6 +1586,11 @@ const ENVIRONMENTS: &[Entry] = &[
         "Drop the levels that no longer occur and renumber the codes to match.",
     ),
     (
+        "as.table",
+        "as.table(x)",
+        "x as a table: the table class on an array (a vector becomes one-dimensional, named by its names), with the letters A, B, ... labelling any margin that has no dimnames. A table is returned as it is.",
+    ),
+    (
         "ordered",
         "ordered(x, levels, labels)",
         "factor(x, levels, labels, ordered = TRUE): an ordered factor whose levels carry a < order.",
