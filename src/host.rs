@@ -1555,6 +1555,13 @@ impl RHost {
     /// context below it counts whether or not it has been entered: a promise
     /// forced inside `print(f())` runs `f` with `print`'s context beneath it.
     pub fn nframe(&self) -> usize {
+        self.sys_contexts().len()
+    }
+
+    /// The function contexts from the outermost call up to the one
+    /// `sys.nframe()` was written in, outermost first — R's frame numbers
+    /// `1..=sys.nframe()` index this list.
+    fn sys_contexts(&self) -> Vec<&CallCtx> {
         let found = self
             .calls
             .iter()
@@ -1564,9 +1571,45 @@ impl RHost {
             .skip(1)
             .find(|(_, c)| c.closure && c.entered);
         match found {
-            Some((k, _)) => self.calls[..=k].iter().filter(|c| c.closure).count(),
-            None => 0,
+            Some((k, _)) => self.calls[..=k].iter().filter(|c| c.closure).collect(),
+            None => Vec::new(),
         }
+    }
+
+    /// Resolve R's `which` argument (`0` current, `n > 0` absolute, `n < 0`
+    /// relative to the current frame) to a frame number, or the error R's
+    /// `R_sysframe` raises when it names a frame that does not exist.
+    pub fn sys_frame_number(&self, which: i64) -> Result<usize, String> {
+        let cur = self.nframe() as i64;
+        let target = if which > 0 { which } else { cur + which };
+        if target < 0 || target > cur {
+            return Err("not that many frames on the stack".into());
+        }
+        Ok(target as usize)
+    }
+
+    /// `sys.call(which)` as source; `None` for frame 0 (the top level).
+    pub fn sys_call_source(&self, which: i64) -> Result<Option<String>, String> {
+        let n = self.sys_frame_number(which)?;
+        Ok(n.checked_sub(1)
+            .and_then(|i| self.sys_contexts().get(i).map(|c| ctx_source(&c.text))))
+    }
+
+    /// Every active call, outermost first, as source — `sys.calls()`.
+    pub fn sys_calls_source(&self) -> Vec<String> {
+        self.sys_contexts()
+            .iter()
+            .map(|c| ctx_source(&c.text))
+            .collect()
+    }
+
+    /// The closure running as frame `n` (1-based), as the `(id, env)` pair.
+    pub fn sys_function_at(&self, n: usize) -> Option<(usize, Env)> {
+        self.frames
+            .iter()
+            .filter(|f| !f.promise)
+            .nth(n)
+            .and_then(|f| f.fun.clone())
     }
 
     pub fn enclosing_source(&self) -> Option<String> {

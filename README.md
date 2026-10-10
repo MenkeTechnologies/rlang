@@ -294,13 +294,16 @@ clean exit and stdout matching the frozen reference output
 
 Where the fixed corpus is hand-authored, the **differential fuzzer** —
 `cargo run --bin parity-fuzz` — generates thousands of grammar-driven R snippets
-across 63 surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
+across its surfaces (vectors, `seq`/`rep`, apply family, `sprintf`/`formatC`,
 matrices and linear algebra, `factor`/`table`, factor subsetting and factor
 operators, set/bit ops, trig, gamma/`choose`,
 `pmax`/`pmin`, string translation, closure deparse, `rbind`/`cbind` seam labels,
 `dimnames` replacement, `sort`/`order` with missing values, `NA`-versus-`NaN`
 propagation, S3 methods on the generic primitives, `cat` argument handling,
-non-ASCII string measurement and layout, character collation, …) and runs each
+non-ASCII string measurement and layout, character collation, condition
+message text, `bitw*` operand rules, `sys.call` frames, visibility of literal
+values, `[[` on matrices, `with`/`evalq`, `rapply`, result types, classed
+`paste`, …) and runs each
 through the reference `Rscript --vanilla -e` and rlang's own `Rscript -e`,
 reporting every case where stdout or exit code diverges. Both binaries share the name `Rscript`,
 so each is resolved by absolute path — the reference from a system path, rlang's
@@ -312,18 +315,29 @@ reproducer and replays exactly with `--seed <N> --once`.
 ```sh
 cargo build --bin parity-fuzz
 ./target/debug/parity-fuzz --count 5000                       # sweep all modes
+./target/debug/parity-fuzz --count 50000 --batch 25           # 25 cases per launch
 ./target/debug/parity-fuzz --sprintf --count 2000             # one surface
 ./target/debug/parity-fuzz --seed 52 --once                   # replay one case
 ./target/debug/parity-fuzz --count 5000 \
     --baseline tests/data/parity_fuzz_baseline.txt            # gate on NEW gaps only
 ```
 
-The fuzzer currently reports **zero** divergences across its 63 surfaces over
+The fuzzer currently reports **zero** divergences across its surfaces over
 repeated multi-seed sweeps, so `tests/data/parity_fuzz_baseline.txt` is empty;
 with `--baseline` the run exits non-zero the moment any *new* divergence class
 appears — a regression, or a surface that just started diverging. Like `parity`,
 it needs R on `PATH` (or `RLANG_FUZZ_RSCRIPT`), so it is a development tool, not
 a CI gate.
+
+Each `Rscript` launch costs more than most cases take to run, so `--batch K`
+packs `K` generated cases into one program per interpreter — each case isolated
+by a `tryCatch`, run as top-level statements would be, with a clean global
+environment and options between them — and compares the per-case segments of
+stdout. It is only a pre-filter: a case whose segment differs, or a batch that
+cannot be split apart because one interpreter died or lost output, is re-run on
+its own through the exact path above, which remains the authority for every
+reported divergence. A sweep that took minutes per thousand cases runs in
+seconds.
 
 A zero is only worth reading if the run looked at something, so every case is
 accounted as *compared*, *drained* (the oracle timed out or would not spawn, so

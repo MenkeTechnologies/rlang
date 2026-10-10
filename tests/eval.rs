@@ -472,11 +472,13 @@ fn sapply_simplifies_length_one_list_results_one_level() {
     // to a flat list rather than staying doubly nested.
     assert_eq!(r("length(sapply(1:2, function(x) list(x)))"), "[1] 2");
     assert_eq!(r("sapply(1:2, function(x) list(x))[[2]]"), "[1] 2");
-    // Longer list results have no matrix form, so those still stay a list.
-    assert_eq!(r("length(sapply(1:2, function(x) list(x, x)))"), "[1] 2");
+    // Uniform results of length > 1 stack into a matrix, and a list result
+    // makes it a *list* matrix: a 2 x 2 of the four elements, each a scalar.
+    assert_eq!(r("length(sapply(1:2, function(x) list(x, x)))"), "[1] 4");
+    assert_eq!(r("dim(sapply(1:2, function(x) list(x, x)))"), "[1] 2 2");
     assert_eq!(
         r("length(sapply(1:2, function(x) list(x, x))[[1]])"),
-        "[1] 2"
+        "[1] 1"
     );
 }
 

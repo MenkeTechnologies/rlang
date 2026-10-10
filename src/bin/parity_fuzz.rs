@@ -346,6 +346,25 @@ fn run_oracle(script: &str, timeout: Duration) -> RunOut {
     run_with_timeout(cmd, timeout)
 }
 
+/// Run a batch program from a file: `Rscript -e` caps the expression length, and
+/// a batch of a few dozen cases exceeds it.
+fn run_file(path: &Path, ours: Option<&Path>, timeout: Duration) -> RunOut {
+    let mut cmd;
+    match ours {
+        Some(bin) => {
+            cmd = Command::new(bin);
+            cmd.arg(path);
+            cmd.env("RLANG_NO_CRAN", "1");
+            cmd.env("HOME", ours_home());
+        }
+        None => {
+            cmd = Command::new(oracle_path());
+            cmd.arg("--vanilla").arg(path);
+        }
+    }
+    run_with_timeout(cmd, timeout)
+}
+
 fn run_ours(script: &str, bin: &Path, timeout: Duration) -> RunOut {
     let mut cmd = Command::new(bin);
     cmd.args(["-e", script]);
@@ -1879,6 +1898,370 @@ fn gen_stat2(seed: u64) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Round-2 surfaces: warning/error text, bit ops, call frames, visibility,
+// array element access, `with`/`evalq`, `rapply`, classed `paste`.
+// ---------------------------------------------------------------------------
+
+/// Integers near the 32-bit limits, where C `int` wrap-around and `NA` meet.
+const EDGE_INTS: &[&str] = &[
+    "2147483647L",
+    "-2147483647L",
+    "2147483646L",
+    "46340L",
+    "46341L",
+    "1L",
+    "2L",
+    "-1L",
+    "0L",
+    "1000000L",
+];
+
+/// The text of a warning or error a builtin raises, caught with `tryCatch` so it
+/// reaches stdout: the message is part of the contract, and a handler that never
+/// fires (a warning queued instead of signalled) shows up as a different value.
+fn gen_condtext(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let a = *r.pick(EDGE_INTS);
+    let b = *r.pick(EDGE_INTS);
+    let n = r.range(2, 7);
+    let m = r.range(2, 7);
+    let w = ww(r);
+    let catch = |expr: String| {
+        format!(
+            "tryCatch({expr}, warning = function(w) paste(\"W:\", conditionMessage(w)), \
+             error = function(e) paste(\"E:\", conditionMessage(e)))"
+        )
+    };
+    one(catch(match r.below(24) {
+        0 => format!("{a} + {b}"),
+        1 => format!("{a} * {b}"),
+        2 => format!("{a} - {b}"),
+        3 => format!("c({a}, {b}) + 1L"),
+        4 => format!("cumsum(c({a}, {b}, 1L))"),
+        5 => format!("1:{n} + 1:{m}"),
+        6 => format!("1:{n} * 1:{m}"),
+        7 => format!("1:{n} < 1:{m}"),
+        8 => format!("as.integer(\"{w}\")"),
+        9 => format!("as.numeric(c(\"1\", \"{w}\"))"),
+        10 => format!("sqrt(-{n})"),
+        11 => format!("log(-{n})"),
+        12 => format!("as.integer({n}e9)"),
+        13 => format!("\"{w}\" + {n}"),
+        14 => format!("-\"{w}\""),
+        15 => format!("{w}_undefined_{n}"),
+        16 => format!("{w}_undefined_fn({n})"),
+        17 => format!("stop(\"{w}\", {n})"),
+        18 => format!("warning(\"{w}\", {n})"),
+        19 => format!("c(1, 2)[[{}]]", r.range(3, 5)),
+        20 => format!("list(a = 1)[[\"{w}\"]][[\"z\"]]"),
+        21 => format!("stopifnot({n} < {})", n - 1),
+        22 => format!("match.arg(\"{w}\", c(\"alpha\", \"beta\"))"),
+        _ => format!("switch(c(\"a\", \"b\"), a = {n})"),
+    }))
+}
+
+/// The `bitw*` family: operand-type rules, `NA`, the unsigned-32 shift
+/// semantics and the `INT_MIN` ↔ `NA` identification.
+fn gen_bitw(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let pool = [
+        "0L",
+        "1L",
+        "5L",
+        "12L",
+        "255L",
+        "-1L",
+        "-8L",
+        "2147483647L",
+        "-2147483647L",
+        "NA_integer_",
+        "1:5",
+        "c(3L, 6L, 12L)",
+        "c(a = 1L, b = 6L)",
+        "7",
+        "2^31",
+        "5.5",
+        "TRUE",
+        "\"a\"",
+    ];
+    let x = *r.pick(&pool);
+    let y = *r.pick(&pool);
+    let sh = ["0L", "1L", "4L", "30L", "31L", "32L", "-1L", "NA"];
+    let s = *r.pick(&sh);
+    let guard = |e: String| {
+        format!(
+            "tryCatch(print({e}), warning = function(w) cat(\"W:\", conditionMessage(w), \"\\n\"), \
+             error = function(e) cat(\"E:\", conditionMessage(e), \"\\n\"))"
+        )
+    };
+    one(guard(match r.below(9) {
+        0 => format!("bitwAnd({x}, {y})"),
+        1 => format!("bitwOr({x}, {y})"),
+        2 => format!("bitwXor({x}, {y})"),
+        3 => format!("bitwNot({x})"),
+        4 => format!("bitwShiftL({x}, {s})"),
+        5 => format!("bitwShiftR({x}, {s})"),
+        6 => format!("typeof(bitwAnd({x}, {y}))"),
+        7 => format!("bitwShiftL(c(1L, 2L, 3L), {s})"),
+        _ => format!("bitwAnd(bitwShiftL({x}, 1L), bitwShiftR({y}, 1L))"),
+    }))
+}
+
+/// `sys.call` / `sys.function` / `sys.calls` / `match.call` / `sys.nframe`
+/// through nested closures, with the `which` argument in both directions.
+fn gen_sysframes(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let depth = r.range(1, 3);
+    let which = r.range(-2, 2);
+    let probe = match r.below(7) {
+        0 => format!("sys.call({which})"),
+        1 => "sys.call()".to_string(),
+        2 => "sys.nframe()".to_string(),
+        3 => "match.call()".to_string(),
+        4 => format!("deparse(sys.call({which}))"),
+        5 => "length(sys.calls())".to_string(),
+        _ => format!("class(sys.function({which}))"),
+    };
+    // f1 calls f2 calls … fN, whose body evaluates the probe.
+    let mut src = String::new();
+    for i in 1..=depth {
+        if i == depth {
+            src.push_str(&format!(
+                "f{i} <- function(x = 0, ...) {{ r <- {probe}; r }}\n"
+            ));
+        } else {
+            src.push_str(&format!(
+                "f{i} <- function(x = 0, ...) f{}(x + 1, k = {i})\n",
+                i + 1
+            ));
+        }
+    }
+    let args = match r.below(3) {
+        0 => "".to_string(),
+        1 => ii(r).to_string(),
+        _ => format!("x = {}, z = {}", ii(r), ww(r).len()),
+    };
+    // Neither `tryCatch` nor `print` around the call: R's `tryCatch` is four
+    // closures deep and an argument is forced inside `print`'s frame, so either
+    // would shift every frame number the probe reports.
+    src.push_str(&format!("r <- f1({args})\nprint(r)"));
+    one(src)
+}
+
+/// Whether a closure's value auto-prints: literals, `NULL`, `on.exit`,
+/// `invisible`, assignment, and handlers that ran before the value was formed.
+fn gen_visibility(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let lit = match r.below(5) {
+        0 => ii(r).to_string(),
+        1 => format!("\"{}\"", ww(r)),
+        2 => "NULL".to_string(),
+        3 => "TRUE".to_string(),
+        _ => format!("{}L", ii(r)),
+    };
+    let pre = match r.below(7) {
+        0 => "x <- 1".to_string(),
+        1 => "on.exit(cat(\"bye\\n\"))".to_string(),
+        2 => "invisible(7)".to_string(),
+        3 => "cat(\"hi\\n\")".to_string(),
+        4 => "suppressWarnings(warning(\"w\"))".to_string(),
+        5 => "NULL".to_string(),
+        _ => "y <- c(1, 2)".to_string(),
+    };
+    let tail = match r.below(4) {
+        0 => lit.clone(),
+        1 => format!("if (TRUE) {lit}"),
+        2 => format!("{{ {lit} }}"),
+        _ => format!("(function() {lit})()"),
+    };
+    one(match r.below(3) {
+        0 => format!("f <- function() {{ {pre}; {tail} }}\nf()"),
+        1 => format!(
+            "withCallingHandlers({{ warning(\"w\"); {tail} }}, \
+             warning = function(w) {{ cat(\"H\\n\"); invokeRestart(\"muffleWarning\") }})"
+        ),
+        _ => format!("f <- function() {{ {pre}; {tail} }}\nprint(withVisible(f())$visible)"),
+    })
+}
+
+/// `m[[i, j]]` and `a[[i, j, k]]`: numeric and character subscripts, list
+/// arrays, and the bounds / arity errors.
+fn gen_arrelem(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (nr, nc) = (r.range(2, 4), r.range(2, 4));
+    let i = r.range(1, nr + 1);
+    let j = r.range(1, nc + 1);
+    let k = r.range(1, 3);
+    let setup = match r.below(3) {
+        0 => format!("m <- matrix(1:{}, {nr})", nr * nc),
+        1 => format!(
+            "m <- matrix(c({}), {nr}, dimnames = list(letters[1:{nr}], LETTERS[1:{nc}]))",
+            (1..=nr * nc)
+                .map(|v| format!("{v}.5"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => format!("m <- matrix(as.list(letters[1:{}]), {nr})", nr * nc),
+    };
+    let access = match r.below(8) {
+        0 => format!("m[[{i}, {j}]]"),
+        1 => format!("m[[{j}, {i}]]"),
+        2 => format!(
+            "m[[\"{}\", \"{}\"]]",
+            ["a", "b"][r.below(2)],
+            ["A", "B"][r.below(2)]
+        ),
+        3 => format!("m[[{i}, {}]]", nc + 1),
+        4 => format!("m[[{i}]]"),
+        5 => "m[[1, 1, 1]]".to_string(),
+        6 => "m[[c(1, 2), 1]]".to_string(),
+        _ => format!("{{ m[[{i}, {j}]] <- 0L; m[{i}, {j}] }}"),
+    };
+    let arr = format!(
+        "a <- array(1:24, c(2, 3, 4))\na[[{}, {}, {k}]]",
+        r.range(1, 2),
+        r.range(1, 3)
+    );
+    if r.below(5) == 0 {
+        one(arr)
+    } else {
+        one(format!(
+            "{setup}\ntryCatch(print({access}), error = function(e) cat(\"E:\", conditionMessage(e), \"\\n\"))"
+        ))
+    }
+}
+
+/// `with` / `evalq` / `local` / `within`: the expression runs in the data's
+/// scope with the caller as enclosure, and only then.
+fn gen_withx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let (a, b) = (r.range(1, 9), r.range(1, 9));
+    let data = match r.below(3) {
+        0 => format!("list(a = {a}, b = {b})"),
+        1 => format!("list(a = c({a}, {b}), b = {b})"),
+        _ => "e".to_string(),
+    };
+    let setup = format!("e <- new.env()\nassign(\"a\", {a}, e)\nassign(\"b\", {b}, e)\nz <- 100\n");
+    let expr = match r.below(8) {
+        0 => format!("with({data}, a + b)"),
+        1 => format!("with({data}, a * z)"),
+        2 => format!("with({data}, {{ s <- a + b; s * 2 }})"),
+        3 => format!("with({data}, sum(a, b))"),
+        4 => "evalq(a + b, e)".to_string(),
+        5 => "evalq({ c <- a * b; c }, e)".to_string(),
+        6 => format!("(function() {{ z <- 5; with({data}, a + z) }})()"),
+        _ => format!("tryCatch(with({data}, a + nosuch), error = function(e) conditionMessage(e))"),
+    };
+    one(format!("{setup}{expr}"))
+}
+
+/// `rapply` with `classes`, `how`, `deflt` and the `Reduce` / `Filter` / `Map` /
+/// `Position` / `Find` / `do.call` combinators on mixed-type inputs.
+fn gen_rapplyx(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let nested = format!(
+        "list(a = {}, b = \"{}\", c = list(d = {}.5, e = \"{}\", f = {}L))",
+        ii(r),
+        ww(r),
+        ii(r),
+        ww(r),
+        ii(r)
+    );
+    let cls = *r.pick(&[
+        "\"character\"",
+        "\"numeric\"",
+        "\"integer\"",
+        "c(\"integer\", \"character\")",
+        "\"ANY\"",
+    ]);
+    let how = *r.pick(&["unlist", "list", "replace"]);
+    let f = *r.pick(&[
+        "toupper",
+        "function(x) x",
+        "function(x) nchar(as.character(x))",
+        "is.character",
+    ]);
+    one(match r.below(9) {
+        0..=2 => format!("str(rapply({nested}, {f}, classes = {cls}, how = \"{how}\"))"),
+        3 => format!(
+            "rapply({nested}, function(x) 1, classes = {cls}, deflt = NA, how = \"unlist\")"
+        ),
+        4 => format!(
+            "Reduce(function(a, b) paste0(a, b), {}, accumulate = TRUE)",
+            vec_str(r)
+        ),
+        5 => format!("Filter(function(x) x > {}, {})", ii(r), vec_int(r)),
+        6 => format!("Map(function(a, b) a * b, {}, {})", vec_int(r), vec_int(r)),
+        7 => format!(
+            "c(Position(function(x) x > {n}, {v}), Find(function(x) x > {n}, {v}))",
+            n = ii(r),
+            v = vec_int(r)
+        ),
+        _ => format!(
+            "do.call(paste, c(as.list({}), sep = \"{}\"))",
+            vec_str(r),
+            r.pick(&["-", "", "+"])
+        ),
+    })
+}
+
+/// Arithmetic result types on logical / integer / double operands, unary signs,
+/// and the integer-range edge cases.
+fn gen_numtype(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let operand = [
+        "TRUE",
+        "FALSE",
+        "NA",
+        "1L",
+        "5L",
+        "-3L",
+        "2.5",
+        "c(TRUE, FALSE)",
+        "1:3",
+        "c(1L, NA)",
+    ];
+    let x = *r.pick(&operand);
+    let y = *r.pick(&operand);
+    let op = *r.pick(&["+", "-", "*", "/", "^", "%%", "%/%"]);
+    one(match r.below(8) {
+        0 => format!("typeof(-{x})"),
+        1 => format!("-{x}"),
+        2 => format!("typeof(+{x})"),
+        3 => format!("typeof({x} {op} {y})"),
+        4 => format!("{x} {op} {y}"),
+        5 => format!("typeof(sum({x}))"),
+        6 => format!("c(typeof(cumsum({x})), typeof(cumprod({x})), typeof(abs({x})))"),
+        _ => format!("c(typeof(max({x})), typeof(range({x})), typeof(mean({x})))"),
+    })
+}
+
+/// `paste` / `paste0` / `format` / `toString` / `as.character` over a classed
+/// object with user-defined methods, and over a classed object without one.
+fn gen_pastecls(seed: u64) -> Vec<String> {
+    let r = &mut Rng::seed(seed);
+    let cls = *r.pick(&["money", "tag", "id"]);
+    let val = *r.pick(&["1", "c(1.5, 2)", "1:3"]);
+    let methods = match r.below(4) {
+        0 => format!("as.character.{cls} <- function(x, ...) paste0(\"<\", unclass(x), \">\")\n"),
+        1 => format!("format.{cls} <- function(x, ...) paste0(\"[\", unclass(x), \"]\")\n"),
+        2 => format!("as.character.{cls} <- function(x, ...) \"AC\"\nformat.{cls} <- function(x, ...) \"FM\"\n"),
+        _ => String::new(),
+    };
+    let call = match r.below(6) {
+        0 => format!("paste(x, \"{}\")", ww(r)),
+        1 => "paste0(\"v=\", x)".to_string(),
+        2 => "format(x)".to_string(),
+        3 => "as.character(x)".to_string(),
+        4 => "toString(x)".to_string(),
+        _ => "paste(x, collapse = \"|\")".to_string(),
+    };
+    one(format!(
+        "x <- structure({val}, class = \"{cls}\")\n{methods}print({call})"
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Mode plumbing.
 // ---------------------------------------------------------------------------
 
@@ -1947,6 +2330,15 @@ enum Mode {
     Strwidth,
     Collate,
     Optsfmt,
+    Condtext,
+    Bitw,
+    Sysframes,
+    Visibility,
+    Arrelem,
+    Withx,
+    Rapplyx,
+    Numtype,
+    Pastecls,
 }
 
 const ALL_MODES: &[Mode] = &[
@@ -2013,6 +2405,15 @@ const ALL_MODES: &[Mode] = &[
     Mode::Strwidth,
     Mode::Collate,
     Mode::Optsfmt,
+    Mode::Condtext,
+    Mode::Bitw,
+    Mode::Sysframes,
+    Mode::Visibility,
+    Mode::Arrelem,
+    Mode::Withx,
+    Mode::Rapplyx,
+    Mode::Numtype,
+    Mode::Pastecls,
 ];
 
 fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
@@ -2080,6 +2481,15 @@ fn gen_case(seed: u64, mode: Mode) -> Vec<String> {
         Mode::Strwidth => gen_strwidth(seed),
         Mode::Collate => gen_collate(seed),
         Mode::Optsfmt => gen_optsfmt(seed),
+        Mode::Condtext => gen_condtext(seed),
+        Mode::Bitw => gen_bitw(seed),
+        Mode::Sysframes => gen_sysframes(seed),
+        Mode::Visibility => gen_visibility(seed),
+        Mode::Arrelem => gen_arrelem(seed),
+        Mode::Withx => gen_withx(seed),
+        Mode::Rapplyx => gen_rapplyx(seed),
+        Mode::Numtype => gen_numtype(seed),
+        Mode::Pastecls => gen_pastecls(seed),
     }
 }
 
@@ -2506,6 +2916,15 @@ fn mode_name(m: Mode) -> &'static str {
         Mode::Strwidth => "strwidth",
         Mode::Collate => "collate",
         Mode::Optsfmt => "optsfmt",
+        Mode::Condtext => "condtext",
+        Mode::Bitw => "bitw",
+        Mode::Sysframes => "sysframes",
+        Mode::Visibility => "visibility",
+        Mode::Arrelem => "arrelem",
+        Mode::Withx => "withx",
+        Mode::Rapplyx => "rapplyx",
+        Mode::Numtype => "numtype",
+        Mode::Pastecls => "pastecls",
     }
 }
 
@@ -2579,6 +2998,59 @@ fn signature(program: &str) -> String {
     s
 }
 
+/// Marker line that opens case `i` in a batch program's stdout.
+fn case_marker(i: usize) -> String {
+    format!("\n@@CASE {i}\n")
+}
+
+const BATCH_END: &str = "\n@@END\n";
+
+/// One program running many cases back to back in a single interpreter launch.
+/// Each case runs its statements as top-level expressions would (a visible
+/// value is printed), an error is caught and reported by message so it cannot
+/// end the batch, and the global environment is cleared between cases.
+fn batch_program<'a>(cases: impl Iterator<Item = &'a [String]>) -> String {
+    let mut p = String::new();
+    for (i, stmts) in cases.enumerate() {
+        p.push_str(&format!("cat(\"\\n@@CASE {i}\\n\")\n"));
+        p.push_str("tryCatch({\n");
+        for s in stmts {
+            p.push_str(&format!(
+                ".rl_v <- withVisible({{\n{s}\n}}); if (.rl_v$visible) print(.rl_v$value)\n"
+            ));
+        }
+        p.push_str("}, error = function(e) cat(\"Error:\", conditionMessage(e), \"\\n\"))\n");
+        p.push_str("rm(list = ls(all.names = TRUE))\noptions(digits = 7, scipen = 0, warn = 0)\n");
+    }
+    p.push_str("cat(\"\\n@@END\\n\")\n");
+    p
+}
+
+/// Cut a batch's stdout into per-case segments. `None` when any marker is
+/// missing or out of order — the batch died or lost output mid-way, and nothing
+/// in it can be attributed to a case.
+fn split_batch(out: &[u8], n: usize) -> Option<Vec<&[u8]>> {
+    fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        hay.get(from..)?
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|p| p + from)
+    }
+    let mut segs = Vec::with_capacity(n);
+    let mut pos = find(out, case_marker(0).as_bytes(), 0)? + case_marker(0).len();
+    for i in 0..n {
+        let next = if i + 1 < n {
+            case_marker(i + 1)
+        } else {
+            BATCH_END.to_string()
+        };
+        let end = find(out, next.as_bytes(), pos)?;
+        segs.push(&out[pos..end]);
+        pos = end + next.len();
+    }
+    Some(segs)
+}
+
 fn regex_lite_replace(s: &str, pat: &str, rep: &str) -> String {
     match regex::Regex::new(pat) {
         Ok(re) => re.replace_all(s, rep).into_owned(),
@@ -2601,6 +3073,7 @@ struct Args {
     mode: Option<Mode>,
     verify: usize,
     baseline: Option<PathBuf>,
+    batch: u64,
 }
 
 fn parse_args() -> Args {
@@ -2611,6 +3084,7 @@ fn parse_args() -> Args {
     let mut max_report = 200usize;
     let mut mode: Option<Mode> = None;
     let mut verify = 1usize;
+    let mut batch = 1u64;
     let mut baseline: Option<PathBuf> = None;
     let mut jobs = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -2692,6 +3166,14 @@ fn parse_args() -> Args {
                 i += 1;
                 baseline = argv.get(i).map(PathBuf::from);
             }
+            "--batch" | "-b" => {
+                i += 1;
+                batch = argv
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .filter(|&k| k >= 1)
+                    .unwrap_or(batch);
+            }
             "--stderr" => {
                 CMP_STDERR.store(true, Ordering::Relaxed);
             }
@@ -2712,6 +3194,9 @@ fn parse_args() -> Args {
                      --max-report N   stop after N divergences (default 200)\n\
                      --jobs N         parallel workers (default = CPU count)\n\
                      --verify K       require K consecutive divergences to report (default 1)\n\
+                     --batch K        run K cases per interpreter launch as a pre-filter;\n\
+                                      only cases whose output differs are re-run alone\n\
+                                      (default 1 = one launch per case)\n\
                      --baseline FILE  allowlist of known-gap signatures; only a NEW\n\
                                       divergence fails the run (exit 1)\n\
                      \n\
@@ -2736,6 +3221,7 @@ fn parse_args() -> Args {
         mode,
         verify,
         baseline,
+        batch,
     }
 }
 
@@ -2817,90 +3303,177 @@ fn main() {
         args.mode.map(mode_name).unwrap_or("all"),
     );
 
+    // Judge one case on its own: both interpreters, minimize, re-verify. This is
+    // the authority; `--batch` only decides which cases need it.
+    let judge = |idx: u64| {
+        let seed = args.base_seed.wrapping_add(idx);
+        let mode = mode_for(idx, args.mode);
+        let stmts = gen_case(seed, mode);
+        let script = build_program(&stmts);
+        let o = run_oracle(&script, timeout);
+        let r = run_ours(&script, &bin, timeout);
+        let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
+        if o.timed_out || r.timed_out {
+            timeouts.fetch_add(1, Ordering::Relaxed);
+        }
+        // oracle-side timeout ⇒ pathological case; not a parity gap.
+        if o.timed_out || o.exit == -999 || o.exit == -998 {
+            drained.fetch_add(1, Ordering::Relaxed);
+        } else if no_signal(&o, &r) {
+            silent.fetch_add(1, Ordering::Relaxed);
+        } else {
+            compared.fetch_add(1, Ordering::Relaxed);
+        }
+        if !o.timed_out && differs(&o, &r) {
+            let minimal = minimize(stmts, &bin, timeout);
+            let mscript = build_program(&minimal);
+            let mo = run_oracle(&mscript, timeout);
+            let mr = run_ours(&mscript, &bin, timeout);
+            // Re-verify: a real gap diverges every time; a transient
+            // won't reproduce. Require `verify` consecutive divergences.
+            let mut confirmed = differs(&mo, &mr);
+            for _ in 1..args.verify.max(1) {
+                if !confirmed {
+                    break;
+                }
+                confirmed = diverges(&mscript, &bin, timeout);
+            }
+            if !confirmed {
+                return; // continue loop iteration
+            }
+            let err_of = |o: &RunOut| -> String {
+                if CMP_STDERR.load(Ordering::Relaxed) {
+                    format!(
+                        "\n  stderr: {}",
+                        render(&norm_stderr(&o.stderr)).replace('\n', "\n  ")
+                    )
+                } else {
+                    String::new()
+                }
+            };
+            let rec = format!(
+                "==== seed {seed} (mode {}) ====\n\
+                         program:\n  {}\n\
+                         R     : exit={} timeout={}{}\n{}\n\
+                         rlang : exit={} timeout={}{}\n{}\n",
+                mode_name(mode),
+                mscript.replace('\n', "\n  "),
+                mo.exit,
+                mo.timed_out,
+                err_of(&mo),
+                render(&mo.stdout),
+                mr.exit,
+                mr.timed_out,
+                err_of(&mr),
+                render(&mr.stdout),
+            );
+            let mut d = divergences.lock().unwrap();
+            d.push((seed, rec));
+            if d.len() >= args.max_report {
+                stop.store(true, Ordering::Relaxed);
+            }
+        }
+        if done % 500 == 0 {
+            let n = divergences.lock().unwrap().len();
+            eprintln!(
+                "  {done}/{} checked, {n} divergences, {:.0}/s",
+                args.count,
+                done as f64 / start.elapsed().as_secs_f64().max(0.001)
+            );
+        }
+    };
+
+    // Batch pre-filter: run `first..last` through one launch per interpreter and
+    // return the indices whose per-case output differs (or that the batch could
+    // not attribute). Agreeing cases are accounted here and never launched again.
+    let prefilter = |first: u64, last: u64| -> Vec<u64> {
+        let cases: Vec<(u64, Mode, Vec<String>)> = (first..last)
+            .map(|idx| {
+                let mode = mode_for(idx, args.mode);
+                (idx, mode, gen_case(args.base_seed.wrapping_add(idx), mode))
+            })
+            .collect();
+        let script = batch_program(cases.iter().map(|(_, _, s)| s.as_slice()));
+        let batch_timeout = timeout * cases.len() as u32;
+        let file = args
+            .out_path
+            .parent()
+            .map(|d| d.join("batches"))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(format!("run-{}-{first}.R", std::process::id()));
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&file, &script);
+        let o = run_file(&file, None, batch_timeout);
+        let r = run_file(&file, Some(&bin), batch_timeout);
+        let _ = std::fs::remove_file(&file);
+        let n = cases.len();
+        let (so, sr) = match (split_batch(&o.stdout, n), split_batch(&r.stdout, n)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                let tail = |o: &RunOut| {
+                    String::from_utf8_lossy(&o.stderr)
+                        .lines()
+                        .rfind(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .to_string()
+                };
+                eprintln!(
+                    "  batch {first}..{last} not attributable (R exit={} {:?}; rlang exit={} {:?}); \
+                     re-running its cases one by one",
+                    o.exit,
+                    tail(&o),
+                    r.exit,
+                    tail(&r)
+                );
+                // Keep the evidence: the batch program and both raw outputs.
+                let dir = args.out_path.parent().map(|d| d.join("batches"));
+                if let Some(dir) = dir {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(dir.join(format!("{first}.R")), &script);
+                    let _ = std::fs::write(dir.join(format!("{first}.R.out")), &o.stdout);
+                    let _ = std::fs::write(dir.join(format!("{first}.rlang.out")), &r.stdout);
+                }
+                return cases.iter().map(|(i, _, _)| *i).collect();
+            }
+        };
+        let mut suspects = Vec::new();
+        for (k, (idx, _, _)) in cases.iter().enumerate() {
+            if so[k] != sr[k] {
+                suspects.push(*idx);
+                continue;
+            }
+            let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
+            if so[k].iter().all(|b| b.is_ascii_whitespace()) {
+                silent.fetch_add(1, Ordering::Relaxed);
+            } else {
+                compared.fetch_add(1, Ordering::Relaxed);
+            }
+            if done % 500 == 0 {
+                eprintln!("  {done}/{} checked", args.count);
+            }
+        }
+        suspects
+    };
+
     std::thread::scope(|scope| {
         for _ in 0..args.jobs {
             scope.spawn(|| loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let idx = next.fetch_add(1, Ordering::Relaxed);
-                if idx >= args.count {
+                let first = next.fetch_add(args.batch, Ordering::Relaxed);
+                if first >= args.count {
                     break;
                 }
-                let seed = args.base_seed.wrapping_add(idx);
-                let mode = mode_for(idx, args.mode);
-                let stmts = gen_case(seed, mode);
-                let script = build_program(&stmts);
-                let o = run_oracle(&script, timeout);
-                let r = run_ours(&script, &bin, timeout);
-                let done = checked.fetch_add(1, Ordering::Relaxed) + 1;
-                if o.timed_out || r.timed_out {
-                    timeouts.fetch_add(1, Ordering::Relaxed);
-                }
-                // oracle-side timeout ⇒ pathological case; not a parity gap.
-                if o.timed_out || o.exit == -999 || o.exit == -998 {
-                    drained.fetch_add(1, Ordering::Relaxed);
-                } else if no_signal(&o, &r) {
-                    silent.fetch_add(1, Ordering::Relaxed);
+                let last = (first + args.batch).min(args.count);
+                if args.batch > 1 {
+                    for idx in prefilter(first, last) {
+                        judge(idx);
+                    }
                 } else {
-                    compared.fetch_add(1, Ordering::Relaxed);
-                }
-                if !o.timed_out && differs(&o, &r) {
-                    let minimal = minimize(stmts, &bin, timeout);
-                    let mscript = build_program(&minimal);
-                    let mo = run_oracle(&mscript, timeout);
-                    let mr = run_ours(&mscript, &bin, timeout);
-                    // Re-verify: a real gap diverges every time; a transient
-                    // won't reproduce. Require `verify` consecutive divergences.
-                    let mut confirmed = differs(&mo, &mr);
-                    for _ in 1..args.verify.max(1) {
-                        if !confirmed {
-                            break;
-                        }
-                        confirmed = diverges(&mscript, &bin, timeout);
-                    }
-                    if !confirmed {
-                        return; // continue loop iteration
-                    }
-                    let err_of = |o: &RunOut| -> String {
-                        if CMP_STDERR.load(Ordering::Relaxed) {
-                            format!(
-                                "\n  stderr: {}",
-                                render(&norm_stderr(&o.stderr)).replace('\n', "\n  ")
-                            )
-                        } else {
-                            String::new()
-                        }
-                    };
-                    let rec = format!(
-                        "==== seed {seed} (mode {}) ====\n\
-                         program:\n  {}\n\
-                         R     : exit={} timeout={}{}\n{}\n\
-                         rlang : exit={} timeout={}{}\n{}\n",
-                        mode_name(mode),
-                        mscript.replace('\n', "\n  "),
-                        mo.exit,
-                        mo.timed_out,
-                        err_of(&mo),
-                        render(&mo.stdout),
-                        mr.exit,
-                        mr.timed_out,
-                        err_of(&mr),
-                        render(&mr.stdout),
-                    );
-                    let mut d = divergences.lock().unwrap();
-                    d.push((seed, rec));
-                    if d.len() >= args.max_report {
-                        stop.store(true, Ordering::Relaxed);
-                    }
-                }
-                if done % 500 == 0 {
-                    let n = divergences.lock().unwrap().len();
-                    eprintln!(
-                        "  {done}/{} checked, {n} divergences, {:.0}/s",
-                        args.count,
-                        done as f64 / start.elapsed().as_secs_f64().max(0.001)
-                    );
+                    judge(first);
                 }
             });
         }

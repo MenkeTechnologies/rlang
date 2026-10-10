@@ -4,7 +4,7 @@ The honest list of what rlang does **not** do yet. Nothing here is faked as
 working: calling an unimplemented primitive raises `could not find function`,
 and two harnesses diff against the reference `Rscript` rather than against a
 self-recorded baseline — `cargo run --bin parity` on a hand-authored corpus, and
-`cargo run --bin parity-fuzz` on thousands of generated snippets across 63
+`cargo run --bin parity-fuzz` on thousands of generated snippets across the
 surfaces. The fuzzer reports one divergence class, recorded under *Evaluation
 model* below (the baseline in `tests/data/parity_fuzz_baseline.txt` is
 deliberately still empty, so the run keeps failing on it), and a
@@ -54,6 +54,14 @@ run that compared nothing — no cases generated, or an oracle that never answer
   that prints as source, deparses, indexes (`quote(f(1))[[1]]`), decomposes with
   `as.list`, and answers `class`/`typeof`/`mode`/`is.call`/`is.name`. `eval`
   runs one in the caller's environment, so it reads and binds there.
+- **`with()`, `evalq()` and `delayedAssign()` take their expression
+  unevaluated.** The compiler lowers `with(data, expr)` and `evalq(expr, envir)`
+  to `eval(quote(expr), …)` and `delayedAssign(x, value)` to an assignment of a
+  promise, which is forced at first read in the environment it was written in.
+  `sys.call(which)`, `sys.function(which)` and `sys.calls()` index the function
+  frames outermost first. A frame that R makes for a base closure rlang runs as
+  a builtin (the four `tryCatch` frames, `print` around an argument) is not
+  there, so a frame number taken *inside* such a call differs from R's.
 - **Arguments and defaults are promises.** A closure's argument is wrapped in a
   thunk at the call and forced on first read, in the environment it was written
   in: `f <- function(a, b) a; f(1, stop("no"))` returns 1, an unused argument
@@ -287,6 +295,34 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
 ## Printing and formatting
 
+- **`[[` follows `do_subset2_dflt`.** One subscript per dimension for a matrix
+  or array (`m[[i, j]]`, character subscripts against the `dimnames`), recursive
+  indexing through nested lists (`l[[c("a", "b")]]`), `exact =`, and R's wording
+  for what it refuses (`attempt to select less than one element in
+  integerOneIndex`, `invalid negative subscript in get1index <real>`,
+  `subscript out of bounds`, `no such index at level 2`, `recursive indexing
+  failed at level 2`). An unmatched name is `NULL` on a list and out of bounds
+  on an atomic vector. `m[[i, j]] <- v` checks the same, with `[[ ]] subscript
+  out of bounds` and `more elements supplied than there are to replace`.
+- **Result types follow R's.** `min`, `max`, `range`, `pmin`, `pmax`, `cummax`,
+  `cummin`, `abs` and `median` of integer or logical input stay integer (a
+  double only when the answer is an average); `-TRUE` and `+TRUE` are integers;
+  integer overflow, `cumsum` overflow and an out-of-range `as.integer` raise
+  warnings a `tryCatch(warning = )` sees, with R's text.
+- **`table()` always names its margins**, with `""` when nothing names them,
+  which is what heads a one-way table with a blank line, and a one-dimensional
+  array whose `dimnames` are named prints that name above its labels. `dnn`,
+  `exclude` and `useNA` are honoured; a 3-D table prints `, , z = p` headers and
+  names the slice's margins. `margin.table`/`marginSums` keep the class and the
+  margin names; `apply` carries `names(dimnames(X))` onto its result and hands
+  extra arguments to `FUN`.
+- **`unlist` and `c` name elements as `NewExtractNames` does**: elements without
+  a name under a tag are numbered among themselves, a lone one is the bare tag
+  (`unlist(list(a = list(x = 1, 2)))` is `a.x`, `a`), and an atomic vector under
+  a tag numbers every element (`c(a = c(x = 1, 2))` is `a.x`, `a2`). `recursive`
+  and `use.names` are honoured, and `sapply` over equal-length list results
+  returns a list matrix.
+
 - **`table(v)` lost the line naming `v` after a replacement function** — fixed.
   The diagnosis recorded here (a name carried on the value) was wrong: a
   replacement target makes a program ineligible for slot compilation, and on
@@ -343,7 +379,17 @@ run that compared nothing — no cases generated, or an oracle that never answer
   builtin here (`paste`, `force`) still prints as `function (...)
   .Primitive("name")`, since rlang has no R source for its formals.
   `deparse(sum)` is exact.
-- **`str()`, `dput()` and `summary()` are native.** `dput` and
+- **`str()` is a port of `str.default`.** The per-type `vec.len` scaling
+  (logical 1.5x, integer and tidy numeric 2.5x, other numeric 1.25x, call 0.5x),
+  the width-filling character rule at the top level against four per element
+  once nested, joint `format(digits = 3)` of a numeric vector with
+  `drop0trailing`, the `Factor w/ n levels` abbreviation, `function (args)`,
+  `language` / `symbol` headers, `chr(0)` / `int(0)` / `list()`, the padded
+  `$ name :` labels, and the `vec.len`, `give.head`, `give.length`,
+  `max.level`, `list.len`, `give.attr`, `digits.d` and `nchar.max` arguments.
+  The header of a function that is a closure in R but a builtin here shows
+  `function ()`, since rlang has no formals for it.
+- **`dput()` and `summary()` are native.** `dput` and
   `deparse` of a value port `deparse.c`'s value cases: inline names, `structure()`
   for other attributes, typed `NA`s, 15-digit doubles and the `width.cutoff`
   wrap. `summary()` ports `summary.default` and `summary.factor` with the
@@ -393,6 +439,21 @@ run that compared nothing — no cases generated, or an oracle that never answer
   predates (Vithkuqi `U+10570…`, the `U+A7C0…U+A7DC` Latin additions, `U+1C89`,
   `U+2C2F`) and therefore leaves unmapped, while Rust's newer tables map them.
   Everything R maps, rlang maps identically.
+
+- **Back-references and look-around work, on a second engine.** The `regex`
+  crate is linear-time and has neither, so a pattern it rejects *for those
+  features* is retried on `fancy-regex` (`src/re.rs`); every other pattern stays
+  on the first engine. That covers `(a)\\1` in the default dialect and
+  `(?<=a)b`, `a(?=b)` under `perl = TRUE`. The two engines are not PCRE: a
+  pattern using atomic groups, possessive quantifiers, recursion or `\\K` is
+  still rejected. `strsplit` applies R's end-of-match rule (`rm_eo > 0`), so a
+  zero-width look-behind match splits where it stands.
+- **`sprintf` checks the argument against the conversion** the way
+  `do_sprintf` does: `%d` takes an integer, a logical, or a double whose every
+  element is whole; `%f`/`%e`/`%g` take any number; a character argument is only
+  for `%s`; an unknown conversion is `unrecognised format specification`. `formatC`
+  accepts `d` for integers and `f e E g G fg` for reals (not `x`/`o`), and its
+  `mode` re-types the argument first.
 
 ## Syntax
 

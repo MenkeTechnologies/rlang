@@ -2783,3 +2783,163 @@ summary(c(TRUE, FALSE, NA)); summary(c(TRUE, TRUE)); summary(c("a", "b", "b", " 
 s <- summary(c(2, 4, 9)); print(class(s)); print(unclass(s)); print(names(s)); print(s[["Mean"]]); print(summary(c(1, 2), digits = 2))
 summary(numeric(0)); summary(c(-1e-12, 1, 2)); summary(factor(c("a", "b", "c", "a")), maxsum = 2); summary(c(10.123456, 20.987654))
 options(digits = 10); summary(c(1.123456789, 2.2)); options(digits = 7); summary(c(NA_real_, NA_real_))
+#==#
+# `[[` with one subscript per dimension, recursive `[[` through nested lists,
+# and the messages R gives for the subscripts it refuses.
+m <- matrix(1:6, 2, dimnames = list(c("a", "b"), c("x", "y", "z")))
+print(m[[2, 3]]); print(m[["b", "z"]]); print(m[[1, "y"]]); ar <- array(1:24, c(2, 3, 4)); print(ar[[2, 3, 4]])
+err <- function(e) conditionMessage(e)
+print(tryCatch(m[[3, 1]], error = err)); print(tryCatch(m[[0, 1]], error = err)); print(tryCatch(m[[c(1, 2), 1]], error = err)); print(tryCatch(m[[1, 1, 1]], error = err))
+l <- list(a = 1, b = list(c = 2, d = list(e = 5)))
+print(l[[c("b", "d", "e")]]); print(l[[c(2, 1)]]); print(l[[c("b", "zz")]]); print(tryCatch(l[[c("b", "zz", "q")]], error = err)); print(tryCatch(l[[c(1, 1, 1)]], error = err))
+x <- 1:3; print(tryCatch(x[[0]], error = err)); print(tryCatch(x[[-1]], error = err)); print(tryCatch(x[[c(1, 2)]], error = err)); print(tryCatch(c(a = 1)[["b"]], error = err))
+print(list(1, 2)[[-1]]); print(list(a = 1)[["b"]]); print(tryCatch(list(1, 2)[[3]], error = err)); print(list(1, 2)[[NA]]); print(l[["a", exact = TRUE]]); print(list(abc = 1)[["a", exact = FALSE]])
+#==#
+# `[[<-` on a matrix cell: one subscript per dimension, one value, in bounds.
+m <- matrix(1:6, 2); m[[2, 3]] <- 99L; print(m); m[[1, 2]] <- 0L; print(m)
+ml <- matrix(list(1, 2, 3, 4), 2); ml[[1, 2]] <- "z"; print(ml[[1, 2]]); print(dim(ml))
+err <- function(e) conditionMessage(e)
+print(tryCatch({ m[[3, 1]] <- 0L; m }, error = err)); print(tryCatch({ m[[1, 1]] <- 1:2; m }, error = err)); print(tryCatch({ m[[1, 1, 1]] <- 0L; m }, error = err))
+#==#
+# Integer overflow, integer-range coercion and cumsum overflow raise catchable
+# warnings; unary minus and plus on a logical give integers.
+w <- function(e) tryCatch(e, warning = function(w) conditionMessage(w))
+x <- 2147483647L
+print(w(x + 1L)); print(w(x * 2L)); print(w(c(x, 5L) + 1L)); print(w(cumsum(c(x, 1L, 1L)))); print(w(as.integer(3e9)))
+print(suppressWarnings(cumsum(c(x, 1L, 1L)))); print(cumsum(c(1L, 2L, 3L))); print(typeof(-TRUE)); print(-c(TRUE, NA, FALSE)); print(typeof(+TRUE)); print(typeof(-1.5))
+#==#
+# integer and logical inputs keep integer type through the extremum and
+# running-extremum functions.
+print(c(typeof(max(1:3)), typeof(min(c(2L, NA), na.rm = TRUE)), typeof(range(c(TRUE, FALSE))), typeof(max(c(1L, NA)))))
+print(c(typeof(pmax(1:2, 2:1)), typeof(pmin(TRUE, FALSE)), typeof(cummax(c(1L, 3L, 2L))), typeof(cummin(TRUE)), typeof(abs(-2L)), typeof(abs(TRUE))))
+print(c(typeof(median(1:3)), typeof(median(1:4)), typeof(median(c(1, 2, 3)))))
+print(max(c(100000L, 5L))); print(range(c(100000L, 1L))); print(pmax(c(100000L, 1L), 2L)); print(cummax(c(1L, 100000L, 3L))); print(median(c(100000L, 1L, 7L)))
+print(max(integer(0), -Inf)); print(max(c(1L, NA))); print(range(c(2L, NA, 5L), na.rm = TRUE))
+#==#
+# bitwAnd and friends: 32-bit unsigned semantics, INT_MIN is NA, shift counts
+# outside 0..31 are NA, and the operand-type rules.
+print(bitwAnd(12L, 10L)); print(bitwOr(12L, 10L)); print(bitwXor(12L, 10L)); print(bitwNot(5L)); print(bitwNot(2147483647L)); print(bitwNot(-1L))
+print(bitwShiftL(1L, 4L)); print(bitwShiftL(1L, 30L)); print(bitwShiftL(1L, 31L)); print(bitwShiftL(1L, 32L)); print(bitwShiftL(-1L, 1L)); print(bitwShiftR(-1L, 1L)); print(bitwShiftR(-8L, 1L)); print(bitwShiftL(1:3, 2L))
+print(bitwAnd(5, 3)); print(typeof(bitwAnd(5, 3))); print(bitwAnd(-1L, 255L)); print(bitwXor(-1L, 2147483647L)); print(bitwAnd(c(a = 1L, b = 6L), 3L)); print(bitwAnd(1:4, 2L)); print(bitwAnd(integer(0), 1L))
+err <- function(e) conditionMessage(e)
+print(tryCatch(bitwAnd("a", 1L), error = err)); print(tryCatch(bitwAnd(TRUE, 1L), error = err)); print(tryCatch(bitwShiftL(TRUE, 1L), error = err)); print(tryCatch(bitwAnd(2^31, 1L), warning = err))
+#==#
+# sys.call / sys.function / sys.calls with `which`, and sys.nframe, through
+# nested closures called from the top level.
+f1 <- function(x = 0, ...) f2(x + 1, k = 1)
+f2 <- function(x = 0, ...) f3(x * 2)
+f3 <- function(x) { print(sys.call()); print(sys.call(0)); print(sys.call(-1)); print(sys.call(-2)); print(sys.call(1)); print(sys.call(2)); print(sys.nframe()); print(length(sys.calls())); print(class(sys.function(1))); print(deparse(sys.call(2))); x }
+r <- f1(5)
+g <- function() sys.call(-1)
+h <- function(...) g()
+print(h(1, a = 2))
+print(is.null(sys.call())); print(sys.nframe()); print(is.null(sys.calls()))
+#==#
+# A literal is an evaluation like any other, so it makes a function's value
+# visible again after an invisible statement, an on.exit, or a muffled warning.
+f <- function() { on.exit(cat("bye\n")); NULL }
+f()
+g <- function() { x <- 1; "text" }
+g()
+h <- function() { invisible(3); TRUE }
+h()
+withCallingHandlers({ warning("w"); "done" }, warning = function(w) { cat("handled\n"); invokeRestart("muffleWarning") })
+k <- function() { suppressWarnings(warning("x")); NULL }
+k()
+v <- function() invisible(7)
+v()
+print(withVisible(g())$visible); print(withVisible(v())$visible)
+#==#
+# with() and evalq() evaluate their expression in the data's scope, with the
+# caller as the enclosure; delayedAssign() binds a promise forced at first use.
+e <- new.env(); assign("a", 3, e); assign("b", 4, e); z <- 100
+print(with(list(a = 1, b = 2), a + b)); print(with(e, a * b)); print(with(list(a = 1), a + z)); print(evalq(a + b, e)); print(with(list(v = 1:4), { s <- sum(v); s * 2 }))
+f <- function() { z <- 5; with(list(a = 1), a + z) }
+print(f()); print(tryCatch(with(list(a = 1), a + nosuch), error = function(e) "missing"))
+delayedAssign("lazy", { cat("forced\n"); 42 })
+cat("before\n"); print(lazy); print(lazy)
+g <- function() { delayedAssign("w", { cat("w!\n"); 1 }); cat("in g\n"); w + 1 }
+print(g()); delayedAssign("never", stop("not forced")); cat("fine\n")
+#==#
+# paste/toString call as.character on classed arguments; rapply honours
+# classes/how/deflt; mapply with a named FUN; do.call with unnamed list items.
+as.character.tag <- function(x, ...) paste0("<", unclass(x), ">")
+x <- structure(c(1.5, 2), class = "tag")
+print(paste(x, "z")); print(paste0("v=", x)); print(toString(x)); print(paste(x, collapse = "|")); print(as.character(x))
+nested <- list(a = 1, b = "x", c = list(d = 2.5, e = "y", f = 3L))
+str(rapply(nested, toupper, classes = "character", how = "replace"))
+str(rapply(nested, function(v) v * 10, classes = "numeric", how = "list"))
+print(rapply(nested, function(v) 1, classes = "numeric", deflt = NA, how = "unlist"))
+print(rapply(nested, nchar, classes = "character", how = "unlist"))
+print(mapply(FUN = function(a, b) a + b, 1:3, 4:6)); print(do.call(mapply, list(FUN = function(a, b) a * b, 1:3, 4:6)))
+print(Map(f = function(a, b) a - b, 5:6, 1:2)); print(do.call(paste, list("a", "b", sep = "-")))
+print(tryCatch(switch(c("a", "b"), a = 1), error = function(e) conditionMessage(e))); print(tryCatch(switch(NULL, a = 1), error = function(e) conditionMessage(e)))
+#==#
+# str(): vec.len scaling per type, joint numeric formatting, nested character
+# vectors showing four, function and language headers, empty vectors, factors.
+str(1:5); str(c(1.5, 2, 3.25)); str(c(1e7, 2)); str(c(1.5e10, 1)); str(c(0.00001234, 1)); str(letters); str(list(a = 1:3, b = letters))
+str(c(aa = 1, bb = 2)); str(c(a = "x", b = "y", c = "z", d = "w", e = "v")); str(seq(0.5, 10, by = 0.5)); str(c(1.123456789, 2.1, 3.5, 4.25, 5.5, 6.1))
+str(character(0)); str(integer(0)); str(list()); str(NULL); str(NA); str(c(TRUE, FALSE, NA, TRUE, TRUE, FALSE, TRUE))
+str(function(x, y) x + y); str(sum); str(quote(x + y)); str(quote(x)); str(list(f = function(a) a, n = 1))
+str(factor(c("alpha", "beta", "gamma", "delta"))); str(factor(c("a", "b", "a"))); str(factor(character(0))); str(ordered(c("lo", "hi"), levels = c("lo", "hi")))
+str(1:3, give.head = FALSE); str(letters, vec.len = 2); str(1:10, vec.len = 1); str(list(1, list(2, list(3))), max.level = 1); str("a\nb")
+str(matrix(1:6, 2)); str(array(0, c(2, 2, 2))); str(structure(1:3, class = "bar")); str(structure(list(a = 1), class = "foo")); str(list(a = list(b = list(c = 1))))
+#==#
+# table(): dnn, exclude, useNA, named margins; arithmetic and comparison keep
+# the named dimnames; margin.table and apply carry the margin names.
+x <- c("a", "b", "a", NA)
+print(table(x, dnn = "my")); print(table(x, exclude = NULL)); print(table(x, useNA = "always")); print(names(dimnames(table(c("a", "b")))))
+t1 <- table(c("b", "a", "b")); print(t1 * 2L); print(t1 == 2L); print(unclass(t1)); print(rev(t1)); print(t1 / sum(t1))
+print(table(c(1, 1, 2), c("x", "y", "x"), dnn = c("num", "chr")))
+a <- c("p", "q", "p"); b <- c("u", "u", "v"); d <- c("m", "n", "m"); print(table(a, b, d))
+m <- table(g = c(1, 1, 2), h = c("x", "y", "x")); print(margin.table(m, 1)); print(marginSums(m, 2)); print(margin.table(m)); print(class(margin.table(m, 1)))
+mm <- matrix(1:4, 2, dimnames = list(r = c("a", "b"), c = c("x", "y")))
+print(apply(mm, c(1, 2), function(v) v * 2)); print(apply(mm, 1, function(r) r * 2)); print(apply(mm, 1, paste, collapse = "-")); print(apply(mm, 2, range))
+print(array(1:8, c(2, 2, 2), dimnames = list(x = c("a", "b"), y = c("c", "d"), z = c("e", "f")))); print(array(1:3, 3, dimnames = list(g = c("a", "b", "c"))))
+#==#
+# sapply over list results stacks a list matrix; unlist(recursive, use.names);
+# the naming of unnamed elements under a tag.
+s <- sapply(1:2, function(i) list(i, "a")); print(dim(s)); print(s)
+print(sapply(c("x", "y"), function(v) list(v, 1))); print(length(sapply(1:3, function(i) list(a = i))))
+print(unlist(list(a = list(x = 1, 2)))); print(unlist(list(a = c(x = 1, 2)))); print(unlist(list(a = list(b = 1:2, 3)))); print(unlist(list(a = 1:2, b = list(c = 3, d = 4))))
+print(unlist(list(a = list(1, 2), b = list(3)), recursive = FALSE)); print(unlist(list(a = 1:2, b = 3), use.names = FALSE)); print(unlist(list(list(1, "a"), list(2)), recursive = FALSE))
+print(c(a = c(x = 1, 2))); print(c(a = 1:2, b = 3)); print(names(c(a = 1, 2, b = 3)))
+print(apply(matrix(1:4, 2), 2, function(v) list(v))); print(apply(matrix(1:6, 2), 1, function(r) r[r > 2]))
+#==#
+# cut(): include.lowest, right = FALSE, labels = FALSE, ordered_result, and
+# the argument checks.
+print(cut(0:10, c(0, 5, 10), include.lowest = TRUE)); print(cut(c(0, 5, 10), c(0, 5, 10), right = FALSE)); print(cut(c(0, 5, 10), c(0, 5, 10), right = FALSE, include.lowest = TRUE))
+print(cut(c(1, 5, 10), c(10, 0, 5))); print(cut(1:5, 2, labels = c("lo", "hi"))); print(cut(1:5, c(0, 2, 5), labels = FALSE)); print(cut(1:5, c(0, 2, 5), ordered_result = TRUE))
+print(cut(c(1.234, 5.678), c(1, 3.5, 6), dig.lab = 2)); print(cut(c(1, NA, 3), c(0, 2, 4))); print(levels(cut(1:100, 4)))
+err <- function(e) conditionMessage(e)
+print(tryCatch(cut(1:3, c(1, 2, 2, 3)), error = err)); print(tryCatch(cut(1:5, 1), error = err)); print(tryCatch(cut("a", 2), error = err)); print(tryCatch(cut(1:5, c(0, 2, 5), labels = "a"), error = err))
+#==#
+# Regular expressions beyond the linear-time subset: back-references in the
+# pattern, look-ahead and look-behind under perl = TRUE, and strsplit's
+# end-of-match rule for zero-width matches. (Backslashes are built with
+# intToUtf8: `Rscript -e` unescapes a doubled one before R parses it.)
+bs <- intToUtf8(92)
+print(gsub(paste0("(a)", bs, "1"), "X", "aab")); print(grepl(paste0("^(.)(.).?", bs, "2", bs, "1$"), c("abba", "abcd"))); print(sub(paste0("(", bs, "w)", bs, "1"), "<RR>", "hello"))
+print(gsub("(?<=a)b", "X", "abab", perl = TRUE)); print(gsub("a(?=b)", "X", "abac", perl = TRUE)); print(regmatches("a1b22", gregexpr("(?<=[a-z])[0-9]+", "a1b22", perl = TRUE)))
+print(strsplit("a1b2c3", "(?<=[0-9])", perl = TRUE)); print(strsplit("CamelCaseString", "(?<=[a-z])(?=[A-Z])", perl = TRUE)); print(strsplit("a1b2", "[0-9]"))
+print(regexpr("a.c", "xa.cabc", fixed = TRUE)); print(regexpr("ABC", "xabc", ignore.case = TRUE)); print(gregexpr("a", "bAaA", ignore.case = TRUE)[[1]])
+print(gsub(paste0(bs, "b(", bs, "w)"), paste0(bs, "U", bs, "1"), "hello big world", perl = TRUE)); print(gsub("", "-", "abc")); print(gsub("b*", "X", "abc"))
+#==#
+# sprintf checks the argument type against each conversion; formatC accepts
+# only d for integers and f e E g G fg for reals, and honours mode.
+err <- function(e) conditionMessage(e)
+print(sprintf("%d", 3)); print(sprintf("%d", c(1, 2))); print(sprintf("%d", NA_real_)); print(sprintf("%5.1f", 3L)); print(sprintf("%s", 3L)); print(sprintf("%d", TRUE))
+print(tryCatch(sprintf("%d", 1.5), error = err)); print(tryCatch(sprintf("%d", c(1, 2.5)), error = err)); print(tryCatch(sprintf("%f", "a"), error = err))
+print(tryCatch(sprintf("%d", "a"), error = err)); print(tryCatch(sprintf("%y", 1), error = err)); print(tryCatch(sprintf("%s %s", "a"), error = err))
+print(formatC(3.14159, mode = "character")); print(formatC(3.14159, mode = "integer")); print(formatC(3.7, format = "d")); print(formatC(c(1, 10, 100), width = 5, format = "d", flag = "0"))
+print(tryCatch(formatC(255, format = "x"), error = err)); print(tryCatch(formatC(255L, format = "o"), error = err)); print(tryCatch(formatC(1, format = "q"), error = err))
+#==#
+# ordered(), as.ordered(), relevel(), interaction(), is.object(), is(), sort.int(),
+# max.col().
+o <- ordered(c("b", "a", "c")); print(o); print(is.ordered(o)); print(is.ordered(factor("a"))); print(as.ordered(c("z", "y"))); print(as.ordered(o))
+print(relevel(factor(c("a", "b", "c")), ref = "c")); print(relevel(factor(c("a", "b", "c", NA)), ref = 2)); err <- function(e) conditionMessage(e)
+print(tryCatch(relevel(factor("a"), ref = "zz"), error = err)); print(tryCatch(relevel(ordered("a"), ref = "a"), error = err)); print(tryCatch(relevel("a", ref = "a"), error = err))
+print(interaction(c("a", "b"), c("x", "y"))); print(interaction(c("a", "b", "a"), c("x", "y", "x"), drop = TRUE)); print(interaction(c("a", "b"), c("x", "y"), sep = "_")); print(interaction(c("a", NA), c("x", "y")))
+print(c(is.object(1), is.object(factor("a")), is.object(structure(1, class = "k")))); print(c(is(1, "numeric"), is(1L, "numeric"), is("a", "character"), is(1, "character"), is(sum, "function")))
+print(sort.int(c(3, 1, 2))); print(sort.int(c(3, 1, 2), index.return = TRUE)); print(sort.int(c(3, 1, NA, 2), decreasing = TRUE)); print(sort.int(c("b", "a"), index.return = TRUE))
+mc <- matrix(c(1, 2, 2, 3, 1, 3), 2); print(max.col(mc, "first")); print(max.col(mc, "last")); print(max.col(matrix(c(1, 5, 3, 2, 4, 6), 2)))

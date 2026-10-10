@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 355 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 367 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 387 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 399 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 355 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 367 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -145,7 +145,7 @@
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">39</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">17</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">80</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">92</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">32</span></li>
       </ul>
     </section>
@@ -1845,7 +1845,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">80 entries</p>
+      <p class="chapter-meta">92 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -2104,6 +2104,72 @@
 </code></pre>
         <p>Drop the levels that no longer occur and renumber the codes to match.</p>
       </article>
+      <article class="doc-entry" id="doc-ordered">
+        <h3><a class="doc-anchor" href="#doc-ordered">#</a> <code>ordered</code></h3>
+        <pre><code class="lang-r r">ordered(x, levels, labels)
+</code></pre>
+        <p>factor(x, levels, labels, ordered = TRUE): an ordered factor whose levels carry a &lt; order.</p>
+      </article>
+      <article class="doc-entry" id="doc-as-ordered">
+        <h3><a class="doc-anchor" href="#doc-as-ordered">#</a> <code>as.ordered</code></h3>
+        <pre><code class="lang-r r">as.ordered(x)
+</code></pre>
+        <p>x if it is already an ordered factor, else x as an ordered factor over its own levels (or its sorted distinct values).</p>
+      </article>
+      <article class="doc-entry" id="doc-is-ordered">
+        <h3><a class="doc-anchor" href="#doc-is-ordered">#</a> <code>is.ordered</code></h3>
+        <pre><code class="lang-r r">is.ordered(x)
+</code></pre>
+        <p>TRUE when x is an ordered factor.</p>
+      </article>
+      <article class="doc-entry" id="doc-is-object">
+        <h3><a class="doc-anchor" href="#doc-is-object">#</a> <code>is.object</code></h3>
+        <pre><code class="lang-r r">is.object(x)
+</code></pre>
+        <p>TRUE when x carries a class attribute.</p>
+      </article>
+      <article class="doc-entry" id="doc-is">
+        <h3><a class="doc-anchor" href="#doc-is">#</a> <code>is</code></h3>
+        <pre><code class="lang-r r">is(object, class2)
+</code></pre>
+        <p>Whether object is of class class2: its class vector, plus the basic relations R's S4 table records (an integer or double is a "numeric", a function is a "function"). With one argument, the class vector.</p>
+      </article>
+      <article class="doc-entry" id="doc-relevel">
+        <h3><a class="doc-anchor" href="#doc-relevel">#</a> <code>relevel</code></h3>
+        <pre><code class="lang-r r">relevel(x, ref)
+</code></pre>
+        <p>An unordered factor with ref (a level name or position) moved to the front of its levels and the codes renumbered to match. Errors on a non-factor or an ordered factor, and on a ref that is not a level.</p>
+      </article>
+      <article class="doc-entry" id="doc-interaction">
+        <h3><a class="doc-anchor" href="#doc-interaction">#</a> <code>interaction</code></h3>
+        <pre><code class="lang-r r">interaction(..., sep = ".", drop = FALSE)
+</code></pre>
+        <p>The factor crossing its arguments: one level per combination, the first factor varying fastest, labelled by joining the parts with sep. drop = TRUE removes the combinations that do not occur; an NA in any argument is NA.</p>
+      </article>
+      <article class="doc-entry" id="doc-margin-table">
+        <h3><a class="doc-anchor" href="#doc-margin-table">#</a> <code>margin.table</code></h3>
+        <pre><code class="lang-r r">margin.table(x, margin = NULL)
+</code></pre>
+        <p>Sums of an array over every dimension not in margin, keeping the table class and the kept dimensions' dimnames (and their names). With no margin, the grand total.</p>
+      </article>
+      <article class="doc-entry" id="doc-marginSums">
+        <h3><a class="doc-anchor" href="#doc-marginSums">#</a> <code>marginSums</code></h3>
+        <pre><code class="lang-r r">marginSums(x, margin = NULL)
+</code></pre>
+        <p>margin.table under its newer name.</p>
+      </article>
+      <article class="doc-entry" id="doc-max-col">
+        <h3><a class="doc-anchor" href="#doc-max-col">#</a> <code>max.col</code></h3>
+        <pre><code class="lang-r r">max.col(m, ties.method = "random")
+</code></pre>
+        <p>The column holding each row's maximum, as an integer vector; NA for a row containing NA. ties.method "first" and "last" pick the leftmost or rightmost of equal maxima; "random" takes the first, which is R's answer whenever the maximum is unique.</p>
+      </article>
+      <article class="doc-entry" id="doc-sort-int">
+        <h3><a class="doc-anchor" href="#doc-sort-int">#</a> <code>sort.int</code></h3>
+        <pre><code class="lang-r r">sort.int(x, decreasing = FALSE, na.last = NA, index.return = FALSE)
+</code></pre>
+        <p>sort for a vector, with index.return = TRUE answering list(x = sorted, ix = the permutation that sorted it).</p>
+      </article>
       <article class="doc-entry" id="doc-cut">
         <h3><a class="doc-anchor" href="#doc-cut">#</a> <code>cut</code></h3>
         <pre><code class="lang-r r">cut(x, breaks, labels)
@@ -2214,9 +2280,15 @@
       </article>
       <article class="doc-entry" id="doc-sys-call">
         <h3><a class="doc-anchor" href="#doc-sys-call">#</a> <code>sys.call</code></h3>
-        <pre><code class="lang-r r">sys.call()
+        <pre><code class="lang-r r">sys.call(which = 0)
 </code></pre>
-        <p>The call that made the frame now running, as a language object. NULL at top level. A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.</p>
+        <p>The call that made the frame now running, as a language object. NULL at top level. which = n &gt; 0 names frame n from the outermost, which = -n the frame n generations above this one; one that does not exist is the error "not that many frames on the stack". A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.</p>
+      </article>
+      <article class="doc-entry" id="doc-sys-calls">
+        <h3><a class="doc-anchor" href="#doc-sys-calls">#</a> <code>sys.calls</code></h3>
+        <pre><code class="lang-r r">sys.calls()
+</code></pre>
+        <p>The calls of every active function frame, outermost first, as a list of language objects; NULL at top level.</p>
       </article>
       <article class="doc-entry" id="doc-match-call">
         <h3><a class="doc-anchor" href="#doc-match-call">#</a> <code>match.call</code></h3>
@@ -2256,9 +2328,9 @@
       </article>
       <article class="doc-entry" id="doc-sys-function">
         <h3><a class="doc-anchor" href="#doc-sys-function">#</a> <code>sys.function</code></h3>
-        <pre><code class="lang-r r">sys.function()
+        <pre><code class="lang-r r">sys.function(which = 0)
 </code></pre>
-        <p>The closure being executed — the function itself, not its call.</p>
+        <p>The closure being executed — the function itself, not its call. which selects a frame as sys.call does.</p>
       </article>
       <article class="doc-entry" id="doc-sys-nframe">
         <h3><a class="doc-anchor" href="#doc-sys-nframe">#</a> <code>sys.nframe</code></h3>

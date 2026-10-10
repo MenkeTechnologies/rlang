@@ -1586,6 +1586,61 @@ const ENVIRONMENTS: &[Entry] = &[
         "Drop the levels that no longer occur and renumber the codes to match.",
     ),
     (
+        "ordered",
+        "ordered(x, levels, labels)",
+        "factor(x, levels, labels, ordered = TRUE): an ordered factor whose levels carry a < order.",
+    ),
+    (
+        "as.ordered",
+        "as.ordered(x)",
+        "x if it is already an ordered factor, else x as an ordered factor over its own levels (or its sorted distinct values).",
+    ),
+    (
+        "is.ordered",
+        "is.ordered(x)",
+        "TRUE when x is an ordered factor.",
+    ),
+    (
+        "is.object",
+        "is.object(x)",
+        "TRUE when x carries a class attribute.",
+    ),
+    (
+        "is",
+        "is(object, class2)",
+        "Whether object is of class class2: its class vector, plus the basic relations R's S4 table records (an integer or double is a \"numeric\", a function is a \"function\"). With one argument, the class vector.",
+    ),
+    (
+        "relevel",
+        "relevel(x, ref)",
+        "An unordered factor with ref (a level name or position) moved to the front of its levels and the codes renumbered to match. Errors on a non-factor or an ordered factor, and on a ref that is not a level.",
+    ),
+    (
+        "interaction",
+        "interaction(..., sep = \".\", drop = FALSE)",
+        "The factor crossing its arguments: one level per combination, the first factor varying fastest, labelled by joining the parts with sep. drop = TRUE removes the combinations that do not occur; an NA in any argument is NA.",
+    ),
+    (
+        "margin.table",
+        "margin.table(x, margin = NULL)",
+        "Sums of an array over every dimension not in margin, keeping the table class and the kept dimensions' dimnames (and their names). With no margin, the grand total.",
+    ),
+    (
+        "marginSums",
+        "marginSums(x, margin = NULL)",
+        "margin.table under its newer name.",
+    ),
+    (
+        "max.col",
+        "max.col(m, ties.method = \"random\")",
+        "The column holding each row's maximum, as an integer vector; NA for a row containing NA. ties.method \"first\" and \"last\" pick the leftmost or rightmost of equal maxima; \"random\" takes the first, which is R's answer whenever the maximum is unique.",
+    ),
+    (
+        "sort.int",
+        "sort.int(x, decreasing = FALSE, na.last = NA, index.return = FALSE)",
+        "sort for a vector, with index.return = TRUE answering list(x = sorted, ix = the permutation that sorted it).",
+    ),
+    (
         "cut",
         "cut(x, breaks, labels)",
         "Bin numeric x into a factor of right-closed intervals (a, b]. A single-number `breaks` means that many equal-width bins over the range widened by a thousandth, exactly as R computes them; default labels use R's dig.lab = 3.",
@@ -1677,8 +1732,13 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         "sys.call",
-        "sys.call()",
-        "The call that made the frame now running, as a language object. NULL at top level. A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.",
+        "sys.call(which = 0)",
+        "The call that made the frame now running, as a language object. NULL at top level. which = n > 0 names frame n from the outermost, which = -n the frame n generations above this one; one that does not exist is the error \"not that many frames on the stack\". A sys.call() written as an argument reports the frame whose body wrote it, not the one it is being passed to, the way R's promise does.",
+    ),
+    (
+        "sys.calls",
+        "sys.calls()",
+        "The calls of every active function frame, outermost first, as a list of language objects; NULL at top level.",
     ),
     (
         "match.call",
@@ -1712,8 +1772,8 @@ const ENVIRONMENTS: &[Entry] = &[
     ),
     (
         "sys.function",
-        "sys.function()",
-        "The closure being executed — the function itself, not its call.",
+        "sys.function(which = 0)",
+        "The closure being executed — the function itself, not its call. which selects a frame as sys.call does.",
     ),
     (
         "sys.nframe",

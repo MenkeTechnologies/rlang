@@ -338,11 +338,17 @@ fn label_from_first(out: &Value, first: Option<&Value>) {
 /// same extra arguments to every call. The answer is labelled from the first
 /// mapped argument (`USE.NAMES`) and, with `simplified`, collapsed the way
 /// `sapply` collapses.
-fn mapply(f: &Value, a: &Args, simplified: bool) -> Result<Value, String> {
+fn mapply(f: &Value, a: &Args, simplified: bool, fun_tag: &str) -> Result<Value, String> {
+    // The function is the first untagged argument — unless it was written as
+    // `FUN = f` (`f = f` for `Map`), when every untagged argument is data.
+    let skip = usize::from(a.named(fun_tag).is_none());
     let mapped: Vec<(Option<String>, Value)> = a
-        .rest(1)
+        .rest(skip)
         .into_iter()
-        .filter(|(t, _)| !matches!(t.as_deref(), Some("SIMPLIFY" | "USE.NAMES" | "MoreArgs")))
+        .filter(|(t, _)| {
+            !matches!(t.as_deref(), Some("SIMPLIFY" | "USE.NAMES" | "MoreArgs"))
+                && t.as_deref() != Some(fun_tag)
+        })
         .collect();
     let more: Vec<(Option<String>, Value)> = match a.named("MoreArgs") {
         Some(m) => {
@@ -1563,15 +1569,19 @@ fn b_const_int(vm: &mut VM, _: u8) -> Value {
 
 fn b_const_str(vm: &mut VM, _: u8) -> Value {
     let s = name_of(&vm.pop());
+    // A literal is an evaluation like any other: R sets `R_Visible = TRUE`.
+    with_host(|h| h.visible = true);
     scalar_str(s)
 }
 
 fn b_const_lgl(vm: &mut VM, _: u8) -> Value {
     let b = matches!(vm.pop(), Value::Bool(true));
+    with_host(|h| h.visible = true);
     scalar_lgl(b)
 }
 
 fn b_const_null(_: &mut VM, _: u8) -> Value {
+    with_host(|h| h.visible = true);
     null()
 }
 
@@ -1598,6 +1608,14 @@ fn b_switch_index(vm: &mut VM, argc: u8) -> Value {
     let expr = all.first().cloned().unwrap_or(Value::Undef);
     let names: Vec<String> = all.iter().skip(1).map(name_of).collect();
     let expr_v = expr; // already an R value
+                       // `do_switch` requires a length-1 vector, and `NULL` is not one.
+    if !matches!(
+        kind(&expr_v),
+        RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str
+    ) || len(&expr_v) != 1
+    {
+        return abort(vm, "EXPR must be a length 1 vector".to_string());
+    }
     let idx = if kind(&expr_v) == RKind::Str {
         match str1(&expr_v) {
             Some(s) => names
@@ -1704,9 +1722,12 @@ fn unop(op: &str, x: &Value, dispatch: bool) -> Result<Value, String> {
     let out = match op {
         "-" => match data(x) {
             RData::Int(v) => mk_int(v.iter().map(|e| e.map(|n| -n)).collect()),
+            // `-TRUE` is an integer: logicals are promoted to integer, not double.
+            RData::Lgl(_) => mk_int(as_int(x).iter().map(|e| e.map(|n| -n)).collect()),
             _ => mk_dbl(as_dbl(x).iter().map(|e| e.map(|n| -n)).collect()),
         },
-        "+" => return Ok(x.clone()),
+        "+" if kind(x) != RKind::Lgl => return Ok(x.clone()),
+        "+" => mk_int(as_int(x)),
         "!" => mk_lgl(as_lgl(x).iter().map(|e| e.map(|b| !b)).collect()),
         other => return Err(format!("invalid unary operator '{other}'")),
     };
@@ -2400,7 +2421,7 @@ const INT_COERCE_RANGE: &str = "NAs introduced by coercion to integer range";
 /// arithmetic where a wide value is a position to bounds-check rather than a
 /// number to narrow. Without it `as.integer(2^31)` printed 2147483648 — a value
 /// R has no way to represent — for the same reason `2147483647L + 1L` used to.
-fn int_range_na(xs: Vec<Option<i64>>) -> Vec<Option<i64>> {
+fn int_range_na(xs: Vec<Option<i64>>) -> Result<Vec<Option<i64>>, String> {
     let mut lost = false;
     let out = xs
         .into_iter()
@@ -2416,9 +2437,9 @@ fn int_range_na(xs: Vec<Option<i64>>) -> Vec<Option<i64>> {
         .collect();
     if lost {
         // Another `CoercionWarning` message, reported the same way.
-        r_warning(INT_COERCE_RANGE, with_host(|h| h.context_call()));
+        coercion_warning(INT_COERCE_RANGE)?;
     }
-    out
+    Ok(out)
 }
 
 fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
@@ -2451,7 +2472,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
                 true => Value::Int(r as i64),
                 false => {
                     if r.is_finite() {
-                        r_warning(INT_OVERFLOW, None);
+                        binop_warning(INT_OVERFLOW)?;
                     }
                     mk_int(vec![None])
                 }
@@ -2513,7 +2534,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             })
             .collect();
         if overflowed {
-            r_warning(INT_OVERFLOW, None);
+            binop_warning(INT_OVERFLOW)?;
         }
         mk_int(ints)
     } else {
@@ -3391,53 +3412,208 @@ fn array_index(
     Ok(out)
 }
 
-/// `x[[...]]` — extraction of exactly one element.
+/// R's `integerOneIndex`: a signed integer subscript to a zero-based offset.
+/// Negative values are only meaningful on a length-2 vector, where `-1` selects
+/// the other element.
+fn integer_one_index(i: i64, len: usize) -> Result<usize, String> {
+    if i > 0 {
+        Ok(i as usize - 1)
+    } else if i == 0 || len < 2 {
+        Err("attempt to select less than one element in integerOneIndex".into())
+    } else if len == 2 && i > -3 {
+        Ok((2 + i) as usize)
+    } else {
+        Err("attempt to select more than one element in integerOneIndex".into())
+    }
+}
+
+/// R's `get1index`: the zero-based offset subscript element `pos` of `sub`
+/// names, against `names` and a vector of length `len`. `Ok(None)` is R's `-1`
+/// (an `NA`, an empty string or an unmatched name). A `pos` of `None` is the
+/// plain single-subscript form, which requires `length(sub) == 1`.
+fn get1index(
+    sub: &Value,
+    names: &[Option<String>],
+    len: usize,
+    partial: bool,
+    pos: Option<usize>,
+) -> Result<Option<usize>, String> {
+    let n = self::len(sub);
+    let p = match pos {
+        Some(p) => p,
+        None if n > 1 => return Err("attempt to select more than one element in get1index".into()),
+        None if n == 0 => return Err("attempt to select less than one element in get1index".into()),
+        None => 0,
+    };
+    if p >= n {
+        return Err("internal error in use of recursive indexing".into());
+    }
+    match data(sub) {
+        RData::Lgl(_) | RData::Int(_) => match as_int(sub)[p] {
+            Some(i) => integer_one_index(i, len).map(Some),
+            None => Ok(None),
+        },
+        RData::Dbl(_) => match as_dbl(sub)[p] {
+            Some(d) if !d.is_nan() => {
+                if d > 0.0 {
+                    Ok(Some((d - 1.0).max(0.0) as usize))
+                } else if d == 0.0 {
+                    Err("attempt to select less than one element in get1index <real>".into())
+                } else if len == 2 && d > -3.0 {
+                    Ok(Some((2.0 + d) as usize))
+                } else {
+                    Err("invalid negative subscript in get1index <real>".into())
+                }
+            }
+            _ => Ok(None),
+        },
+        RData::Str(keys) => {
+            let Some(key) = keys.get(p).cloned().flatten().filter(|k| !k.is_empty()) else {
+                return Ok(None);
+            };
+            if let Some(i) = names
+                .iter()
+                .position(|nm| nm.as_deref() == Some(key.as_str()))
+            {
+                return Ok(Some(i));
+            }
+            if partial {
+                let hits: Vec<usize> = names
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, nm)| nm.as_deref().is_some_and(|nm| nm.starts_with(&key)))
+                    .map(|(i, _)| i)
+                    .collect();
+                if let [only] = hits[..] {
+                    return Ok(Some(only));
+                }
+            }
+            Ok(None)
+        }
+        RData::Sym(name) => Ok(names
+            .iter()
+            .position(|nm| nm.as_deref() == Some(name.as_str()))),
+        _ => Err(format!(
+            "invalid subscript type '{}'",
+            with_host(|h| h.type_of(sub))
+        )),
+    }
+}
+
+/// `x[[...]]` — extraction of exactly one element, following R's
+/// `do_subset2_dflt`: a vector subscript of length > 1 recurses through nested
+/// lists, a matrix takes one subscript per dimension, and a name no list has
+/// is `NULL` where on an atomic vector it is out of bounds.
 fn index_double(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, String> {
-    let Some((_, idx)) = args.first() else {
-        return Err("subscript out of bounds".into());
+    let partial = args
+        .iter()
+        .find(|(n, _)| n.as_deref() == Some("exact"))
+        .map(|(_, v)| lgl1(v) != Some(true))
+        .unwrap_or(false);
+    let subs: Vec<&Value> = args
+        .iter()
+        .filter(|(n, _)| !matches!(n.as_deref(), Some("exact" | "drop")))
+        .map(|(_, v)| v)
+        .collect();
+    let Some(&first) = subs.first() else {
+        return Err("invalid subscript type 'symbol'".into());
     };
     if let RData::Environment(e) = data(x) {
-        let key = str1(idx).unwrap_or_default();
-        return Ok(e.borrow().vars.get(&key).cloned().unwrap_or_else(null));
+        return match data(first) {
+            RData::Str(k) if k.len() == 1 => {
+                let key = k[0].clone().unwrap_or_default();
+                Ok(e.borrow().vars.get(&key).cloned().unwrap_or_else(null))
+            }
+            _ => Err("wrong arguments for subsetting an environment".into()),
+        };
     }
     // A call indexes into its own parts: `quote(f(1))[[1]]` is the name `f`.
     if let RData::Lang(e) = data(x) {
         let parts = lang_parts(&e);
-        let i = num1(idx).unwrap_or(0.0) as usize;
-        return match i.checked_sub(1).and_then(|i| parts.get(i)) {
+        let names: Vec<Option<String>> = parts.iter().map(|(n, _)| n.clone()).collect();
+        let at = get1index(first, &names, parts.len(), partial, None)?;
+        return match at.and_then(|i| parts.get(i)) {
             Some((_, v)) => Ok(v.clone()),
             None => Err("subscript out of bounds".into()),
         };
     }
-    let names = names_of(x);
-    let i = match data(idx) {
-        RData::Str(k) => {
-            let key = k.first().cloned().flatten().unwrap_or_default();
-            match names
-                .iter()
-                .position(|n| n.as_deref() == Some(key.as_str()))
-            {
-                Some(i) => i,
-                None => return Ok(null()),
+    if with_host(|h| h.is_function(x)) {
+        return Err(format!(
+            "object of type '{}' is not subsettable",
+            with_host(|h| h.type_of(x))
+        ));
+    }
+    if is_null(x) {
+        return Ok(null());
+    }
+    let fetch = |v: &Value, i: usize| -> Value {
+        match data(v) {
+            RData::List(items) => items.get(i).cloned().unwrap_or_else(null),
+            _ if is_factor(v) => {
+                let out = mk_int(vec![as_int(v).get(i).copied().flatten()]);
+                carry_factor(&out, v);
+                out
+            }
+            _ => element_at(v, i),
+        }
+    };
+    // `m[[i, j]]`, `a[[i, j, k]]`: one subscript per dimension.
+    if subs.len() >= 2 {
+        let dims = match with_host(|h| h.attr(x, "dim")) {
+            Some(_) => dims_of(x),
+            None => return Err("incorrect number of subscripts".into()),
+        };
+        if dims.len() != subs.len() {
+            return Err("incorrect number of subscripts".into());
+        }
+        let dn = dimnames_of(x);
+        let mut lin = 0usize;
+        let mut stride = 1usize;
+        for (d, sub) in subs.iter().enumerate() {
+            if matches!(sub, Value::Undef) {
+                return Err("missing subscript".into());
+            }
+            let labels = dn.get(d).cloned().flatten().unwrap_or_default();
+            // R hands `get1index` no usable length here, so a negative
+            // subscript is never the "other element" of a pair.
+            let at = get1index(sub, &labels, 1, partial, None)?;
+            match at {
+                Some(i) if i < dims[d] => lin += i * stride,
+                _ => return Err("subscript out of bounds".into()),
+            }
+            stride *= dims[d];
+        }
+        return Ok(fetch(x, lin));
+    }
+    let n = len(first);
+    let mut cur = x.clone();
+    if n > 1 {
+        // Recursive indexing: every level but the last must be a list.
+        for level in 0..n - 1 {
+            if kind(&cur) != RKind::List {
+                return Err(if level == 0 {
+                    "attempt to select more than one element in vectorIndex".to_string()
+                } else {
+                    format!("recursive indexing failed at level {}\n", level + 1)
+                });
+            }
+            let names = names_of(&cur);
+            let at = get1index(first, &names, len(&cur), partial, Some(level))?;
+            match at.filter(|&i| i < len(&cur)) {
+                Some(i) => cur = fetch(&cur, i),
+                None => return Err(format!("no such index at level {}\n", level + 1)),
             }
         }
-        _ => match num1(idx) {
-            Some(v) if v >= 1.0 && (v as usize) <= len(x) => v as usize - 1,
-            _ => return Err("subscript out of bounds".into()),
-        },
-    };
-    match data(x) {
-        RData::List(v) => Ok(v.get(i).cloned().unwrap_or_else(null)),
-        // `[[.factor` restores the level table and class just as `[.factor`
-        // does, so `f[[2]]` is a length-1 factor, not a bare code. It has to be
-        // rebuilt rather than taken from `element_at`, whose unboxed scalar
-        // cannot carry attributes.
-        _ if is_factor(x) => {
-            let out = mk_int(vec![as_int(x).get(i).copied().flatten()]);
-            carry_factor(&out, x);
-            Ok(out)
-        }
-        _ => Ok(element_at(x, i)),
+    }
+    let names = names_of(&cur);
+    let pos = if n > 1 { Some(n - 1) } else { None };
+    let at = get1index(first, &names, len(&cur), partial, pos)?;
+    match at {
+        Some(i) if i < len(&cur) => Ok(fetch(&cur, i)),
+        // "A bold attempt to get the same behaviour for $ and [[": a name
+        // (or NA) a list lacks is NULL, a position past its end is an error.
+        None if kind(&cur) == RKind::List => Ok(null()),
+        _ => Err("subscript out of bounds".into()),
     }
 }
 
@@ -3571,6 +3747,45 @@ fn assign_index(
     // `a[i, j, …] <- v`: turn the N-D selection into linear column-major
     // positions and reuse the 1-D path (which promotes type and preserves the
     // `dim` attribute through `copy_of`). Mirrors `array_index` for reads.
+    if args.len() >= 2 && single_slot {
+        // `m[[i, j]] <- v` addresses exactly one cell, per dimension, by
+        // `get1index` — R's `do_subassign2_dflt`, with its own wording.
+        let d = match with_host(|h| h.attr(x, "dim")) {
+            Some(_) => dims_of(x),
+            None => return Err("[[ ]] improper number of subscripts".into()),
+        };
+        if d.len() != args.len() {
+            return Err("[[ ]] improper number of subscripts".into());
+        }
+        let dn = dimnames_of(x);
+        let mut lin = 0usize;
+        let mut stride = 1usize;
+        for (k, (_, sub)) in args.iter().enumerate() {
+            if matches!(sub, Value::Undef) {
+                return Err("[[ ]] with missing subscript".into());
+            }
+            let labels = dn.get(k).cloned().flatten().unwrap_or_default();
+            match get1index(sub, &labels, d[k], false, None)? {
+                Some(i) if i < d[k] => lin += i * stride,
+                _ => return Err("[[ ]] subscript out of bounds".into()),
+            }
+            stride *= d[k];
+        }
+        if kind(x) != RKind::List {
+            match len(value) {
+                0 => return Err("replacement has length zero".into()),
+                1 => {}
+                _ => return Err("more elements supplied than there are to replace".into()),
+            }
+        }
+        return assign_index(
+            x,
+            &[(None, scalar_int(lin as i64 + 1))],
+            value,
+            true,
+            inplace,
+        );
+    }
     if args.len() >= 2 {
         if let Some(dim) = with_host(|h| h.attr(x, "dim")) {
             let d: Vec<usize> = as_int(&dim)
@@ -4441,6 +4656,17 @@ pub const PRIMITIVES: &[&str] = &[
     "levels",
     "nlevels",
     "droplevels",
+    "ordered",
+    "as.ordered",
+    "is.ordered",
+    "is.object",
+    "is",
+    "relevel",
+    "interaction",
+    "margin.table",
+    "marginSums",
+    "max.col",
+    "sort.int",
     "cut",
     "table",
     "typeof",
@@ -4490,6 +4716,7 @@ pub const PRIMITIVES: &[&str] = &[
     "args",
     "body",
     "sys.function",
+    "sys.calls",
     "sys.nframe",
     "eval",
     "evalq",
@@ -4652,7 +4879,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "as.integer" => {
             let x = a.req(0, "x")?;
-            let out = int_range_na(as_int(&x));
+            let out = int_range_na(as_int(&x))?;
             warn_coerced_na(&x, out.iter().map(|e| e.is_none()))?;
             Ok(mk_int(out))
         }
@@ -4720,7 +4947,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // the same coercion as `as.integer(2^31)` and must narrow to NA the
             // same way. Ignoring it returned the argument untouched.
             match a.get(1, "mode").and_then(|v| str1(&v)).as_deref() {
-                Some("integer") => return Ok(mk_int(int_range_na(as_int(&x)))),
+                Some("integer") => return Ok(mk_int(int_range_na(as_int(&x))?)),
                 Some("double") | Some("numeric") => return Ok(mk_dbl(as_dbl(&x))),
                 Some("character") => return Ok(mk_str(as_str(&x))),
                 Some("logical") => return Ok(mk_lgl(as_lgl(&x))),
@@ -4777,7 +5004,33 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(out)
         }
-        "unlist" => Ok(unlist(&a.req(0, "x")?)),
+        "unlist" => {
+            let x = a.req(0, "x")?;
+            let flag = |n: &str, pos: usize| a.get(pos, n).and_then(|v| lgl1(&v)).unwrap_or(true);
+            let recursive = flag("recursive", 1);
+            let use_names = flag("use.names", 2);
+            let out = match (data(&x), recursive) {
+                // One level only: the elements are concatenated as `c()` would,
+                // so a nested list stays a list.
+                (RData::List(items), false) => {
+                    let names = names_of(&x);
+                    let parts: Vec<(Option<String>, Value)> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| (names.get(i).cloned().flatten(), v.clone()))
+                        .collect();
+                    concat(&Args::new(parts))
+                }
+                _ => unlist(&x),
+            };
+            if !use_names && !is_null(&out) {
+                with_host(|h| {
+                    let nl = h.null();
+                    h.set_attr(&out, "names", nl)
+                });
+            }
+            Ok(out)
+        }
 
         // ── attributes and metadata ─────────────────────────────────────
         "length" => Ok(scalar_int(len(&a.req(0, "x")?) as i64)),
@@ -4999,7 +5252,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // ── str() ────────────────────────────────────────────────────────
         "str" => {
             let x = a.req(0, "object")?;
-            for line in str_lines(&x, 0) {
+            let opts = StrOpts::from_args(&a)?;
+            for line in str_lines(&x, 0, &opts) {
                 crate::host::emit(&line);
                 crate::host::emit("\n");
             }
@@ -5554,12 +5808,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `scipen` in {-9,-5,-1,0,1,5,10,30} x 178 values): `as.character(x)` is
         // exactly `format(x)` at `digits = 15`, and `paste`/`toString` agree
         // with `as.character` on every one.
-        "paste" | "paste0" => Ok(crate::host::with_print_digits(
-            crate::host::AS_CHARACTER_DIGITS,
-            || paste(&a, name == "paste0"),
-        )),
+        "paste" | "paste0" => {
+            // `do_paste` calls `as.character` on every classed argument, so a
+            // user's `as.character.<class>` method decides what is pasted.
+            let mut dispatched = Vec::with_capacity(a.all.len());
+            for (tag, v) in &a.all {
+                let plain_arg = !matches!(tag.as_deref(), Some("sep" | "collapse"));
+                let v = if plain_arg {
+                    as_character_dispatched(v)?
+                } else {
+                    v.clone()
+                };
+                dispatched.push((tag.clone(), v));
+            }
+            let a = Args::new(dispatched);
+            Ok(crate::host::with_print_digits(
+                crate::host::AS_CHARACTER_DIGITS,
+                || paste(&a, name == "paste0"),
+            ))
+        }
         "toString" => {
-            let x = a.req(0, "x")?;
+            // `toString.default` is `paste(x, collapse = ", ")`, which
+            // dispatches `as.character` on a classed `x`.
+            let x = as_character_dispatched(&a.req(0, "x")?)?;
             let parts: Vec<String> =
                 crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || {
                     as_str_labels(&x)
@@ -6517,11 +6788,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             xs.sort_by(|p, q| p.partial_cmp(q).unwrap());
             let m = xs.len() / 2;
-            Ok(scalar_dbl(if xs.len() % 2 == 1 {
-                xs[m]
-            } else {
-                (xs[m - 1] + xs[m]) / 2.0
-            }))
+            // The middle element of an odd-length integer vector is returned
+            // as it is, so it stays integer; an even length averages two.
+            let xkind = kind(&a.req(0, "x")?);
+            if xs.len() % 2 == 1 {
+                return Ok(match xkind {
+                    RKind::Int => scalar_int(xs[m] as i64),
+                    RKind::Lgl => scalar_lgl(xs[m] != 0.0),
+                    _ => scalar_dbl(xs[m]),
+                });
+            }
+            Ok(scalar_dbl((xs[m - 1] + xs[m]) / 2.0))
         }
         "quantile" => in_method("quantile.default", || quantile_default(&a)),
         "summary" => summary_default(&a),
@@ -6856,6 +7133,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 return Ok(mk_factor(pick, levels, true));
             }
             let narm = a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false);
+            // `min`/`max`/`range` of integer and logical arguments stay integer.
+            let all_int = a
+                .all
+                .iter()
+                .filter(|(t, _)| t.as_deref() != Some("na.rm"))
+                .all(|(_, v)| matches!(kind(v), RKind::Int | RKind::Lgl));
             let mut xs: Vec<Option<f64>> = Vec::new();
             let mut strings: Vec<Option<String>> = Vec::new();
             let mut is_text = false;
@@ -6908,11 +7191,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 } else {
                     Some(f64::NAN)
                 };
-                return Ok(mk_dbl(if name == "range" {
+                let marks = if name == "range" {
                     vec![marker, marker]
                 } else {
                     vec![marker]
-                }));
+                };
+                return Ok(if all_int {
+                    mk_int(vec![None; marks.len()])
+                } else {
+                    mk_dbl(marks)
+                });
             }
             let vals: Vec<f64> = xs.into_iter().flatten().filter(|x| !x.is_nan()).collect();
             if vals.is_empty() {
@@ -6951,6 +7239,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             let lo = vals.iter().cloned().fold(f64::INFINITY, f64::min);
             let hi = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            if all_int {
+                let (lo, hi) = (lo as i64, hi as i64);
+                return Ok(match name {
+                    "min" => scalar_int(lo),
+                    "max" => scalar_int(hi),
+                    _ => mk_int(vec![Some(lo), Some(hi)]),
+                });
+            }
             Ok(match name {
                 "min" => scalar_dbl(lo),
                 "max" => scalar_dbl(hi),
@@ -6989,6 +7285,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `cumsum` of an integer/logical vector stays integer (R's rule);
             // `cumprod` is always double.
             let acc = if name == "cumsum" && matches!(kind(&x), RKind::Int | RKind::Lgl) {
+                // R's `icumsum` stops at the first total outside the C `int`
+                // range, leaving that element and every later one `NA`.
+                let mut out = out;
+                if let Some(at) = out
+                    .iter()
+                    .position(|e| matches!(e, Some(v) if !int_in_range(*v)))
+                {
+                    out[at..].iter_mut().for_each(|e| *e = None);
+                    signal_warning("integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'")?;
+                }
                 mk_int(out.into_iter().map(|e| e.map(|v| v as i64)).collect())
             } else {
                 mk_dbl(out)
@@ -7067,13 +7373,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 _ => r_sign,
             };
             // `abs` on an integer vector stays integer, like R.
-            if name == "abs" {
-                if let RData::Int(v) = data(&x) {
-                    return Ok(math_like(
-                        mk_int(v.iter().map(|e| e.map(|n| n.abs())).collect()),
-                        &x,
-                    ));
-                }
+            if name == "abs" && matches!(kind(&x), RKind::Int | RKind::Lgl) {
+                return Ok(math_like(
+                    mk_int(as_int(&x).iter().map(|e| e.map(|n| n.abs())).collect()),
+                    &x,
+                ));
             }
             let input = as_dbl(&x);
             let vals: Vec<Option<f64>> = input.iter().map(|e| e.map(f)).collect();
@@ -7173,27 +7477,36 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if cols.iter().any(|c| !c.is_empty() && n % c.len() != 0) {
                 signal_warning("an argument will be fractionally recycled")?;
             }
-            Ok(mk_dbl(
-                (0..n)
-                    .map(|i| {
-                        let mut best: Option<f64> = None;
-                        for c in &cols {
-                            match c[i % c.len().max(1)] {
-                                Some(v) => {
-                                    best = Some(match best {
-                                        None => v,
-                                        Some(b) if name == "pmax" => b.max(v),
-                                        Some(b) => b.min(v),
-                                    })
-                                }
-                                None if !narm => return None,
-                                None => {}
+            let all_int = a
+                .all
+                .iter()
+                .filter(|(t, _)| t.as_deref() != Some("na.rm"))
+                .all(|(_, v)| matches!(kind(v), RKind::Int | RKind::Lgl));
+            let best: Vec<Option<f64>> = (0..n)
+                .map(|i| {
+                    let mut best: Option<f64> = None;
+                    for c in &cols {
+                        match c[i % c.len().max(1)] {
+                            Some(v) => {
+                                best = Some(match best {
+                                    None => v,
+                                    Some(b) if name == "pmax" => b.max(v),
+                                    Some(b) => b.min(v),
+                                })
                             }
+                            None if !narm => return None,
+                            None => {}
                         }
-                        best
-                    })
-                    .collect(),
-            ))
+                    }
+                    best
+                })
+                .collect();
+            // Integer and logical arguments give an integer result.
+            Ok(if all_int {
+                mk_int(best.into_iter().map(|e| e.map(|v| v as i64)).collect())
+            } else {
+                mk_dbl(best)
+            })
         }
         "cummax" | "cummin" => {
             let xv = a.req(0, "x")?;
@@ -7224,7 +7537,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     }
                 })
                 .collect();
-            shaped_like(mk_dbl(out), &xv)
+            let out = if matches!(kind(&xv), RKind::Int | RKind::Lgl) {
+                mk_int(out.into_iter().map(|e| e.map(|v| v as i64)).collect())
+            } else {
+                mk_dbl(out)
+            };
+            shaped_like(out, &xv)
         }
         // R's `tabulate(bin, nbins = max(1L, bin, na.rm = TRUE))` and its
         // `.Internal`: bins outside `1..nbins` and `NA`s are not counted.
@@ -7544,31 +7862,80 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             ))
         }
         "bitwAnd" | "bitwOr" | "bitwXor" | "bitwShiftL" | "bitwShiftR" => {
-            let x = as_int(&a.req(0, "a")?);
-            let y = as_int(&a.req(1, "b")?);
-            let n = x.len().max(y.len());
+            let shifting = name.starts_with("bitwShift");
+            // A double is narrowed to integer (warning when it cannot be)
+            // before the operand types are compared.
+            let narrow = |v: Value| -> Result<Value, String> {
+                if kind(&v) == RKind::Dbl {
+                    Ok(mk_int(int_range_na(as_int(&v))?))
+                } else {
+                    Ok(v)
+                }
+            };
+            let xa = narrow(a.req(0, "a")?)?;
+            let xb = if shifting {
+                a.req(1, "b")?
+            } else {
+                narrow(a.req(1, "b")?)?
+            };
+            // The bitwise trio insists both operands share a type; the shifts
+            // coerce their count.
+            if !shifting && kind(&xa) != kind(&xb) {
+                return Err("'a' and 'b' must have the same type".into());
+            }
+            // The shifts coerce their count, but `a` must be numeric as well.
+            if shifting && !matches!(kind(&xa), RKind::Int | RKind::Dbl) {
+                return Err("'a' and 'b' must have the same type".into());
+            }
+            if !shifting && !matches!(kind(&xa), RKind::Int | RKind::Dbl) {
+                return Err(format!(
+                    "unimplemented type '{}' in '{name}'\n",
+                    with_host(|h| h.type_of(&xa))
+                ));
+            }
+            let x = int_range_na(as_int(&xa))?;
+            let y = int_range_na(as_int(&xb))?;
+            let n = if x.is_empty() || y.is_empty() {
+                0
+            } else {
+                x.len().max(y.len())
+            };
+            // C does these on 32-bit values; a result of `INT_MIN` is
+            // `NA_integer_`, and an out-of-range shift count is `NA`.
+            let out = (0..n).map(|i| {
+                let a = x[i % x.len()]? as i32 as u32;
+                let b = y[i % y.len()]?;
+                let r = match name {
+                    "bitwAnd" => a & b as i32 as u32,
+                    "bitwOr" => a | b as i32 as u32,
+                    "bitwXor" => a ^ b as i32 as u32,
+                    _ if !(0..=31).contains(&b) => return None,
+                    "bitwShiftL" => a << b,
+                    _ => a >> b,
+                } as i32;
+                (r != i32::MIN).then_some(r as i64)
+            });
+            Ok(mk_int(out.collect()))
+        }
+        "bitwNot" => {
+            let x = a.req(0, "a")?;
+            if !matches!(kind(&x), RKind::Int | RKind::Dbl) {
+                return Err(format!(
+                    "unimplemented type '{}' in 'bitwNot'\n",
+                    with_host(|h| h.type_of(&x))
+                ));
+            }
+            let xs = int_range_na(as_int(&x))?;
             Ok(mk_int(
-                (0..n)
-                    .map(|i| {
-                        let a = x[i % x.len().max(1)]?;
-                        let b = y[i % y.len().max(1)]?;
-                        Some(match name {
-                            "bitwAnd" => a & b,
-                            "bitwOr" => a | b,
-                            "bitwXor" => a ^ b,
-                            "bitwShiftL" => a << b,
-                            _ => a >> b,
-                        })
+                xs.iter()
+                    .map(|e| {
+                        e.map(|v| !(v as i32))
+                            .filter(|&r| r != i32::MIN)
+                            .map(i64::from)
                     })
                     .collect(),
             ))
         }
-        "bitwNot" => Ok(mk_int(
-            as_int(&a.req(0, "a")?)
-                .iter()
-                .map(|e| e.map(|v| !v))
-                .collect(),
-        )),
         "identical" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "y")?;
@@ -7974,8 +8341,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // with the widths on `match.length` — the shape `regmatches` slices
             // a match and its groups out of. No match is the single -1 pair.
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
-            let re = cached_regex(&pat)
-                .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
+            let re = compile_re(
+                &pat,
+                a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false),
+                a.named("ignore.case")
+                    .and_then(|v| lgl1(&v))
+                    .unwrap_or(false),
+            )?;
             let x = as_str(&a.req(1, "text")?);
             let ascii = pat.is_ascii() && x.iter().flatten().all(|s| s.is_ascii());
             let per: Vec<Value> = x
@@ -8025,8 +8397,13 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "regexpr" | "gregexpr" => {
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
-            let re = cached_regex(&pat)
-                .map_err(|e| format!("invalid regular expression '{pat}': {e}"))?;
+            let re = compile_re(
+                &pat,
+                a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false),
+                a.named("ignore.case")
+                    .and_then(|v| lgl1(&v))
+                    .unwrap_or(false),
+            )?;
             let x = as_str(&a.req(1, "text")?);
             // R matches all-ASCII input on the byte path and reports that with
             // `index.type`/`useBytes`; multibyte input takes the char path and
@@ -8316,10 +8693,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(simplify(&res))
         }
         // R defines `Map` as `mapply(FUN = f, ..., SIMPLIFY = FALSE)`.
-        "Map" => mapply(&a.req(0, "f")?, &a, false),
+        "Map" => mapply(&a.req(0, "f")?, &a, false, "f"),
         "mapply" => {
             let simplify = a.named("SIMPLIFY").and_then(|v| lgl1(&v)).unwrap_or(true);
-            mapply(&a.req(0, "FUN")?, &a, simplify)
+            mapply(&a.req(0, "FUN")?, &a, simplify, "FUN")
         }
         "Filter" => {
             let f = a.req(0, "f")?;
@@ -8596,22 +8973,48 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .named("how")
                 .and_then(|v| str1(&v))
                 .unwrap_or_else(|| "unlist".into());
-            fn walk(v: &Value, f: &Value) -> Result<Value, String> {
+            let classes: Vec<String> = a
+                .named("classes")
+                .map(|v| as_str(&v).into_iter().flatten().collect())
+                .unwrap_or_else(|| vec!["ANY".into()]);
+            let deflt = a.named("deflt").unwrap_or_else(null);
+            // A leaf matches by `class(x)`: an integer is `"integer"` only.
+            let matches = |v: &Value| -> bool {
+                if classes.iter().any(|c| c == "ANY") {
+                    return true;
+                }
+                class_of(v).iter().any(|c| classes.contains(c))
+            };
+            let replace = how == "replace";
+            fn walk(
+                v: &Value,
+                f: &Value,
+                matches: &dyn Fn(&Value) -> bool,
+                replace: bool,
+                deflt: &Value,
+            ) -> Result<Value, String> {
                 match data(v) {
                     RData::List(items) => {
-                        let mapped: Result<Vec<Value>, String> =
-                            items.iter().map(|it| walk(it, f)).collect();
+                        let mapped: Result<Vec<Value>, String> = items
+                            .iter()
+                            .map(|it| walk(it, f, matches, replace, deflt))
+                            .collect();
                         let out = mk_list(mapped?);
                         let nm = names_of(v);
                         if !nm.is_empty() {
                             set_names(&out, nm);
                         }
+                        if replace {
+                            copy_most_attrs(&out, v);
+                        }
                         Ok(out)
                     }
-                    _ => call_value(f, vec![(None, v.clone())], None),
+                    _ if matches(v) => call_value(f, vec![(None, v.clone())], None),
+                    _ if replace => Ok(v.clone()),
+                    _ => Ok(deflt.clone()),
                 }
             }
-            let out = walk(&x, &f)?;
+            let out = walk(&x, &f, &matches, replace, &deflt)?;
             Ok(match how.as_str() {
                 "unlist" => unlist(&out),
                 _ => out,
@@ -8633,7 +9036,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let call_args: Vec<(Option<String>, Value)> = items
                 .into_iter()
                 .enumerate()
-                .map(|(i, v)| (nm.get(i).cloned().flatten(), v))
+                .map(|(i, v)| (nm.get(i).cloned().flatten().filter(|n| !n.is_empty()), v))
                 .collect();
             // R builds the call itself, with the function inline, so a
             // condition raised inside reports the deparsed function rather than
@@ -8974,6 +9377,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .map(|m| (m - 1) as usize)
                 .collect();
             let f = a.req(2, "FUN")?;
+            // `apply(X, MARGIN, FUN, ..., simplify)`: whatever is left once the
+            // three formals are filled goes to every call of `FUN`.
+            let formals = ["X", "MARGIN", "FUN"];
+            let mut open_slots: Vec<&str> = formals
+                .iter()
+                .copied()
+                .filter(|n| a.named(n).is_none())
+                .collect();
+            open_slots.reverse();
+            let mut extra: Vec<(Option<String>, Value)> = Vec::new();
+            for (tag, v) in &a.all {
+                match tag.as_deref() {
+                    Some(t) if formals.contains(&t) || t == "simplify" => {}
+                    Some(_) => extra.push((tag.clone(), v.clone())),
+                    None if open_slots.pop().is_some() => {}
+                    None => extra.push((None, v.clone())),
+                }
+            }
+            let dn_names: Option<Vec<Option<String>>> = with_host(|h| h.attr(&x, "dimnames"))
+                .and_then(|d| with_host(|h| h.attr(&d, "names")))
+                .map(|n| as_str(&n));
             let others: Vec<usize> = (0..dims.len()).filter(|d| !margins.contains(d)).collect();
             let mut stride = vec![1usize; dims.len()];
             for d in 1..dims.len() {
@@ -9033,7 +9457,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 {
                     set_names(&slice, names);
                 }
-                results.push(call_fun(&f, vec![(None, slice)], "FUN(newX[, i], ...)")?);
+                let mut call_args = vec![(None, slice)];
+                call_args.extend(extra.iter().cloned());
+                results.push(call_fun(&f, call_args, "FUN(newX[, i], ...)")?);
                 for k in 0..margins.len() {
                     midx[k] += 1;
                     if midx[k] < margin_shape[k] {
@@ -9053,8 +9479,29 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .first()
                 .map(names_of)
                 .filter(|n| n.iter().any(|e| e.is_some()));
-            let out = simplify(&mk_list(results));
+            // A list result is returned as the list of results: R only
+            // simplifies atomic answers of one common length.
+            let recursive_result = results.first().is_some_and(|r| kind(r) == RKind::List);
+            let out = if recursive_result {
+                mk_list(results)
+            } else {
+                simplify(&mk_list(results))
+            };
             let has_dim = with_host(|h| h.attr(&out, "dim")).is_some();
+            // `names(dimnames(X))` of the margins iterated over travel with them.
+            let margin_dnn: Option<Vec<Option<String>>> = dn_names.as_ref().map(|n| {
+                margins
+                    .iter()
+                    .map(|&d| n.get(d).cloned().flatten())
+                    .collect()
+            });
+            // The first non-margin dimension's name labels the rows of a
+            // stacked vector result, when the result carries that dimension's
+            // own labels.
+            let row_dnn: Option<String> = dn_names
+                .as_ref()
+                .and_then(|n| others.first().and_then(|&d| n.get(d).cloned().flatten()))
+                .filter(|n| !n.is_empty());
             if margins.len() >= 2 && !has_dim {
                 // Several margins with scalar results reshape to an array over
                 // those margins, labels and all.
@@ -9070,6 +9517,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                             })
                             .collect(),
                     );
+                    if let Some(n) = &margin_dnn {
+                        set_names(
+                            &labels,
+                            n.iter()
+                                .map(|e| Some(e.clone().unwrap_or_default()))
+                                .collect(),
+                        );
+                    }
                     with_host(|h| h.set_attr(&out, "dimnames", labels));
                 }
             } else if !has_dim {
@@ -9083,7 +9538,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // One margin, a vector per slice: R stacks them column-wise, so
                 // the result's own names become the rows and the margin's the
                 // columns.
+                let rows_named = result_names
+                    .as_ref()
+                    .is_some_and(|r| others.first().is_some_and(|&d| dims[d] == r.len()));
                 set_dimnames(&out, result_names, margin_dn[0].clone());
+                if dn_names.is_some() {
+                    if let Some(list) = with_host(|h| h.attr(&out, "dimnames")) {
+                        let row = if rows_named { row_dnn } else { None };
+                        let col = margin_dnn.as_ref().and_then(|n| n[0].clone());
+                        if row.is_some() || col.is_some() {
+                            set_names(
+                                &list,
+                                vec![Some(row.unwrap_or_default()), Some(col.unwrap_or_default())],
+                            );
+                        }
+                    }
+                }
             }
             Ok(out)
         }
@@ -9581,6 +10051,280 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `droplevels.factor` is `factor(x, exclude = …)` — drop the levels that
         // no longer occur and renumber the codes.
         "droplevels" => Ok(drop_unused_levels(&a.req(0, "x")?)),
+        // `ordered(x, ...)` is `factor(x, ..., ordered = TRUE)`; `as.ordered`
+        // leaves an ordered factor alone and orders anything else.
+        "ordered" => {
+            let mut args = a.all.clone();
+            args.retain(|(t, _)| t.as_deref() != Some("ordered"));
+            args.push((Some("ordered".into()), scalar_lgl(true)));
+            r_factor(&args)
+        }
+        "as.ordered" => {
+            let x = a.req(0, "x")?;
+            if is_ordered(&x) {
+                return Ok(x);
+            }
+            let ordered = (Some("ordered".to_string()), scalar_lgl(true));
+            let args = if is_factor(&x) {
+                let levels = (
+                    Some("levels".to_string()),
+                    with_host(|h| h.attr(&x, "levels")).unwrap_or_else(null),
+                );
+                vec![(None, mk_str(factor_labels(&x))), levels, ordered]
+            } else {
+                vec![(None, x), ordered]
+            };
+            r_factor(&args)
+        }
+        "is.ordered" => Ok(scalar_lgl(is_ordered(&a.req(0, "x")?))),
+        "is.object" => Ok(scalar_lgl(
+            with_host(|h| h.attr(&a.req(0, "x").ok()?, "class")).is_some(),
+        )),
+        // `is(object, class2)`: `inherits`, plus the basic classes R's S4
+        // table relates — an integer or double `is` "numeric".
+        "is" => {
+            let x = a.req(0, "object")?;
+            let Some(want) = a.get(1, "class2").and_then(|v| str1(&v)) else {
+                return Ok(mk_str(class_of(&x).into_iter().map(Some).collect()));
+            };
+            let mut have = class_of(&x);
+            if matches!(kind(&x), RKind::Int | RKind::Dbl) && !is_factor(&x) {
+                have.push("numeric".into());
+            }
+            if with_host(|h| h.is_function(&x)) {
+                have.push("function".into());
+            }
+            Ok(scalar_lgl(have.contains(&want)))
+        }
+        "relevel" => {
+            let x = a.req(0, "x")?;
+            if is_ordered(&x) {
+                return Err("'relevel' only for unordered factors".into());
+            }
+            if !is_factor(&x) {
+                return Err("'relevel' only for (unordered) factors".into());
+            }
+            let levels = levels_of(&x);
+            let r = a
+                .get(1, "ref")
+                .ok_or("argument \"ref\" is missing, with no default")?;
+            let at = match kind(&r) {
+                RKind::Str => {
+                    let want = str1(&r).unwrap_or_default();
+                    levels
+                        .iter()
+                        .position(|l| *l == want)
+                        .ok_or("'ref' must be an existing level")?
+                }
+                _ => {
+                    let i = num1(&r).unwrap_or(0.0);
+                    if i < 1.0 || i as usize > levels.len() {
+                        return Err(format!("ref = {} must be in 1L:{}", i, levels.len()));
+                    }
+                    i as usize - 1
+                }
+            };
+            let mut order: Vec<usize> = vec![at];
+            order.extend((0..levels.len()).filter(|&i| i != at));
+            let new_levels: Vec<String> = order.iter().map(|&i| levels[i].clone()).collect();
+            let codes: Vec<Option<i64>> = as_int(&x)
+                .into_iter()
+                .map(|c| {
+                    c.and_then(|c| order.iter().position(|&o| o as i64 == c - 1))
+                        .map(|p| p as i64 + 1)
+                })
+                .collect();
+            let out = mk_factor(codes, new_levels, false);
+            if let Some(nm) = with_host(|h| h.attr(&x, "names")) {
+                with_host(|h| h.set_attr(&out, "names", nm));
+            }
+            Ok(out)
+        }
+        // `interaction(f1, f2, ..., sep = ".", drop = FALSE)`: the levels are
+        // every combination, the first factor varying fastest.
+        "interaction" => {
+            let sep = a
+                .named("sep")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| ".".into());
+            let drop = a.named("drop").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let mut factors: Vec<(Vec<String>, Vec<Option<usize>>)> = Vec::new();
+            for (t, v) in &a.all {
+                if matches!(t.as_deref(), Some("sep" | "drop" | "lex.order")) {
+                    continue;
+                }
+                // A list argument is a list of the factors.
+                let items = if kind(v) == RKind::List {
+                    elements(v)
+                } else {
+                    vec![v.clone()]
+                };
+                for it in items {
+                    factors.push(classify_factor(&it));
+                }
+            }
+            let n = factors.first().map_or(0, |(_, c)| c.len());
+            let mut levels: Vec<String> = vec![String::new()];
+            let mut stride: Vec<usize> = Vec::new();
+            for (k, (lv, _)) in factors.iter().enumerate() {
+                let mut next = Vec::with_capacity(levels.len() * lv.len());
+                // The first factor varies fastest: existing combinations repeat
+                // under each new level.
+                for l in lv {
+                    for old in &levels {
+                        next.push(if k == 0 {
+                            l.clone()
+                        } else {
+                            format!("{old}{sep}{l}")
+                        });
+                    }
+                }
+                stride.push(levels.len());
+                levels = next;
+            }
+            let mut codes: Vec<Option<i64>> = (0..n)
+                .map(|i| {
+                    let mut at = 0usize;
+                    for (k, (_, c)) in factors.iter().enumerate() {
+                        at += c.get(i).copied().flatten()? * stride[k];
+                    }
+                    Some(at as i64 + 1)
+                })
+                .collect();
+            if drop {
+                let used: Vec<usize> = (0..levels.len())
+                    .filter(|&l| codes.iter().any(|c| *c == Some(l as i64 + 1)))
+                    .collect();
+                codes = codes
+                    .into_iter()
+                    .map(|c| {
+                        c.and_then(|c| used.iter().position(|&u| u as i64 == c - 1))
+                            .map(|p| p as i64 + 1)
+                    })
+                    .collect();
+                levels = used.iter().map(|&u| levels[u].clone()).collect();
+            }
+            Ok(mk_factor(codes, levels, false))
+        }
+        // `margin.table(x, margin)`: sums over every dimension but `margin`,
+        // keeping the table class and the margins' `dimnames`.
+        "margin.table" | "marginSums" => {
+            let x = a.req(0, "x")?;
+            let dims = dims_of(&x);
+            let is_int = matches!(kind(&x), RKind::Int | RKind::Lgl);
+            let vals = as_dbl(&x);
+            let margin: Option<Vec<usize>> = a.get(1, "margin").filter(|m| !is_null(m)).map(|m| {
+                as_int(&m)
+                    .into_iter()
+                    .flatten()
+                    .map(|i| (i - 1).max(0) as usize)
+                    .collect()
+            });
+            let Some(margin) = margin else {
+                let total: f64 = vals.iter().flatten().sum();
+                return Ok(if is_int {
+                    scalar_int(total as i64)
+                } else {
+                    scalar_dbl(total)
+                });
+            };
+            if margin.iter().any(|&m| m >= dims.len()) {
+                return Err("'margin' must be a valid margin".into());
+            }
+            let shape: Vec<usize> = margin.iter().map(|&m| dims[m]).collect();
+            let total: usize = shape.iter().product();
+            let mut sums = vec![0.0f64; total];
+            let mut stride = vec![1usize; dims.len()];
+            for d in 1..dims.len() {
+                stride[d] = stride[d - 1] * dims[d - 1];
+            }
+            for (lin, v) in vals.iter().enumerate() {
+                let mut at = 0usize;
+                let mut mult = 1usize;
+                for (k, &m) in margin.iter().enumerate() {
+                    at += (lin / stride[m] % dims[m]) * mult;
+                    mult *= shape[k];
+                }
+                sums[at] += v.unwrap_or(f64::NAN);
+            }
+            let out = if is_int {
+                mk_int(sums.iter().map(|&v| Some(v as i64)).collect())
+            } else {
+                mk_dbl(sums.into_iter().map(Some).collect())
+            };
+            let dim = mk_int(shape.iter().map(|&d| Some(d as i64)).collect());
+            let dn_all = with_host(|h| h.attr(&x, "dimnames"));
+            with_host(|h| h.set_attr(&out, "dim", dim));
+            if let Some(dn) = dn_all {
+                let items = elements(&dn);
+                let pick = mk_list(margin.iter().map(|&m| items[m].clone()).collect());
+                if let Some(nm) = with_host(|h| h.attr(&dn, "names")) {
+                    let nms = as_str(&nm);
+                    set_names(&pick, margin.iter().map(|&m| nms[m].clone()).collect());
+                }
+                with_host(|h| h.set_attr(&out, "dimnames", pick));
+            }
+            if let Some(cls) = with_host(|h| h.attr(&x, "class")) {
+                with_host(|h| h.set_attr(&out, "class", cls));
+            }
+            Ok(out)
+        }
+        // `max.col(m, ties.method)`: the column of each row's maximum. The
+        // default `"random"` draws from the RNG only on a tie, so it takes the
+        // first column here, which is its answer whenever the maximum is unique.
+        "max.col" => {
+            let x = a.req(0, "m")?;
+            let (nr, nc) = mat_dim(&x);
+            let ties = a
+                .get(1, "ties.method")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "random".into());
+            let vals = as_dbl(&x);
+            let out: Vec<Option<i64>> = (0..nr)
+                .map(|r| {
+                    let row: Vec<Option<f64>> = (0..nc).map(|c| vals[c * nr + r]).collect();
+                    if row.iter().any(|e| e.is_none()) {
+                        return None;
+                    }
+                    let best = row
+                        .iter()
+                        .flatten()
+                        .cloned()
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    let mut hits = (0..nc).filter(|&c| row[c] == Some(best));
+                    let pick = if ties == "last" {
+                        hits.next_back()
+                    } else {
+                        hits.min()
+                    };
+                    pick.map(|c| c as i64 + 1)
+                })
+                .collect();
+            Ok(mk_int(out))
+        }
+        // `sort.int(x, na.last, decreasing, index.return)` — `sort` with the
+        // permutation on request.
+        "sort.int" => {
+            let x = a.req(0, "x")?;
+            let mut pass: Vec<(Option<String>, Value)> = vec![(None, x.clone())];
+            for key in ["decreasing", "na.last"] {
+                if let Some(v) = a.named(key) {
+                    pass.push((Some(key.into()), v));
+                }
+            }
+            let sorted = call_primitive("sort", pass.clone())?;
+            if a.named("index.return").and_then(|v| lgl1(&v)) != Some(true) {
+                return Ok(sorted);
+            }
+            let mut order_args = vec![(None, x)];
+            if let Some(v) = a.named("decreasing") {
+                order_args.push((Some("decreasing".into()), v));
+            }
+            let ix = call_primitive("order", order_args)?;
+            let out = mk_list(vec![sorted, ix]);
+            set_names(&out, vec![Some("x".into()), Some("ix".into())]);
+            Ok(out)
+        }
         "cut" => cut(&a),
         "table" => {
             // Every argument but the options is one factor to cross-classify.
@@ -9603,10 +10347,22 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `useNA`: "always" gives every factor an NA level, "ifany" only the
             // ones holding a missing value, and the missing values then count
             // there instead of being dropped.
-            let use_na = a
-                .named("useNA")
-                .and_then(|v| str1(&v))
-                .unwrap_or_else(|| "no".into());
+            // `exclude = NULL` (or any `exclude` without an NA in it) keeps the
+            // NA level when `useNA` was not written: R's
+            // `useNA <- if (missing(useNA) && !missing(exclude) && !(NA %in% exclude)) "ifany"`.
+            let exclude = a.named("exclude");
+            let excluded: Vec<String> = exclude
+                .as_ref()
+                .map(|e| as_str(e).into_iter().flatten().collect())
+                .unwrap_or_default();
+            let na_excluded = exclude
+                .as_ref()
+                .map_or(true, |e| as_str(e).iter().any(|s| s.is_none()));
+            let use_na = match a.named("useNA").and_then(|v| str1(&v)) {
+                Some(u) => u,
+                None if !na_excluded => "ifany".into(),
+                None => "no".into(),
+            };
             let use_na = ["no", "ifany", "always"]
                 .into_iter()
                 .find(|o| !use_na.is_empty() && o.starts_with(use_na.as_str()))
@@ -9615,6 +10371,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .iter()
                 .map(|(_, x)| {
                     let (levels, mut codes) = classify_factor(x);
+                    // Excluded values are dropped the way `factor(exclude=)`
+                    // drops them: the level goes and its observations become NA.
+                    let kept: Vec<usize> = (0..levels.len())
+                        .filter(|&i| !excluded.contains(&levels[i]))
+                        .collect();
+                    if kept.len() != levels.len() {
+                        for c in codes.iter_mut() {
+                            *c = c.and_then(|c| kept.iter().position(|&k| k == c));
+                        }
+                    }
+                    let levels: Vec<String> = kept.iter().map(|&i| levels[i].clone()).collect();
                     let mut levels: Vec<Option<String>> = levels.into_iter().map(Some).collect();
                     if use_na == "always" || (use_na == "ifany" && codes.contains(&None)) {
                         let at = levels.len();
@@ -9649,13 +10416,19 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // argument has no name and R heads the table with a blank line.
             let dnn: Vec<Option<String>> = a.named(".dnn").map(|v| as_str(&v)).unwrap_or_default();
             let mut unnamed = dnn.into_iter();
-            let names: Vec<Option<String>> = factors
+            let mut names: Vec<Option<String>> = factors
                 .iter()
                 .map(|(t, _)| match t {
                     Some(t) => Some(t.clone()),
                     None => unnamed.next().flatten(),
                 })
                 .collect();
+            // An explicit `dnn` names the dimensions outright.
+            if let Some(explicit) = a.named("dnn").filter(|v| !is_null(v)) {
+                for (slot, n) in names.iter_mut().zip(as_str(&explicit)) {
+                    *slot = n;
+                }
+            }
             let dim = mk_int(dims.iter().map(|&d| Some(d as i64)).collect());
             let dn = mk_list(
                 classified
@@ -9663,15 +10436,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .map(|(levels, _)| mk_str(levels))
                     .collect(),
             );
-            if factors.len() > 1 || names.iter().any(Option::is_some) {
-                set_names(
-                    &dn,
-                    names
-                        .into_iter()
-                        .map(|n| Some(n.unwrap_or_default()))
-                        .collect(),
-                );
-            }
+            // The margins are always named — `""` when nothing names them —
+            // which is what heads a one-way table with a blank line.
+            let dn_names = mk_str(
+                names
+                    .into_iter()
+                    .map(|n| Some(n.unwrap_or_default()))
+                    .collect(),
+            );
+            with_host(|h| h.set_attr(&dn, "names", dn_names));
             let cls = scalar_str("table");
             with_host(|h| {
                 h.set_attr(&out, "dim", dim);
@@ -9850,10 +10623,31 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // `sys.call()` is the call that made the frame now running, verbatim.
         // The context stack holds its deparse; parsing that back is what makes
         // it an expression rather than a string.
-        "sys.call" => Ok(match with_host(|h| h.enclosing_source()) {
-            Some(src) => parse_one(&src)?,
-            None => null(),
-        }),
+        "sys.call" => {
+            let which = a.get(0, "which").and_then(|v| num1(&v)).unwrap_or(0.0) as i64;
+            if which == 0 {
+                return Ok(match with_host(|h| h.enclosing_source()) {
+                    Some(src) => parse_one(&src)?,
+                    None => null(),
+                });
+            }
+            match with_host(|h| h.sys_call_source(which))? {
+                Some(src) => parse_one(&src),
+                None => Ok(null()),
+            }
+        }
+        "sys.calls" => {
+            let calls = with_host(|h| h.sys_calls_source());
+            if calls.is_empty() {
+                return Ok(null());
+            }
+            Ok(mk_list(
+                calls
+                    .iter()
+                    .map(|c| parse_one(c))
+                    .collect::<Result<_, _>>()?,
+            ))
+        }
         // `match.call()` is the same call with every argument named and put in
         // formal order — what R's own `match.arg` and `update` read to find out
         // how they were called.
@@ -9971,12 +10765,17 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "match.arg" => match_arg(&a),
         "sys.nframe" => Ok(scalar_int(with_host(|h| h.nframe()) as i64)),
         // `sys.function()` is the closure being executed, not its call.
-        "sys.function" => Ok(with_host(|h| {
-            match h.innermost_call().and_then(|f| f.fun.clone()) {
+        "sys.function" => {
+            let which = a.get(0, "which").and_then(|v| num1(&v)).unwrap_or(0.0) as i64;
+            if which == 0 {
+                return Ok(calling_closure());
+            }
+            let n = with_host(|h| h.sys_frame_number(which))?;
+            Ok(with_host(|h| match h.sys_function_at(n) {
                 Some((id, env)) => h.alloc(RData::Closure { id, env }),
                 None => h.null(),
-            }
-        })),
+            }))
+        }
         "as.name" | "as.symbol" => {
             let n = str1(&a.req(0, "x")?).unwrap_or_default();
             Ok(with_host(|h| h.alloc(RData::Sym(n))))
@@ -10277,6 +11076,146 @@ fn empty_vector(mode: &str, n: usize) -> Value {
 
 /// `c(...)` — concatenate, promoting to the widest type present and building
 /// the combined `names` (including `c(a = 1)` tags).
+/// R's `NameData`: where `NewExtractNames` stands while it names a result.
+#[derive(Default)]
+struct NameData {
+    /// How many names have been handed out under the current tag.
+    seqno: usize,
+    /// How many elements share the current tag (counted up to two).
+    count: usize,
+}
+
+/// R's `namesCount`: the elements that will share a tag. A list that is being
+/// recursed into counts only its unnamed children, an atomic vector counts every
+/// element.
+fn names_count(v: &Value, recurse: bool, nd: &mut NameData) {
+    match data(v) {
+        RData::Null => {}
+        RData::List(items) if recurse => {
+            let names = names_of(v);
+            for (i, it) in items.iter().enumerate() {
+                if nd.count > 1 {
+                    break;
+                }
+                let named = names
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .is_some_and(|n| !n.is_empty());
+                if !named {
+                    names_count(it, recurse, nd);
+                }
+            }
+        }
+        RData::List(items) => nd.count += items.len().min(2),
+        RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) => {
+            nd.count += len(v).min(2);
+        }
+        _ => nd.count += 1,
+    }
+}
+
+/// R's `NewBase`: a tag extends the base it sits under.
+fn new_base(base: &str, tag: &str) -> String {
+    match (base.is_empty(), tag.is_empty()) {
+        (false, false) => format!("{base}.{tag}"),
+        (_, false) => tag.to_string(),
+        _ => base.to_string(),
+    }
+}
+
+/// R's `NewName`.
+fn new_name(base: &str, tag: &str, seqno: usize, count: usize) -> String {
+    match (base.is_empty(), tag.is_empty()) {
+        (false, false) => format!("{base}.{tag}"),
+        (false, true) if count == 1 => base.to_string(),
+        (false, true) => format!("{base}{seqno}"),
+        (true, false) => tag.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// R's `NewExtractNames`: append the name of every element of `v` (every leaf,
+/// when `recurse`) to `out`, given the `base` it sits under and the `tag` it was
+/// written with.
+fn extract_names(
+    v: &Value,
+    base: &str,
+    tag: Option<&str>,
+    recurse: bool,
+    out: &mut Vec<Option<String>>,
+    nd: &mut NameData,
+) {
+    let mut base = base.to_string();
+    let saved = (nd.seqno, nd.count);
+    let tagged = tag.is_some();
+    if let Some(t) = tag {
+        base = new_base(&base, t);
+        nd.count = 0;
+        names_count(v, recurse, nd);
+        nd.seqno = 0;
+    }
+    let item_names = names_of(v);
+    let item = |i: usize| -> String {
+        item_names
+            .get(i)
+            .cloned()
+            .flatten()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_default()
+    };
+    match data(v) {
+        RData::Null => {}
+        RData::List(items) if recurse => {
+            for (i, it) in items.iter().enumerate() {
+                let name = item(i);
+                extract_names(
+                    it,
+                    &base,
+                    Some(name.as_str()).filter(|n| !n.is_empty()),
+                    recurse,
+                    out,
+                    nd,
+                );
+            }
+        }
+        RData::List(_) | RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) => {
+            for i in 0..len(v) {
+                nd.seqno += 1;
+                // An `NA` element name is a name: alone it stays `NA`, under a
+                // base it reads `base.NA`.
+                let is_na = matches!(item_names.get(i), Some(None));
+                let label = match is_na {
+                    true if base.is_empty() => None,
+                    true => Some(format!("{base}.NA")),
+                    false => Some(new_name(&base, &item(i), nd.seqno, nd.count)),
+                };
+                out.push(label);
+            }
+        }
+        _ => {
+            nd.seqno += 1;
+            out.push(Some(new_name(&base, "", nd.seqno, nd.count)));
+        }
+    }
+    if tagged {
+        nd.count = saved.1;
+    }
+    nd.seqno += saved.0;
+}
+
+/// Whether any name exists anywhere in `v` for `unlist` to carry: its own
+/// `names`, or (recursing) any element's.
+fn has_names(v: &Value, recurse: bool) -> bool {
+    if !names_of(v).is_empty() {
+        return true;
+    }
+    match data(v) {
+        RData::List(items) if recurse => items.iter().any(|it| has_names(it, recurse)),
+        _ => false,
+    }
+}
+
 fn concat(a: &Args) -> Value {
     let parts: Vec<(Option<String>, Value)> =
         a.all.iter().filter(|(_, v)| !is_null(v)).cloned().collect();
@@ -10289,25 +11228,24 @@ fn concat(a: &Args) -> Value {
         .max()
         .unwrap_or(1);
 
+    // Names follow R's `NewExtractNames`: each argument is named by its tag,
+    // its own element names, and a sequence number where several elements
+    // share one tag.
+    let any_named = parts
+        .iter()
+        .any(|(tag, v)| tag.is_some() || !names_of(v).is_empty());
     let mut names: Vec<Option<String>> = Vec::new();
-    let mut any_named = false;
-    for (tag, v) in &parts {
-        let inner = names_of(v);
-        let n = len(v);
-        for i in 0..n {
-            let base = inner.get(i).cloned().flatten();
-            let nm = match (tag, &base) {
-                (Some(t), Some(b)) => Some(format!("{t}.{b}")),
-                (Some(t), None) if n == 1 => Some(t.clone()),
-                (Some(t), None) => Some(format!("{t}{}", i + 1)),
-                // An untagged element of a vector with no names takes the empty
-                // name — `names(c(a = 1, 2))` is `c("a", "")` — while one whose
-                // own `names` holds an `NA` keeps that `NA`.
-                (None, None) if inner.is_empty() => Some(String::new()),
-                (None, b) => b.clone(),
-            };
-            any_named |= tag.is_some() || !inner.is_empty();
-            names.push(nm);
+    if any_named {
+        let mut nd = NameData::default();
+        for (tag, v) in &parts {
+            extract_names(
+                v,
+                "",
+                tag.as_deref().filter(|t| !t.is_empty()),
+                false,
+                &mut names,
+                &mut nd,
+            );
         }
     }
 
@@ -10364,18 +11302,40 @@ fn concat(a: &Args) -> Value {
 /// recursively, composing names the way R does (`list(a = 1, b = list(2, 3))`
 /// unlists to `a b1 b2`).
 fn unlist(x: &Value) -> Value {
-    match data(x) {
-        RData::List(items) => {
-            let names = names_of(x);
-            let parts: Vec<(Option<String>, Value)> = items
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (names.get(i).cloned().flatten(), unlist(v)))
-                .collect();
-            concat(&Args::new(parts))
+    fn values(x: &Value) -> Value {
+        match data(x) {
+            RData::List(items) => {
+                let parts: Vec<(Option<String>, Value)> =
+                    items.iter().map(|v| (None, values(v))).collect();
+                let out = concat(&Args::new(parts));
+                // Values only: the names are decided once, from the whole tree.
+                with_host(|h| {
+                    let nl = h.null();
+                    h.set_attr(&out, "names", nl)
+                });
+                out
+            }
+            _ => x.clone(),
         }
-        _ => x.clone(),
     }
+    let RData::List(items) = data(x) else {
+        return x.clone();
+    };
+    let out = values(x);
+    if is_null(&out) || !has_names(x, true) {
+        return out;
+    }
+    let names = names_of(x);
+    let mut labels = Vec::new();
+    let mut nd = NameData::default();
+    for (i, it) in items.iter().enumerate() {
+        let tag = names.get(i).cloned().flatten().filter(|n| !n.is_empty());
+        extract_names(it, "", tag.as_deref(), true, &mut labels, &mut nd);
+    }
+    if labels.len() == len(&out) {
+        set_names(&out, labels);
+    }
+    out
 }
 
 /// `sapply` simplification: a list of length-1 values of one type becomes an
@@ -10394,12 +11354,10 @@ fn simplify(list: &Value) -> Value {
     // result that is itself a length-1 *list* still simplifies, to a flat list.
     // Bailing on any list element left `sapply(1:2, \(x) list(x))` doubly
     // nested. Longer list results have no matrix form, so those still stay put.
-    if k != 1 && items.iter().any(|v| kind(v) == RKind::List) {
-        return list.clone();
-    }
     // Uniform scalar results collapse to a vector; uniform length-k (k > 1)
     // results become a k×n matrix, each result a column — R's sapply/vapply
-    // rule. Ragged results stay a list.
+    // rule, a list matrix when the results are lists. Ragged results stay a
+    // list.
     if k >= 1 && items.iter().all(|v| len(v) == k) {
         let parts: Vec<(Option<String>, Value)> = items.iter().map(|v| (None, v.clone())).collect();
         let out = concat(&Args::new(parts));
@@ -10427,6 +11385,16 @@ fn simplify(list: &Value) -> Value {
 }
 
 /// `paste`/`paste0` — elementwise, with recycling, and an optional `collapse`.
+/// `x` as `as.character(x)` would make it when the user defined an
+/// `as.character.<class>` method for it, else `x` unchanged — the coercion
+/// `paste` and `toString` apply to an object before joining.
+fn as_character_dispatched(x: &Value) -> Result<Value, String> {
+    match s3_primitive_method("as.character", &[(None, x.clone())]) {
+        Some(r) => r,
+        None => Ok(x.clone()),
+    }
+}
+
 fn paste(a: &Args, zero: bool) -> Value {
     let sep = if zero {
         String::new()
@@ -13052,18 +14020,27 @@ fn int_colon(xs: &[Option<i64>]) -> Option<String> {
 /// intervals `(a, b]`. A single-number `breaks` means that many equal-width
 /// intervals over the (slightly widened) range, exactly as R computes them.
 fn cut(a: &Args) -> Result<Value, String> {
-    let x = as_dbl(&a.req(0, "x")?);
+    let xv = a.req(0, "x")?;
+    if !matches!(kind(&xv), RKind::Int | RKind::Dbl | RKind::Lgl) {
+        return Err("'x' must be numeric".into());
+    }
+    let x = as_dbl(&xv);
     let breaks_arg = a.req(1, "breaks")?;
-    let breaks: Vec<f64> = if len(&breaks_arg) == 1 {
-        let nb = num1(&breaks_arg).unwrap_or(1.0) as usize;
+    let flag = |name: &str, default: bool| a.named(name).and_then(|v| lgl1(&v)).unwrap_or(default);
+    let right = flag("right", true);
+    let include_lowest = flag("include.lowest", false);
+    let mut breaks: Vec<f64> = if len(&breaks_arg) == 1 {
+        let n = num1(&breaks_arg).unwrap_or(f64::NAN);
+        if n.is_nan() || n < 2.0 {
+            return Err("invalid number of intervals".into());
+        }
+        let nb = n as usize;
         let vals: Vec<f64> = x.iter().flatten().copied().collect();
         let mn = vals.iter().cloned().fold(f64::INFINITY, f64::min);
         let mx = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         // R spaces the breaks evenly across the *un-widened* data range and only
         // then nudges the first and last outward, so the interior cut points sit
-        // on round data values (`cut(1:10, 3)` breaks at 4 and 7). Spreading
-        // them evenly across the widened range instead shifted every interior
-        // break inward — 4 landed in `(4,7]` rather than R's `(0.991,4]`.
+        // on round data values (`cut(1:10, 3)` breaks at 4 and 7).
         let dx = mx - mn;
         if dx == 0.0 {
             // A constant `x` has no range to divide, so R substitutes a width
@@ -13083,36 +14060,78 @@ fn cut(a: &Args) -> Result<Value, String> {
     } else {
         as_dbl(&breaks_arg).into_iter().flatten().collect()
     };
+    breaks.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+    if breaks.windows(2).any(|w| w[0] == w[1]) {
+        return Err("'breaks' are not unique".into());
+    }
+    let nb = breaks.len();
     let dig_lab = a
         .named("dig.lab")
         .and_then(|v| num1(&v))
         .map(|v| v as i32)
         .unwrap_or(3);
-    let break_text = break_labels(&breaks, dig_lab);
-    let labels: Vec<String> = match a.named("labels") {
-        Some(l) if kind(&l) == RKind::Str => as_str(&l).into_iter().flatten().collect(),
-        _ => (0..breaks.len().saturating_sub(1))
-            .map(|i| format!("({},{}]", break_text[i], break_text[i + 1]))
-            .collect(),
+    let labels_arg = a.named("labels").filter(|l| !is_null(l));
+    let labels: Vec<String> = match &labels_arg {
+        Some(l) if kind(l) == RKind::Lgl && len(l) == 1 => {
+            if as_lgl(l)[0] == Some(false) {
+                Vec::new()
+            } else {
+                return Err("invalid labels".into());
+            }
+        }
+        Some(l) => {
+            if len(l) != nb.saturating_sub(1) {
+                return Err("number of intervals and length of 'labels' differ".into());
+            }
+            as_str_labels(l)
+                .into_iter()
+                .map(|s| s.unwrap_or_else(|| "NA".into()))
+                .collect()
+        }
+        None => {
+            let text = break_labels(&breaks, dig_lab);
+            let (open, close) = if right { ("(", "]") } else { ("[", ")") };
+            let mut out: Vec<String> = (0..nb.saturating_sub(1))
+                .map(|i| format!("{open}{},{}{close}", text[i], text[i + 1]))
+                .collect();
+            // `include.lowest` closes the end that would otherwise be open.
+            if include_lowest && !out.is_empty() {
+                if right {
+                    out[0].replace_range(..1, "[");
+                } else {
+                    let last = out.len() - 1;
+                    let l = out[last].len();
+                    out[last].replace_range(l - 1.., "]");
+                }
+            }
+            out
+        }
     };
-    // Right-closed intervals `(a, b]`.
+    // `.bincode`: `(b[i], b[i+1]]` when `right`, else `[b[i], b[i+1])`, with
+    // `include.lowest` admitting the one value on the outer closed edge.
+    let intervals = nb.saturating_sub(1);
     let codes: Vec<Option<i64>> = x
         .iter()
         .map(|e| {
             e.and_then(|v| {
-                (0..breaks.len().saturating_sub(1))
-                    .find(|&i| v > breaks[i] && v <= breaks[i + 1])
+                (0..intervals)
+                    .find(|&i| {
+                        let (lo, hi) = (breaks[i], breaks[i + 1]);
+                        if right {
+                            (v > lo && v <= hi) || (include_lowest && i == 0 && v == lo)
+                        } else {
+                            (v >= lo && v < hi) || (include_lowest && i == intervals - 1 && v == hi)
+                        }
+                    })
                     .map(|i| i as i64 + 1)
             })
         })
         .collect();
-    // `labels = FALSE` asks for the bare bin numbers rather than a factor — the
-    // argument was only consulted when it held a character vector, so `FALSE`
-    // fell through to the generated interval labels.
-    if a.named("labels").and_then(|l| lgl1(&l)) == Some(false) {
+    // `labels = FALSE` asks for the bare bin numbers rather than a factor.
+    if labels_arg.is_some() && labels.is_empty() {
         return Ok(mk_int(codes));
     }
-    Ok(mk_factor(codes, labels, false))
+    Ok(mk_factor(codes, labels, flag("ordered_result", false)))
 }
 
 /// Render `cut`'s break points as the endpoint text its interval labels quote.
@@ -13192,7 +14211,7 @@ fn trim_g(s: &str) -> String {
 
 /// Compile an R pattern to a `regex::Regex`, honoring `fixed` (literal) and
 /// `ignore.case` (the `(?i)` inline flag).
-fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<Rc<regex::Regex>, String> {
+fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<Rc<crate::re::Re>, String> {
     let body = if fixed {
         regex::escape(pattern)
     } else {
@@ -13221,19 +14240,17 @@ thread_local! {
     /// alongside the engine so an invalid pattern keeps erroring on every call
     /// instead of being quietly accepted the second time.
     static RE_CACHE: RefCell<
-        std::collections::HashMap<String, Result<Rc<regex::Regex>, String>, rustc_hash::FxBuildHasher>,
+        std::collections::HashMap<String, Result<Rc<crate::re::Re>, String>, rustc_hash::FxBuildHasher>,
     > = RefCell::new(std::collections::HashMap::default());
 }
 
 /// The compiled form of `full`, built once per distinct pattern.
-fn cached_regex(full: &str) -> Result<Rc<regex::Regex>, String> {
+fn cached_regex(full: &str) -> Result<Rc<crate::re::Re>, String> {
     RE_CACHE.with(|c| {
         if let Some(hit) = c.borrow().get(full) {
             return hit.clone();
         }
-        let built = regex::Regex::new(full)
-            .map(Rc::new)
-            .map_err(|e| e.to_string());
+        let built = crate::re::Re::new(full).map(Rc::new);
         let mut cache = c.borrow_mut();
         if cache.len() >= RE_CACHE_LIMIT {
             cache.clear();
@@ -13287,22 +14304,14 @@ fn regex_op(name: &str, a: &Args) -> Result<Value, String> {
             } else {
                 parse_replacement(&replacement, perl)
             };
-            let expand = |caps: &regex::Captures| expand_replacement(&pieces, caps);
+            let expand = |caps: &crate::re::Captures| expand_replacement(&pieces, caps);
             // `sub`/`gsub` rewrite each element in place, so the result keeps
             // the subject's names/dim (`grepl`/`grep` do not: one selects, the
             // other renumbers).
             shaped_like(
                 mk_str(
                     x.iter()
-                        .map(|s| {
-                            s.as_ref().map(|s| {
-                                if name == "sub" {
-                                    re.replace(s, &expand).into_owned()
-                                } else {
-                                    re.replace_all(s, &expand).into_owned()
-                                }
-                            })
-                        })
+                        .map(|s| s.as_ref().map(|s| re.replace(s, name == "gsub", &expand)))
                         .collect(),
                 ),
                 &subject,
@@ -13357,7 +14366,7 @@ fn parse_replacement(rep: &str, perl: bool) -> Vec<RepPiece> {
 
 /// Build one match's replacement. As in R, `\U`/`\L` convert only the
 /// back-referenced text, never the literal text between them.
-fn expand_replacement(pieces: &[RepPiece], caps: &regex::Captures) -> String {
+fn expand_replacement(pieces: &[RepPiece], caps: &crate::re::Captures) -> String {
     let mut out = String::new();
     let mut case = None;
     for p in pieces {
@@ -13469,7 +14478,7 @@ fn sprintf(a: &Args) -> Result<Value, String> {
             // `*` per specification, so one substitution is enough.
             if let Some(pos) = spec.find('*') {
                 let Some((_, wv)) = rest.get(argi).cloned() else {
-                    return Err("too few arguments for sprintf format".into());
+                    return Err("too few arguments".into());
                 };
                 argi += 1;
                 let k = i % len(&wv).max(1);
@@ -13494,9 +14503,37 @@ fn sprintf(a: &Args) -> Result<Value, String> {
                 }
             };
             let Some(arg) = arg else {
-                return Err("too few arguments for sprintf format".into());
+                return Err("too few arguments".into());
             };
             let k = i % len(&arg).max(1);
+            // `do_sprintf` checks the argument's type against the conversion
+            // before formatting anything.
+            if !"dioxXfeEgGaAs".contains(conv) {
+                return Err(format!("unrecognised format specification '%{spec}{conv}'"));
+            }
+            if kind(&arg) == RKind::Str && conv != 's' {
+                return Err(format!(
+                    "invalid format '%{spec}{conv}'; use format %s for character objects"
+                ));
+            }
+            let arg = if matches!(conv, 'd' | 'i' | 'o' | 'x' | 'X') && kind(&arg) == RKind::Dbl {
+                // A double is taken as an integer when every element is a whole
+                // number (`NA` aside), and is otherwise refused.
+                let whole = as_dbl(&arg)
+                    .iter()
+                    .flatten()
+                    .all(|v| v.is_finite() && *v == v.trunc() && v.abs() <= i32::MAX as f64);
+                match whole {
+                    true => mk_int(as_int(&arg)),
+                    false => {
+                        return Err(format!(
+                            "invalid format '%{spec}{conv}'; use format %f, %e, %g or %a for numeric objects"
+                        ))
+                    }
+                }
+            } else {
+                arg
+            };
             // Integer/float conversions split into sign + magnitude so the `+`/
             // space sign flag and `0` zero-padding compose the C way (zeros go
             // *after* the sign: `%05d` of -5 is `-0005`, not `000-5`).
@@ -13600,7 +14637,30 @@ fn sprintf(a: &Args) -> Result<Value, String> {
 /// numeric-field rules (sign, zero-pad, exponent) are shared; the non-finite
 /// entries are right-justified as a group the way `format.char` does.
 fn format_c(a: &Args) -> Result<Value, String> {
-    let x = a.req(0, "x")?;
+    let mut x = a.req(0, "x")?;
+    // `mode` re-types `x` before anything else: `"character"` formats its
+    // `as.character` text, `"integer"` its truncated integer.
+    let mode = a.named("mode").and_then(|v| str1(&v));
+    match mode.as_deref() {
+        Some("character") if kind(&x) != RKind::Str => {
+            let text =
+                crate::host::with_print_digits(crate::host::AS_CHARACTER_DIGITS, || as_str(&x));
+            let out = mk_str(text);
+            carry_attrs(&out, &x, &x);
+            x = out;
+        }
+        Some("integer") if kind(&x) == RKind::Dbl => {
+            let out = mk_int(
+                as_dbl(&x)
+                    .iter()
+                    .map(|v| v.map(|v| v.trunc() as i64))
+                    .collect(),
+            );
+            carry_attrs(&out, &x, &x);
+            x = out;
+        }
+        _ => {}
+    }
     let digits = a.get(1, "digits").and_then(|v| num1(&v)).map(|d| d as i64);
     let mut width = a.get(2, "width").and_then(|v| num1(&v)).map(|w| w as i64);
     let flag = a.named("flag").and_then(|v| str1(&v)).unwrap_or_default();
@@ -13616,6 +14676,18 @@ fn format_c(a: &Args) -> Result<Value, String> {
                 "g".into()
             }
         });
+    // R accepts `"d"` for integers and `f e E g G fg` for reals (`s` for text,
+    // handled below); anything else — `x`, `X`, `o`, a typo — is refused.
+    if kind(&x) != RKind::Str
+        && !matches!(
+            format.as_str(),
+            "d" | "s" | "f" | "e" | "E" | "g" | "G" | "fg"
+        )
+    {
+        return Err(
+            "'format' must be one of {\"f\",\"e\",\"E\",\"g\",\"G\", \"fg\", \"s\"}".into(),
+        );
+    }
     // A logical keeps its storage mode unless `format = "d"` coerces it to
     // integer, and `.Internal(formatC)` has no logical case.
     if kind(&x) == RKind::Lgl && !matches!(format.as_str(), "d" | "s") && len(&x) > 0 {
@@ -13837,55 +14909,6 @@ fn str_abbrev(k: RKind) -> &'static str {
     }
 }
 
-/// How many leading elements `str()` shows, at the default `vec.len = 4`.
-///
-/// R scales the setting per type (`str.default`): logical 1.5x, numeric 2.5x.
-/// Character is not a multiple at all — it fills the line, which is what
-/// [`str_chr_count`] answers.
-fn str_vec_len(k: RKind) -> usize {
-    match k {
-        RKind::Lgl => 6,
-        RKind::Int | RKind::Dbl => 10,
-        _ => 4,
-    }
-}
-
-/// The character rule, transcribed from `str.default`:
-/// `sum(cumsum(1 + nchar(encoded)) < width - (4 + 5*nest.lev + nchar(str1)))`,
-/// at the default width of 80. At least one element is always shown.
-fn str_chr_count(encoded: &[String], nest: usize, prefix: &str) -> usize {
-    let budget = 80i64 - (4 + 5 * nest as i64 + prefix.chars().count() as i64);
-    let mut used = 0i64;
-    let mut n = 0;
-    for e in encoded {
-        used += 1 + e.chars().count() as i64;
-        if used >= budget {
-            break;
-        }
-        n += 1;
-    }
-    n.max(1)
-}
-
-/// A number as `str()` writes it: three significant digits with trailing zeros
-/// dropped, which is R's `formatNum` (`format(digits = 3, drop0trailing =
-/// TRUE)`) element by element.
-fn str_num(x: f64) -> String {
-    if x.is_nan() {
-        return "NaN".into();
-    }
-    if x.is_infinite() {
-        return if x > 0.0 { "Inf" } else { "-Inf" }.into();
-    }
-    let r = signif(x, 3.0);
-    if r != 0.0 && (r.abs() >= 1e5 || r.abs() < 1e-4) {
-        crate::host::render_sci(r, crate::host::sci_decimals(r))
-    } else {
-        format!("{r}")
-    }
-}
-
-/// The indent every line at `nest` carries: a space, then `" .."` per level.
 /// How R prints an environment: the global one by name, any other by its
 /// address — which no two processes share, so only the shape can match.
 fn env_label(e: &crate::host::Env) -> String {
@@ -13895,182 +14918,466 @@ fn env_label(e: &crate::host::Env) -> String {
     }
 }
 
+/// The settings `str()` threads through a value and everything inside it —
+/// the arguments of `str.default` that rlang honours.
+struct StrOpts {
+    /// `vec.len`, in the unit R scales per type (default 4).
+    vec_len: f64,
+    /// Whether the caller wrote `vec.len` — a character vector fills the line
+    /// only when it did not, which is why a nested one shows four.
+    vec_len_given: bool,
+    digits: i64,
+    give_attr: bool,
+    give_head: bool,
+    give_length: bool,
+    max_level: Option<usize>,
+    list_len: usize,
+    nchar_max: usize,
+}
+
+impl StrOpts {
+    fn from_args(a: &Args) -> Result<StrOpts, String> {
+        let num = |n: &str| a.named(n).filter(|v| !is_null(v)).and_then(|v| num1(&v));
+        let flag = |n: &str, d: bool| a.named(n).and_then(|v| lgl1(&v)).unwrap_or(d);
+        let give_head = flag("give.head", true);
+        Ok(StrOpts {
+            vec_len: num("vec.len").unwrap_or(4.0),
+            vec_len_given: a.named("vec.len").is_some(),
+            digits: num("digits.d").unwrap_or(3.0) as i64,
+            give_attr: flag("give.attr", true),
+            give_head,
+            give_length: match a.named("give.length") {
+                Some(v) => lgl1(&v).unwrap_or(true),
+                None => give_head,
+            },
+            max_level: num("max.level").map(|m| m as usize),
+            list_len: num("list.len").map(|m| m as usize).unwrap_or(99),
+            nchar_max: num("nchar.max").map(|m| m as usize).unwrap_or(128),
+        })
+    }
+}
+
+/// R's `round` as `str.default` uses it on `vec.len` multiples (half to even).
+fn str_round(x: f64) -> f64 {
+    let r = x.round();
+    if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        r - x.signum()
+    } else {
+        r
+    }
+}
+
+/// `prettyNum(drop0trailing = TRUE)` on one formatted number: past the decimal
+/// mark, an element with an exponent loses only a `e+00`/`e-00` suffix, and one
+/// without loses its trailing zeros (and the mark itself if nothing is left).
+fn drop0trailing(s: &str) -> String {
+    let Some((int, frac)) = s.split_once('.') else {
+        return s.to_string();
+    };
+    let frac = match frac.find('e') {
+        Some(at) => {
+            let (m, e) = frac.split_at(at);
+            let digits = e[1..].trim_start_matches(['+', '-']);
+            if !digits.is_empty() && digits.chars().all(|c| c == '0') {
+                m.to_string()
+            } else {
+                frac.to_string()
+            }
+        }
+        None => frac.trim_end_matches('0').to_string(),
+    };
+    if frac.is_empty() {
+        int.to_string()
+    } else {
+        format!("{int}.{frac}")
+    }
+}
+
+/// `formatNum(x)` under `digits.d`: `format(x, trim = TRUE, drop0trailing =
+/// TRUE)` with the whole vector sharing one notation and decimal count.
+fn str_format_nums(x: &Value, digits: i64) -> Vec<String> {
+    let args = vec![
+        (None, x.clone()),
+        (Some("digits".to_string()), scalar_int(digits)),
+        (Some("trim".to_string()), scalar_lgl(true)),
+    ];
+    match call_primitive("format", args) {
+        Ok(v) => as_str(&v)
+            .into_iter()
+            .map(|s| drop0trailing(&s.unwrap_or_else(|| "NA".into())))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `maybe_truncate`: an encoded string past `nchar.max` is cut and marked.
+fn str_truncate(x: String, nchar_max: usize) -> String {
+    const MARK: &str = "\"| __truncated__";
+    if x.chars().count() <= nchar_max {
+        return x;
+    }
+    let keep = nchar_max.saturating_sub(MARK.chars().count());
+    let cut: String = x.chars().take(keep).collect();
+    if cut != x && format!("{cut}\"") != x {
+        format!("{cut}{MARK}")
+    } else {
+        x
+    }
+}
+
+/// The `[1:2, 1:3]` / `[1:2(1d)]` label of an array (`arrLenstr`).
+fn str_arr_len(dims: &[i64]) -> String {
+    let part = |d: i64| {
+        format!(
+            "{}{d}{}",
+            if d > 1 { "1:" } else { "" },
+            if d > 0 { "" } else { " " }
+        )
+    };
+    match dims {
+        [d] => format!("[{}(1d)]", part(*d)),
+        _ => format!(
+            "[{}]",
+            dims.iter().map(|d| part(*d)).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
 fn str_indent(nest: usize) -> String {
     format!(" {}", " ..".repeat(nest))
 }
 
-/// The `[1:n]` an atomic vector is labelled with — `[1:2, 1:3]` for a matrix,
-/// `[1:2(1d)]` for a one-dimensional array (a `table`), and nothing at all for
-/// the plain scalar that carries no label.
-fn str_dims(x: &Value, n: usize) -> String {
-    if let Some(d) = with_host(|h| h.attr(x, "dim")) {
-        let dims: Vec<i64> = as_int(&d).into_iter().flatten().collect();
-        if dims.len() == 1 {
-            return format!(" [1:{}(1d)]", dims[0]);
-        }
-        let inner: Vec<String> = dims.iter().map(|k| format!("1:{k}")).collect();
-        return format!(" [{}]", inner.join(", "));
-    }
-    // `str.default`: `if (le == 1 && !is.array(object))` drops the length.
-    if n == 1 {
-        String::new()
-    } else {
-        format!(" [1:{n}]")
-    }
-}
-
-/// `str(x)` as the lines it prints, `nest` counting how deep in a list the
-/// value sits. One function for the whole shape, because an attribute line and
-/// a list element are both "the str of a value, one level further in".
-fn str_lines(x: &Value, nest: usize) -> Vec<String> {
+/// `str(x)` as the lines `str.default` prints. The first line is what follows
+/// whatever the caller already wrote on the line (`$ name:` for a list element,
+/// `- attr(*, "k")=` for an attribute), exactly as R's `cat` calls chain them;
+/// later lines carry their own indentation. `nest` is `nest.lev`.
+fn str_lines(x: &Value, nest: usize, o: &StrOpts) -> Vec<String> {
     let ind = str_indent(nest);
-    // `str.default` writes an environment as its printed form and a space,
-    // flush against the `$ name:` that introduces it.
+    // Strings and functions first: they are decided by type, not by shape.
     if let RData::Environment(e) = data(x) {
-        return vec![format!("{}{} ", ind.trim_end(), env_label(&e))];
+        let cls = with_host(|h| h.attr(x, "class")).map(|c| {
+            let cs: Vec<String> = as_str(&c).into_iter().flatten().collect();
+            format!(
+                "Class{} '{}' ",
+                if cs.len() > 1 { "es" } else { "" },
+                cs.join("', '")
+            )
+        });
+        return vec![format!("{}{} ", cls.unwrap_or_default(), env_label(&e))];
     }
     let k = kind(x);
-    let classes = class_of(x);
-    // A factor's class and levels ARE its line, so that case is read first.
-    if classes.iter().any(|c| c == "factor") {
-        let levels: Vec<String> = with_host(|h| h.attr(x, "levels"))
-            .map(|l| as_str(&l).into_iter().flatten().collect())
-            .unwrap_or_default();
-        let shown: Vec<String> = levels.iter().map(|l| format!("\"{l}\"")).collect();
-        let codes: Vec<String> = as_int(x)
-            .iter()
-            .map(|c| c.map_or("NA".into(), |i| i.to_string()))
-            .collect();
-        return vec![format!(
-            "{ind}Factor w/ {} level{} {}: {}",
-            levels.len(),
-            if levels.len() == 1 { "" } else { "s" },
-            shown.join(","),
-            codes.join(" ")
-        )];
-    }
     if k == RKind::Null {
-        return vec![format!("{ind}NULL")];
+        return vec![" NULL".to_string()];
     }
+    if with_host(|h| h.is_function(x)) {
+        let header = (|| {
+            let a = call_primitive("args", vec![(None, x.clone())]).ok()?;
+            if is_null(&a) {
+                return None;
+            }
+            let lines = as_str(&call_primitive("deparse", vec![(None, a)]).ok()?);
+            let n = lines.len().saturating_sub(1);
+            Some(
+                lines
+                    .into_iter()
+                    .take(n)
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })()
+        .unwrap_or_else(|| "function ()".to_string());
+        return vec![format!("{header} ")];
+    }
+    let attrs = |std: &[&str]| -> Vec<String> {
+        if !o.give_attr {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (key, v) in with_host(|h| h.attrs_of(x)) {
+            if std.contains(&key.as_str()) {
+                continue;
+            }
+            let sub = str_lines(&v, nest + 1, o);
+            out.push(format!("{ind}- attr(*, \"{key}\")={}", sub[0]));
+            out.extend(sub.into_iter().skip(1));
+        }
+        out
+    };
     if k == RKind::List {
         let items = elements(x);
         let names = names_of(x);
-        let mut out = vec![format!("{}List of {}", ind.trim_end(), items.len())];
-        for (i, it) in items.iter().enumerate() {
-            let name = names.get(i).cloned().flatten().unwrap_or_default();
-            let sub = str_lines(it, nest + 1);
-            let head = sub.first().cloned().unwrap_or_default();
-            let child_ind = str_indent(nest + 1);
-            // The child's own leading space is what separates `$ name:` from a
-            // vector's type and joins it to a nested `List of n`, so neither
-            // case needs special-casing here.
-            let body = head
-                .strip_prefix(&child_ind[..])
-                .unwrap_or(&head)
-                .to_string();
-            let sep = if body.starts_with("List of") || body.starts_with("<environment") {
-                ""
-            } else {
-                " "
-            };
-            // The `$` sits at the LIST's indent, not the child's: a nested list
-            // draws its own elements one level further in, and that level comes
-            // from the child's own nest when it renders them.
-            out.push(format!("{ind}$ {name}:{sep}{body}"));
-            out.extend(sub.into_iter().skip(1));
+        let le = items.len();
+        let mut out = Vec::new();
+        if le == 0 {
+            out.push(format!(
+                " {}list()",
+                if names.is_empty() { "" } else { "Named " }
+            ));
+        } else {
+            out.push(format!("List of {le}"));
+            if o.max_level.map_or(true, |m| nest < m) {
+                let labels: Vec<String> = (0..le)
+                    .map(|i| names.get(i).cloned().flatten().unwrap_or_default())
+                    .collect();
+                let width = labels
+                    .iter()
+                    .map(|n| crate::strwidth::display_width(n))
+                    .max()
+                    .unwrap_or(0);
+                for (i, it) in items.iter().enumerate().take(o.list_len) {
+                    let label = crate::strwidth::pad_display(&labels[i], width, true);
+                    let sub = str_lines(it, nest + 1, o);
+                    out.push(format!("{ind}$ {label}:{}", sub[0]));
+                    out.extend(sub.into_iter().skip(1));
+                }
+                if o.list_len < le {
+                    out.push(format!("{ind} [list output truncated]"));
+                }
+            }
         }
-        // A list's `std.attr` is its `names`, which the `$ name:` lines show.
-        out.extend(str_attr_lines(x, nest, |key| key == "names"));
+        out.extend(attrs(&["names"]));
         return out;
     }
-    if !matches!(k, RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str) {
-        return vec![format!(
-            "{ind}{}",
-            classes.first().cloned().unwrap_or_default()
-        )];
-    }
-    let n = len(x);
-    let named = with_host(|h| h.attr(x, "names")).is_some();
-    // `str.default`: an array is never `Named`; a written class shows its first
-    // element, quoted, ahead of the mode — unless that class merely spells
-    // the mode out (`integer` over `int`).
-    let is_array = with_host(|h| h.attr(x, "dim")).is_some();
-    let mode = match named && !is_array {
-        true => format!("Named {}", str_abbrev(k)),
-        false => str_abbrev(k).to_string(),
+    // Everything below prints as one `str1` + values line, then attributes.
+    let le = len(x);
+    let le_str = if !o.give_length {
+        String::new()
+    } else if le > 0 {
+        format!("[1:{le}]")
+    } else {
+        "(0)".to_string()
     };
-    let explicit = with_host(|h| h.attr(x, "class"))
-        .map(|c| as_str(&c).into_iter().next().flatten().unwrap_or_default());
-    let prefix = match &explicit {
-        Some(cl) if *cl != mode && !cl.starts_with(&mode) => format!("{ind}'{cl}' {mode}"),
-        _ => format!("{ind}{mode}"),
-    };
-    let dims = str_dims(x, n);
-    let encoded: Vec<String> = match k {
-        RKind::Str => as_str(x)
-            .into_iter()
-            .map(|s| s.map_or("NA".into(), |s| format!("\"{s}\"")))
-            .collect(),
-        RKind::Lgl => as_lgl(x)
-            .into_iter()
-            .map(|b| {
-                b.map_or("NA".into(), |b| {
-                    if b {
-                        "TRUE".to_string()
-                    } else {
-                        "FALSE".to_string()
-                    }
-                })
-            })
-            .collect(),
-        RKind::Int => as_int(x)
-            .into_iter()
-            .map(|i| i.map_or("NA".into(), |i| i.to_string()))
-            .collect(),
-        _ => as_dbl(x)
-            .into_iter()
-            .map(|d| d.map_or("NA".into(), str_num))
-            .collect(),
-    };
-    let show = match k {
-        RKind::Str => str_chr_count(&encoded, nest, &format!("{prefix}{dims}")),
-        _ => str_vec_len(k),
-    }
-    .min(n);
-    let tail = if n > show { " ..." } else { "" };
-    let mut out = vec![format!(
-        "{prefix}{dims} {}{tail}",
-        encoded[..show].join(" ")
-    )];
-    // `std.attr`: what the line above already folded in — an array's `dim`, a
-    // written `class`.
-    out.extend(str_attr_lines(x, nest, |key| {
-        (is_array && key == "dim") || (explicit.is_some() && key == "class")
-    }));
-    out
-}
+    let mut std_attr: Vec<&str> = vec!["names"];
+    let has_class = with_host(|h| h.attr(x, "class")).is_some();
+    let classes = class_of(x);
+    let mut v_len = o.vec_len;
+    let digits = o.digits;
+    let (str1, shown, total): (String, Vec<String>, usize);
 
-/// `str.default`'s `give.attr = TRUE` tail: every attribute of `x` not in
-/// `std.attr` (`folded`), in attribute order, as `- attr(*, "name")=` and its
-/// own str one level in.
-fn str_attr_lines(x: &Value, nest: usize, folded: impl Fn(&str) -> bool) -> Vec<String> {
-    let ind = str_indent(nest);
-    let mut out = Vec::new();
-    for (key, v) in with_host(|h| h.attrs_of(x)) {
-        if folded(&key) {
-            continue;
+    if is_factor(x) {
+        let levels: Vec<String> = levels_of(x);
+        let nl = levels.len();
+        let w = (80.0f64 / 2.0).clamp(10.0, 1000.0) as usize;
+        let lev: Vec<String> = levels
+            .iter()
+            .take(w)
+            .map(|l| format!("\"{}\"", encode_string(l)))
+            .collect();
+        let n_l = lev.len();
+        // `ml`: levels shown, stopping once the running width passes 13.
+        let mut run = 0usize;
+        let cum: Vec<usize> = lev
+            .iter()
+            .map(|l| {
+                run += 3 + l.chars().count().saturating_sub(2);
+                run
+            })
+            .collect();
+        let ml = if n_l <= 1 || cum[n_l - 1] <= 13 {
+            n_l
+        } else {
+            cum.iter().position(|&c| c > 13).map_or(n_l, |p| p + 1)
+        };
+        let ord = is_ordered(x);
+        let lsep = if ord { "<" } else { "," };
+        let shown_levels: Vec<String> = lev
+            .iter()
+            .take(ml)
+            .cloned()
+            .map(|l| str_truncate(l, o.nchar_max))
+            .collect();
+        let dims = with_host(|h| h.attr(x, "dim")).map(|d| {
+            as_int(&d)
+                .into_iter()
+                .map(|e| e.unwrap_or(0))
+                .collect::<Vec<_>>()
+        });
+        let head = format!(
+            " {}actor{} w/ {nl} level{}{}{}{}:",
+            if ord { "Ord.f" } else { "F" },
+            dims.as_deref()
+                .map(str_arr_len)
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            if nl != 1 { "s" } else { "" },
+            if nl > 0 { " " } else { "" },
+            shown_levels.join(lsep),
+            if ml < nl {
+                format!("{lsep}..")
+            } else {
+                String::new()
+            },
+        );
+        std_attr = vec!["levels", "class"];
+        if dims.is_some() {
+            std_attr.push("dim");
         }
-        let sub = str_lines(&v, nest + 1);
-        let head = sub.first().cloned().unwrap_or_default();
-        let child_ind = str_indent(nest + 1);
-        let body = head
-            .strip_prefix(&child_ind[..])
-            .unwrap_or(&head)
-            .to_string();
-        let sep = if body.starts_with("List of") { "" } else { " " };
-        out.push(format!("{ind}- attr(*, \"{key}\")={sep}{body}"));
-        out.extend(sub.into_iter().skip(1));
+        let codes = as_int(x);
+        let iv = str_round(2.5 * v_len);
+        let n_show = (iv as usize).min(le);
+        str1 = head;
+        shown = codes[..n_show]
+            .iter()
+            .map(|c| c.map_or("NA".to_string(), |c| c.to_string()))
+            .collect();
+        total = le;
+        v_len = iv;
+    } else if matches!(k, RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str) {
+        let is_array = with_host(|h| h.attr(x, "dim")).is_some();
+        let named = with_host(|h| h.attr(x, "names")).is_some();
+        let mut mod_ = str_abbrev(k).to_string();
+        let mut le_str = le_str;
+        if is_array {
+            let dims: Vec<i64> = dims_of(x).into_iter().map(|d| d as i64).collect();
+            if o.give_length {
+                le_str = str_arr_len(&dims);
+            }
+            std_attr = vec!["dim"];
+        } else if named {
+            mod_ = format!("Named {mod_}");
+            std_attr.clear();
+        }
+        if has_class {
+            let cl = classes.first().cloned().unwrap_or_default();
+            if cl != mod_ && !cl.starts_with(&mod_) {
+                mod_ = format!("'{cl}' {mod_}");
+            }
+            std_attr.push("class");
+        }
+        // `paste0(" ", mod, if (le > 0) " ", le.str)`: the space precedes the
+        // length label whenever the vector is not empty, label or no label.
+        let head = if le == 1 && !is_array {
+            format!(" {mod_}")
+        } else {
+            format!(" {mod_}{}{le_str}", if le > 0 { " " } else { "" })
+        };
+        match k {
+            RKind::Str => {
+                // Every nested call is handed `vec.len` explicitly, so only the
+                // outermost call without one fills the line.
+                let given = o.vec_len_given || nest > 0;
+                // `max(100L, width %/% 3L + 1L, vec.len)`; the width term is 27.
+                let max_len = 100usize.max(if given { o.vec_len as usize } else { 0 });
+                let objs: Vec<Option<String>> = as_str(x).into_iter().take(max_len).collect();
+                let enc: Vec<String> = objs
+                    .iter()
+                    .map(|s| match s {
+                        Some(s) => {
+                            let cut: String = s.chars().take(o.nchar_max).collect();
+                            str_truncate(format!("\"{}\"", encode_string(&cut)), o.nchar_max)
+                        }
+                        None => "NA".to_string(),
+                    })
+                    .collect();
+                let n_eff = enc.len();
+                v_len = if given {
+                    str_round(v_len)
+                } else {
+                    // `sum(cumsum(1 + nchar) < width - (4 + 5*nest + nchar(str1)))`
+                    let budget = 80i64 - (4 + 5 * nest as i64 + head.chars().count() as i64);
+                    let mut used = 0i64;
+                    let mut n = 0f64;
+                    for e in &enc {
+                        used += 1 + if e == "NA" {
+                            2
+                        } else {
+                            crate::strwidth::display_width(e) as i64
+                        };
+                        if used >= budget {
+                            break;
+                        }
+                        n += 1.0;
+                    }
+                    n.max(1.0)
+                };
+                let ile = (v_len as usize).min(n_eff);
+                shown = enc[..ile].to_vec();
+                total = n_eff;
+            }
+            RKind::Lgl => {
+                v_len *= 1.5;
+                let vals = as_lgl(x);
+                let n_show = (v_len as usize).min(le);
+                shown = vals[..n_show]
+                    .iter()
+                    .map(|b| match b {
+                        Some(true) => "TRUE".into(),
+                        Some(false) => "FALSE".into(),
+                        None => "NA".to_string(),
+                    })
+                    .collect();
+                total = le;
+            }
+            _ => {
+                let iv = str_round(2.5 * v_len);
+                let vals = as_dbl(x);
+                v_len = if k == RKind::Int {
+                    iv
+                } else {
+                    let ob: Vec<f64> = vals
+                        .iter()
+                        .take(iv as usize)
+                        .flatten()
+                        .copied()
+                        .filter(|v| !v.is_nan())
+                        .collect();
+                    let nice = ob.iter().all(|v| {
+                        let ao = v.abs();
+                        (ao > 1e-10 || ao == 0.0)
+                            && (ao < 1e10 || ao == 0.0)
+                            && (v - signif(*v, digits as f64)).abs() <= 9e-16 * ao
+                    });
+                    if nice {
+                        iv
+                    } else {
+                        str_round(1.25 * v_len)
+                    }
+                };
+                let n_show = (v_len as usize).min(le);
+                let head_vals = if k == RKind::Int {
+                    mk_int(as_int(x)[..n_show].to_vec())
+                } else {
+                    mk_dbl(vals[..n_show].to_vec())
+                };
+                shown = if n_show == 0 {
+                    Vec::new()
+                } else {
+                    str_format_nums(&head_vals, digits)
+                };
+                total = le;
+            }
+        }
+        str1 = head;
+    } else if let Some(e) = lang_of(x) {
+        // A call or a symbol: its deparse, `0.5 * vec.len` lines of it.
+        let sym = matches!(e, Expr::Ident(_));
+        let lines = crate::deparse::deparse_all_lines(&e);
+        v_len = str_round(0.5 * v_len);
+        str1 = if sym {
+            " symbol".to_string()
+        } else {
+            " language".to_string()
+        };
+        let n_show = (v_len as usize).min(lines.len());
+        shown = vec![lines[..n_show].join(" ")];
+        total = lines.len();
+    } else {
+        let cls = classes.first().cloned().unwrap_or_default();
+        return vec![format!(" {cls}")];
     }
+
+    let mut line = String::new();
+    if o.give_head {
+        line.push_str(&str1);
+        line.push(' ');
+    }
+    line.push_str(&shown.join(" "));
+    if (total as f64) > v_len {
+        line.push_str(" ...");
+    }
+    let mut out = vec![line];
+    out.extend(attrs(&std_attr));
     out
 }
 
@@ -14131,12 +15438,15 @@ pub(crate) fn encode_string(s: &str) -> String {
 /// drop a trailing empty piece — but keep a leading one. A zero-width match
 /// emits one character and steps forward one, so an empty-capable pattern
 /// degenerates to a character split.
-fn r_strsplit(s: &str, re: &regex::Regex) -> Vec<Option<String>> {
+fn r_strsplit(s: &str, re: &crate::re::Re) -> Vec<Option<String>> {
     let mut out = Vec::new();
     let mut rest = s;
     while !rest.is_empty() {
         match re.find(rest) {
-            Some(m) if m.start() != m.end() => {
+            // R tests the match's *end* (`rm_eo > 0` / `ovector[1] > 0`), not
+            // its width, so a zero-width match past the first character — a
+            // look-behind, say — still splits there.
+            Some(m) if m.end() > 0 => {
                 out.push(Some(rest[..m.start()].to_string()));
                 rest = &rest[m.end()..];
             }
@@ -15661,8 +16971,16 @@ fn format_extra_attrs(v: &Value) -> Vec<String> {
         if STRUCTURAL.contains(&k.as_str()) || (k == "class" && laid_out) {
             continue;
         }
-        out.push(format!("attr(,\"{k}\")"));
-        out.extend(format_value(&val));
+        let tag = format!("attr(,\"{k}\")");
+        out.push(tag.clone());
+        // A list-valued attribute heads its elements with the attribute's own
+        // path, as a nested list does: `attr(,"extra")[[1]]`.
+        if is_plain_list(&val) {
+            out.extend(format_list_at(&val, &tag));
+            out.extend(format_extra_attrs(&val));
+        } else {
+            out.extend(format_value(&val));
+        }
     }
     out
 }
@@ -15692,7 +17010,13 @@ fn format_value_body(v: &Value) -> Vec<String> {
         return with_print_quote(false, || format_vector(&text));
     }
     let rank = with_host(|h| h.attr(v, "dim")).map_or(0, |d| len(&d));
-    if rank <= 1 && classes.iter().any(|c| c == "table") {
+    // A one-dimensional array whose `dimnames` are themselves named prints the
+    // dimension's name above its labels, as `printNamedVector` does for them.
+    let named_dimnames = rank == 1
+        && with_host(|h| h.attr(v, "dimnames"))
+            .and_then(|dn| with_host(|h| h.attr(&dn, "names")))
+            .is_some();
+    if rank <= 1 && (named_dimnames || classes.iter().any(|c| c == "table")) {
         // R heads a 1-D table with the name of its `dimnames` element — the
         // deparsed argument, e.g. `z` for `table(z)` — then the named-vector
         // body. A table built from a non-symbol argument has no such name and
@@ -15783,6 +17107,11 @@ fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
     let n_planes: usize = outer.iter().product::<usize>().max(1);
     let dn = dimnames_of(v);
     let margin = |d: usize| dn.get(d).cloned().flatten();
+    // `names(dimnames(v))`: when present every labelled outer margin reads
+    // `name = label`, and the first two name the printed slice's own margins.
+    let dnn: Option<Vec<Option<String>>> = with_host(|h| h.attr(v, "dimnames"))
+        .and_then(|d| with_host(|h| h.attr(&d, "names")))
+        .map(|n| as_str(&n));
     let mut out = Vec::new();
     let mut oidx = vec![0usize; outer.len()];
     for p in 0..n_planes {
@@ -15790,10 +17119,15 @@ fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
         let labels: Vec<String> = oidx
             .iter()
             .enumerate()
-            .map(|(k, i)| {
-                margin(k + 2)
-                    .and_then(|l| l.get(*i).cloned().flatten())
-                    .unwrap_or_else(|| (i + 1).to_string())
+            .map(|(k, i)| match margin(k + 2) {
+                Some(l) => {
+                    let label = l.get(*i).cloned().flatten().unwrap_or_else(|| "NA".into());
+                    match dnn.as_ref().and_then(|n| n.get(k + 2).cloned().flatten()) {
+                        Some(name) => format!("{name} = {label}"),
+                        None => label,
+                    }
+                }
+                None => (i + 1).to_string(),
             })
             .collect();
         out.push(format!(", , {}", labels.join(", ")));
@@ -15804,6 +17138,15 @@ fn format_array(v: &Value, dims: &[usize]) -> Vec<String> {
         let pos: Vec<Option<usize>> = (0..plane).map(|i| Some(base + i)).collect();
         let slice = take_positions(v, &pos);
         set_dimnames(&slice, margin(0), margin(1));
+        if let Some(n) = &dnn {
+            if let Some(list) = with_host(|h| h.attr(&slice, "dimnames")) {
+                let first_two = vec![
+                    n.first().cloned().flatten().or(Some(String::new())),
+                    n.get(1).cloned().flatten().or(Some(String::new())),
+                ];
+                set_names(&list, first_two);
+            }
+        }
         out.extend(format_matrix(&slice, nr, nc));
         out.push(String::new());
         for k in 0..outer.len() {

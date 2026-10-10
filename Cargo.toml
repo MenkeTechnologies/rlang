@@ -102,6 +102,11 @@ rustc-hash = "2"
 # crate's syntax for the common cases.
 regex = "1"
 
+# Back-references and look-around, which `regex` rejects and R's TRE and PCRE
+# accept. Only a pattern `regex` refuses for those features reaches it (see
+# src/re.rs), so every other pattern keeps the linear-time engine.
+fancy-regex = "0.14"
+
 # Glob matcher for the AOP call-intercept registry (src/intercepts.rs).
 glob = "0.3"
 

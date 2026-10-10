@@ -744,6 +744,93 @@ impl Compiler {
                             return self.expr(b, &call_thunk(body));
                         }
                     }
+                    // `with(data, expr)` and `evalq(expr, envir)` are `eval`
+                    // of the *unevaluated* expression, which R reaches through
+                    // `substitute`. Lowering to `eval(quote(expr), …)` keeps
+                    // the expression from running before the scope exists.
+                    if matches!(name.as_str(), "with" | "evalq") && args.len() >= 2 {
+                        let (expr_at, scope_at) = if name == "with" { (1, 0) } else { (0, 1) };
+                        if let Some(inner) = args[expr_at].value.clone() {
+                            let mut call = vec![
+                                Arg {
+                                    name: None,
+                                    value: Some(quote_call(&inner, false)),
+                                },
+                                Arg {
+                                    name: None,
+                                    value: args[scope_at].value.clone(),
+                                },
+                            ];
+                            call.extend(args[2..].iter().cloned());
+                            return self.expr(
+                                b,
+                                &Expr::Call {
+                                    fun: Box::new(Expr::Ident("eval".into())),
+                                    args: call,
+                                },
+                            );
+                        }
+                    }
+                    // `delayedAssign(x, value)` binds `x` to an unevaluated
+                    // promise for `value`, forced at first use. It lowers to
+                    // `assign(x, <promise of value>)`, which is what a closure
+                    // argument already is. `assign.env` becomes `envir`.
+                    if name == "delayedAssign" && args.len() >= 2 {
+                        let tag = |a: &Arg, n: &str| a.name.as_deref() == Some(n);
+                        let mut rest: Vec<Arg> = args.to_vec();
+                        let pick = |rest: &mut Vec<Arg>, n: &str, pos: usize| -> Option<Arg> {
+                            if let Some(i) = rest.iter().position(|a| tag(a, n)) {
+                                return Some(rest.remove(i));
+                            }
+                            let unnamed: Vec<usize> = rest
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, a)| a.name.is_none())
+                                .map(|(i, _)| i)
+                                .collect();
+                            unnamed.get(pos).map(|&i| rest.remove(i))
+                        };
+                        let x = pick(&mut rest, "x", 0);
+                        let value = pick(&mut rest, "value", 0);
+                        let _eval_env = pick(&mut rest, "eval.env", 0);
+                        let assign_env = pick(&mut rest, "assign.env", 0);
+                        if let (Some(x), Some(value)) = (x, value) {
+                            if let Some(v) = value.value {
+                                let mut call = vec![
+                                    Arg {
+                                        name: None,
+                                        value: x.value,
+                                    },
+                                    Arg {
+                                        name: None,
+                                        value: Some(Expr::Call {
+                                            fun: Box::new(Expr::Ident(".rlang_promise".into())),
+                                            args: vec![Arg {
+                                                name: None,
+                                                value: Some(thunk(v)),
+                                            }],
+                                        }),
+                                    },
+                                ];
+                                if let Some(env) = assign_env {
+                                    call.push(Arg {
+                                        name: Some("envir".into()),
+                                        value: env.value,
+                                    });
+                                }
+                                self.expr(
+                                    b,
+                                    &Expr::Call {
+                                        fun: Box::new(Expr::Ident("assign".into())),
+                                        args: call,
+                                    },
+                                )?;
+                                b.emit(Op::Pop, 0);
+                                b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
+                                return Ok(());
+                            }
+                        }
+                    }
                     // `quote(x)` yields the expression, not its value, so the
                     // argument must not be compiled at all. Its deparse is
                     // carried across as a string the way a formula's is, and
