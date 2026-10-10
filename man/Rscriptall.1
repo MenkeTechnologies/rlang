@@ -42,7 +42,9 @@ and
 .B \-\-dap
 speak their protocols over stdio and take no file.
 .B \-\-build \fIFILE\fR
-ahead\-of\-time compiles the script's bytecode into the on\-disk cache.
+ahead\-of\-time compiles the script's bytecode into the on\-disk cache;
+.B \-\-aot \fIFILE\fR
+builds a standalone native executable.
 See
 .BR Rscript (1)
 for the per\-flag table.
@@ -79,8 +81,7 @@ The full
 .B ?Syntax
 operator ladder is supported, including user\-defined
 .B %op%
-infix operators and the native pipe. 355 primitives are implemented, with R's
-printing rules for each type.
+infix operators and the native pipe. R's printing rules are implemented for each type.
 .SH 3. ARCHITECTURE
 .EX
 R source \[->] lexer \[->] parser (AST) \[->] lower to fusevm bytecode \[->] fusevm VM + Cranelift JIT
@@ -92,15 +93,13 @@ or
 .IR jit.rs .
 for/while/repeat/if and
 .BR && / ||
-lower to native fusevm jumps with native integer loop counters, so the tracing
-JIT sees ordinary loops; R's vector, attribute, and S3 semantics are served by an
+lower to native fusevm jumps with native integer loop counters; R's vector, attribute, and S3 semantics are served by an
 .B RHost
 vector heap reached through fusevm's extension handler. The same fusevm engine
-hosts zshrs, stryke, awkrs, elisp, and ruby, so JIT and VM improvements benefit all
-of them at once. Behaviour is checked byte\-for\-byte against reference
+hosts other language frontends. Behaviour is checked byte\-for\-byte against reference
 .B Rscript
-by a 283\-snippet differential parity corpus plus 8 runnable examples, both identical
-to GNU R 4.6.1.
+by a differential parity corpus plus runnable examples, compared against
+GNU R 4.6.1.
 .SH 4. TOOLING
 .SS Language server (\-\-lsp)
 .B Rscript \-\-lsp
@@ -111,8 +110,8 @@ and diagnostics from the runtime's own parser. It is read\-only; no output reach
 the terminal.
 .SS Debugger (\-\-dap)
 .B Rscript \-\-dap
-speaks the Debug Adapter Protocol over stdio: line breakpoints, single\-stepping,
-a stack trace, and inspection of a frame's locals. Program output is captured and
+speaks the Debug Adapter Protocol over stdio: the initialize/launch handshake, then runs the launched program to completion
+(breakpoints and stepping are not implemented). Program output is captured and
 forwarded as
 .B output
 events so it never corrupts the protocol channel.
@@ -143,9 +142,14 @@ plus
 so they run only on native targets.
 .SS Deployment
 .B \-\-build
-ahead\-of\-time compiles to the on\-disk bytecode cache for a native
+ahead\-of\-time compiles to the on\-disk bytecode cache, and
+.B \-\-aot
+with optional
+.B \-o
+.I OUT
+links a standalone native
 .B .fvm
-run, and the same crate builds for
+executable. The same crate builds for
 .B wasm32
 to run R in a web worker.
 .SH 5. DIAGNOSTICS

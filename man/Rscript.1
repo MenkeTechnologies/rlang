@@ -47,11 +47,14 @@ Print the lexer token stream and exit.
 .B \-\-dump\-ast " " \fIFILE\fR
 Print the parsed AST and exit.
 .TP
-.B \-\-tiers
-Run it, then report which fusevm execution tier took each of its chunks.
+.B \-\-tiers " " \fIFILE\fR
+Run FILE, then report which fusevm execution tier took each of its chunks.
 .TP
-.B \-\-disasm " " \fIFILE\fR
+.BR \-\-disasm ", " \-\-dump\-bytecode " " \fIFILE\fR
 Disassemble the lowered fusevm bytecode and exit.
+.SH ARGUMENTS
+With no FILE and no \fB\-e\fR, the program is read from standard input unless stdin is a terminal, in which case the REPL starts. Arguments after FILE are passed to the program as
+.BR commandArgs ().
 .SH EXIT STATUS
 0 on success, 1 on a parse or runtime error (reported to stderr as
 .IR "Rscript: <reason>" ).
