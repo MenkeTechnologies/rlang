@@ -1086,18 +1086,18 @@ const STRINGS: &[Entry] = &[
     ),
     (
         "regexpr",
-        "regexpr(pattern, text)",
-        "The 1-based character position of the first match in each element, or -1 for no match, carrying the width of each match on the `match.length` attribute.",
+        "regexpr(pattern, text, perl = FALSE)",
+        "The 1-based character position of the first match in each element, -1 for no match or NA for an NA element, carrying the width of each match on the `match.length` attribute; with perl = TRUE and capture groups, also `capture.start`, `capture.length` and `capture.names`.",
     ),
     (
         "gregexpr",
-        "gregexpr(pattern, text)",
-        "A list with every match position for each element, each vector carrying its own `match.length`.",
+        "gregexpr(pattern, text, perl = FALSE)",
+        "A list with every match position for each element, each vector carrying its own `match.length` (and with perl = TRUE, one capture row per match).",
     ),
     (
         "regexec",
-        "regexec(pattern, text)",
-        "A list whose element per text is the first match's position followed by each capture group's, with the widths on `match.length`.",
+        "regexec(pattern, text, perl = FALSE)",
+        "A list whose element per text is the first match's position followed by each capture group's (0 for a group that did not take part), with the widths on `match.length`; perl = TRUE names the positions after named groups.",
     ),
     (
         "regmatches",

@@ -448,6 +448,12 @@ run that compared nothing — no cases generated, or an oracle that never answer
   pattern using atomic groups, possessive quantifiers, recursion or `\\K` is
   still rejected. `strsplit` applies R's end-of-match rule (`rm_eo > 0`), so a
   zero-width look-behind match splits where it stands.
+- **`regexpr`, `gregexpr` and `regexec` report what R's do.** An `NA`
+  subject is `NA` rather than a `-1` miss; a `regexec` group that did not take
+  part is position 0, width 0 (TRE's -1/-1 through `rm_so + 1`), which
+  `regmatches` cuts to `""`; and `perl = TRUE` adds the `capture.start`,
+  `capture.length` and `capture.names` attributes, with `regexec(perl = TRUE)`
+  naming its positions after named groups as R's R-level implementation does.
 - **`sprintf` checks the argument against the conversion** the way
   `do_sprintf` does: `%d` takes an integer, a logical, or a double whose every
   element is whole; `%f`/`%e`/`%g` take any number; a character argument is only

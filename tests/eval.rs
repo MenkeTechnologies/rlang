@@ -738,3 +738,67 @@ fn a_replacement_reads_back_references_the_way_r_does() {
     assert_eq!(r(r#"sub("a", "\\Ux", "a", perl = TRUE)"#), "[1] \"x\"");
     assert_eq!(r(r#"sub("(\\w+)", "\\U\\1", "hello")"#), "[1] \"Uhello\"");
 }
+
+#[test]
+fn regex_positions_report_na_subjects_and_unset_groups_as_r_does() {
+    // An `NA` subject is `NA` — not a `-1` miss — in all three, and the list
+    // forms carry only an `NA` `match.length` for it (outputs from R 4.6.0).
+    assert_eq!(
+        r(r#"m <- regexpr("b", c("ab", "z", NA)); c(m, attr(m, "match.length"))"#),
+        "[1]  2 -1 NA  1 -1 NA"
+    );
+    assert_eq!(
+        r(r#"names(attributes(gregexpr("b", c("ab", NA))[[2]]))"#),
+        "[1] \"match.length\""
+    );
+    assert_eq!(r(r#"regexec("b", NA_character_)[[1]][[1]]"#), "[1] NA");
+    // TRE reports a group that did not take part as -1/-1, which R's
+    // `rm_so + 1` makes position 0, width 0 — and `regmatches` cuts that to "".
+    assert_eq!(r(r#"regexec("(a)(b)?", "ac")[[1]][1:3]"#), "[1] 1 1 0");
+    assert_eq!(
+        r(r#"regmatches("ac", regexec("(a)(b)?", "ac"))[[1]]"#),
+        "[1] \"a\" \"a\" \"\""
+    );
+}
+
+#[test]
+fn perl_regexpr_reports_its_capture_groups() {
+    // PCRE's ovector rides on `capture.start` / `capture.length`, one row per
+    // element, one column per group named by `capture.names`; a miss is a -1
+    // row, an `NA` subject an `NA` row, an unset group start 0 width 0.
+    let m = r#"m <- regexpr("(?<k>[a-z])(x)?", c("1a", "9", NA, "bx"), perl = TRUE)"#;
+    assert_eq!(
+        r(&format!("{m}; attr(m, \"capture.start\")")),
+        "      k   \n[1,]  2  0\n[2,] -1 -1\n[3,] NA NA\n[4,]  1  2"
+    );
+    assert_eq!(
+        r(&format!("{m}; attr(m, \"capture.length\")[4, ]")),
+        "k   \n1 1"
+    );
+    assert_eq!(
+        r(&format!("{m}; attr(m, \"capture.names\")")),
+        "[1] \"k\" \"\""
+    );
+    // No groups, no capture attributes; and only `perl = TRUE` reports them.
+    assert_eq!(
+        r(r#"is.null(attr(regexpr("a", "a", perl = TRUE), "capture.start"))"#),
+        "[1] TRUE"
+    );
+    assert_eq!(
+        r(r#"is.null(attr(regexpr("(a)", "a"), "capture.start"))"#),
+        "[1] TRUE"
+    );
+    // gregexpr gives a row per match.
+    assert_eq!(
+        r(r#"attr(gregexpr("([a-z])[0-9]", "a1b2", perl = TRUE)[[1]], "capture.start")[, 1]"#),
+        "[1] 1 3"
+    );
+    // regexec(perl = TRUE) names the positions after the groups, so
+    // regmatches hands back a named vector.
+    assert_eq!(
+        r(
+            r#"x <- c(p = "k1=v1"); regmatches(x, regexec("(?<key>\\w+)=(?<val>\\w+)", x, perl = TRUE))"#
+        ),
+        "$p\n            key     val \n\"k1=v1\"    \"k1\"    \"v1\""
+    );
+}

@@ -140,7 +140,21 @@ impl Re {
         }
     }
 
-    fn captures_all<'t>(&self, text: &'t str) -> Vec<Captures<'t>> {
+    /// The name of each capture group after group 0, `""` for an unnamed one —
+    /// PCRE's name table as R reads it into `capture.names`.
+    pub fn capture_names(&self) -> Vec<String> {
+        let names: Vec<Option<&str>> = match self {
+            Re::Std(re) => re.capture_names().collect(),
+            Re::Fancy(re) => re.capture_names().collect(),
+        };
+        names
+            .into_iter()
+            .skip(1)
+            .map(|n| n.unwrap_or_default().to_string())
+            .collect()
+    }
+
+    pub fn captures_all<'t>(&self, text: &'t str) -> Vec<Captures<'t>> {
         match self {
             Re::Std(re) => re
                 .captures_iter(text)

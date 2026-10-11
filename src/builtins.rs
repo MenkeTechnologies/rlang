@@ -8574,71 +8574,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .collect(),
             ))
         }
-        "regexec" => {
-            // One list element per text element. Each is the FIRST match, given
-            // as the whole match's position followed by each capture group's,
-            // with the widths on `match.length` — the shape `regmatches` slices
-            // a match and its groups out of. No match is the single -1 pair.
+        "regexpr" | "gregexpr" | "regexec" => {
             let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
+            let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
             let re = compile_re(
                 &pat,
-                a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false),
-                a.named("ignore.case")
-                    .and_then(|v| lgl1(&v))
-                    .unwrap_or(false),
-            )?;
-            let x = as_str(&a.req(1, "text")?);
-            let ascii = pat.is_ascii() && x.iter().flatten().all(|s| s.is_ascii());
-            let per: Vec<Value> = x
-                .iter()
-                .map(|s| {
-                    let (mut starts, mut lens) = (Vec::new(), Vec::new());
-                    match s.as_ref().and_then(|s| re.captures(s).map(|c| (s, c))) {
-                        Some((s, caps)) => {
-                            // Group 0 is the whole match, so one loop covers
-                            // both halves. A group that did not participate is
-                            // -1/-1, as R reports it.
-                            for i in 0..caps.len() {
-                                match caps.get(i) {
-                                    Some(m) => {
-                                        starts.push(Some(char_pos(s, m.start()) as i64 + 1));
-                                        lens.push(Some(
-                                            s[m.start()..m.end()].chars().count() as i64
-                                        ));
-                                    }
-                                    None => {
-                                        starts.push(Some(-1));
-                                        lens.push(Some(-1));
-                                    }
-                                }
-                            }
-                        }
-                        None => {
-                            starts.push(Some(-1));
-                            lens.push(Some(-1));
-                        }
-                    }
-                    let v = mk_int(starts);
-                    let ml = mk_int(lens);
-                    with_host(|h| h.set_attr(&v, "match.length", ml));
-                    if ascii {
-                        let it = scalar_str("chars");
-                        let ub = scalar_lgl(true);
-                        with_host(|h| {
-                            h.set_attr(&v, "index.type", it);
-                            h.set_attr(&v, "useBytes", ub);
-                        });
-                    }
-                    v
-                })
-                .collect();
-            Ok(mk_list(per))
-        }
-        "regexpr" | "gregexpr" => {
-            let pat = str1(&a.req(0, "pattern")?).unwrap_or_default();
-            let re = compile_re(
-                &pat,
-                a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false),
+                fixed,
                 a.named("ignore.case")
                     .and_then(|v| lgl1(&v))
                     .unwrap_or(false),
@@ -8648,64 +8589,15 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `index.type`/`useBytes`; multibyte input takes the char path and
             // carries `match.length` alone.
             let ascii = pat.is_ascii() && x.iter().flatten().all(|s| s.is_ascii());
-            let tag = |v: &Value| {
-                if ascii {
-                    let it = scalar_str("chars");
-                    let ub = scalar_lgl(true);
-                    with_host(|h| {
-                        h.set_attr(v, "index.type", it);
-                        h.set_attr(v, "useBytes", ub);
-                    });
-                }
-            };
-            if name == "regexpr" {
-                // First match per element: a 1-based char position (or -1), with
-                // the match width carried on the `match.length` attribute so
-                // `regmatches` can slice it back out.
-                let (mut starts, mut lens) = (Vec::new(), Vec::new());
-                for s in &x {
-                    match s.as_ref().and_then(|s| re.find(s).map(|m| (s, m))) {
-                        Some((s, m)) => {
-                            starts.push(Some(char_pos(s, m.start()) as i64 + 1));
-                            lens.push(Some(s[m.start()..m.end()].chars().count() as i64));
-                        }
-                        None => {
-                            starts.push(Some(-1));
-                            lens.push(Some(-1));
-                        }
-                    }
-                }
-                let out = mk_int(starts);
-                let ml = mk_int(lens);
-                with_host(|h| h.set_attr(&out, "match.length", ml));
-                tag(&out);
-                Ok(out)
-            } else {
-                // All matches per element, as a list of position vectors each
-                // carrying its own `match.length`.
-                let per: Vec<Value> = x
-                    .iter()
-                    .map(|s| {
-                        let (mut starts, mut lens) = (Vec::new(), Vec::new());
-                        if let Some(s) = s {
-                            for m in re.find_iter(s) {
-                                starts.push(Some(char_pos(s, m.start()) as i64 + 1));
-                                lens.push(Some(s[m.start()..m.end()].chars().count() as i64));
-                            }
-                        }
-                        if starts.is_empty() {
-                            starts.push(Some(-1));
-                            lens.push(Some(-1));
-                        }
-                        let v = mk_int(starts);
-                        let ml = mk_int(lens);
-                        with_host(|h| h.set_attr(&v, "match.length", ml));
-                        tag(&v);
-                        v
-                    })
-                    .collect();
-                Ok(mk_list(per))
-            }
+            // `perl = TRUE` is what reports capture groups (PCRE's ovector);
+            // `fixed = TRUE` overrides it, as R's `do_regexpr` does.
+            let perl = !fixed && a.named("perl").and_then(|v| lgl1(&v)).unwrap_or(false);
+            Ok(match name {
+                "regexpr" => regexpr_value(&re, &x, ascii, perl),
+                "gregexpr" => gregexpr_value(&re, &x, ascii, perl),
+                _ if perl => regexec_perl(&re, &x, ascii),
+                _ => regexec_tre(&re, &x, ascii),
+            })
         }
         "regmatches" => {
             let x = as_str(&a.req(0, "x")?);
@@ -8769,30 +8661,52 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 return Ok(mk_list(out));
             }
             match data(&m) {
-                // `gregexpr` result: one character vector of all matches per
-                // element, returned as a list.
+                // `gregexpr`/`regexec` result: R's
+                // `Map(function(u, so, ml) …)`. A lone `NA` or `-1` is no match
+                // (`character()`); otherwise every position is cut out with
+                // `substring(u, so, so + ml - 1L)`, so a `regexec` group that
+                // did not take part (position 0, width 0) is `""`, and the
+                // positions' names (named `perl = TRUE` groups) carry over.
                 RData::List(items) => {
                     let out: Vec<Value> = items
                         .iter()
                         .enumerate()
                         .map(|(i, mi)| {
                             let starts = as_int(mi);
+                            if let [st] = starts[..] {
+                                if st.is_none_or(|st| st == -1) {
+                                    return mk_str(Vec::new());
+                                }
+                            }
                             let lens = with_host(|h| h.attr(mi, "match.length"))
                                 .map(|v| as_int(&v))
                                 .unwrap_or_default();
-                            let s = x.get(i).cloned().flatten().unwrap_or_default();
+                            let u = x.get(i).cloned().flatten();
                             let hits: Vec<Option<String>> = starts
                                 .iter()
                                 .zip(lens.iter())
-                                .filter_map(|(st, ln)| {
-                                    let st = (*st)?;
-                                    (st >= 1).then(|| Some(extract(&s, st, ln.unwrap_or(0))))
+                                .map(|(st, ln)| {
+                                    let (u, st, ln) = (u.as_ref()?, (*st)?, (*ln)?);
+                                    // `substring` clamps a start below 1 to 1.
+                                    let stop = st + ln - 1;
+                                    let st = st.max(1);
+                                    Some(extract(u, st, stop - st + 1))
                                 })
                                 .collect();
-                            mk_str(hits)
+                            let piece = mk_str(hits);
+                            let nm = names_of(mi);
+                            if !nm.is_empty() {
+                                set_names_attr(&piece, nm);
+                            }
+                            piece
                         })
                         .collect();
-                    Ok(mk_list(out))
+                    let out = mk_list(out);
+                    let xn = names_of(&a.req(0, "x")?);
+                    if !xn.is_empty() {
+                        set_names(&out, xn);
+                    }
+                    Ok(out)
                 }
                 // `regexpr` result: drop the non-matches (start == -1).
                 _ => {
@@ -14660,6 +14574,262 @@ fn trim_g(s: &str) -> String {
 
 /// Compile an R pattern to a `regex::Regex`, honoring `fixed` (literal) and
 /// `ignore.case` (the `(?i)` inline flag).
+/// One text element's outcome under `regexpr`/`regexec`: an `NA` subject, no
+/// match, or the match's groups (group 0 first) as 1-based char
+/// `(start, length)` pairs, `None` for a group that did not take part.
+enum ReHit {
+    Na,
+    Miss,
+    Hit(Vec<Option<(i64, i64)>>),
+}
+
+/// The groups of one match as R reports positions: a 1-based char start and a
+/// width in chars.
+fn re_spans(s: &str, caps: &crate::re::Captures) -> Vec<Option<(i64, i64)>> {
+    (0..caps.len())
+        .map(|i| {
+            caps.get(i).map(|m| {
+                (
+                    char_pos(s, m.start()) as i64 + 1,
+                    s[m.start()..m.end()].chars().count() as i64,
+                )
+            })
+        })
+        .collect()
+}
+
+fn re_first(re: &crate::re::Re, s: &Option<String>) -> ReHit {
+    match s {
+        None => ReHit::Na,
+        Some(s) => match re.captures(s) {
+            Some(caps) => ReHit::Hit(re_spans(s, &caps)),
+            None => ReHit::Miss,
+        },
+    }
+}
+
+/// `index.type = "chars"` and `useBytes = TRUE`, which R sets on a result
+/// matched on the byte path (all-ASCII input).
+fn tag_byte_path(v: &Value) {
+    let it = scalar_str("chars");
+    let ub = scalar_lgl(true);
+    with_host(|h| {
+        h.set_attr(v, "index.type", it);
+        h.set_attr(v, "useBytes", ub);
+    });
+}
+
+fn with_match_length(starts: Vec<Option<i64>>, lens: Vec<Option<i64>>) -> Value {
+    let v = mk_int(starts);
+    let ml = mk_int(lens);
+    with_host(|h| h.set_attr(&v, "match.length", ml));
+    v
+}
+
+/// The `capture.start`, `capture.length` and `capture.names` attributes R's
+/// `extract_match_and_groups` puts on a `perl = TRUE` result: one row per
+/// match, one column per group, named by the group names (`""` when unnamed).
+/// A group PCRE left unset has ovector -1/-1, which R turns into start 0,
+/// length 0.
+fn set_capture_attrs(v: &Value, rows: &[ReHit], names: &[String]) {
+    let (nr, nc) = (rows.len(), names.len());
+    let mut starts = Vec::with_capacity(nr * nc);
+    let mut lens = Vec::with_capacity(nr * nc);
+    for g in 1..=nc {
+        for row in rows {
+            let (st, ln) = match row {
+                ReHit::Na => (None, None),
+                ReHit::Miss => (Some(-1), Some(-1)),
+                ReHit::Hit(groups) => match groups.get(g).copied().flatten() {
+                    Some((st, ln)) => (Some(st), Some(ln)),
+                    None => (Some(0), Some(0)),
+                },
+            };
+            starts.push(st);
+            lens.push(ln);
+        }
+    }
+    let matrix = |cells: Vec<Option<i64>>| {
+        let m = mk_int(cells);
+        let dim = mk_int(vec![Some(nr as i64), Some(nc as i64)]);
+        let dn = mk_list(vec![
+            null(),
+            mk_str(names.iter().cloned().map(Some).collect()),
+        ]);
+        with_host(|h| {
+            h.set_attr(&m, "dim", dim);
+            h.set_attr(&m, "dimnames", dn);
+        });
+        m
+    };
+    let (cs, cl) = (matrix(starts), matrix(lens));
+    let cn = mk_str(names.iter().cloned().map(Some).collect());
+    with_host(|h| {
+        h.set_attr(v, "capture.start", cs);
+        h.set_attr(v, "capture.length", cl);
+        h.set_attr(v, "capture.names", cn);
+    });
+}
+
+/// `regexpr`: the first match per element as a position vector (`-1` for no
+/// match, `NA` for an `NA` subject) with its widths on `match.length`, and with
+/// `perl = TRUE` and at least one group, the capture matrices.
+fn regexpr_value(re: &crate::re::Re, x: &[Option<String>], ascii: bool, perl: bool) -> Value {
+    let hits: Vec<ReHit> = x.iter().map(|s| re_first(re, s)).collect();
+    let (starts, lens) = hits
+        .iter()
+        .map(|h| match h {
+            ReHit::Na => (None, None),
+            ReHit::Miss => (Some(-1), Some(-1)),
+            ReHit::Hit(g) => {
+                let (st, ln) = g[0].unwrap_or((-1, -1));
+                (Some(st), Some(ln))
+            }
+        })
+        .unzip();
+    let out = with_match_length(starts, lens);
+    if ascii {
+        tag_byte_path(&out);
+    }
+    let names = re.capture_names();
+    if perl && !names.is_empty() {
+        set_capture_attrs(&out, &hits, &names);
+    }
+    out
+}
+
+/// `gregexpr`: per element, every match. An `NA` subject is a bare `NA` with an
+/// `NA` `match.length` — R's `gregexpr_NAInputAns` — and no match is a single
+/// `-1` (with `-1` capture rows under `perl = TRUE`).
+fn gregexpr_value(re: &crate::re::Re, x: &[Option<String>], ascii: bool, perl: bool) -> Value {
+    let names = re.capture_names();
+    let captures = perl && !names.is_empty();
+    let per: Vec<Value> = x
+        .iter()
+        .map(|s| {
+            let Some(s) = s else {
+                return with_match_length(vec![None], vec![None]);
+            };
+            let mut rows: Vec<ReHit> = if captures {
+                re.captures_all(s)
+                    .iter()
+                    .map(|c| ReHit::Hit(re_spans(s, c)))
+                    .collect()
+            } else {
+                re.find_iter(s)
+                    .iter()
+                    .map(|m| {
+                        ReHit::Hit(vec![Some((
+                            char_pos(s, m.start()) as i64 + 1,
+                            m.as_str().chars().count() as i64,
+                        ))])
+                    })
+                    .collect()
+            };
+            if rows.is_empty() {
+                rows.push(ReHit::Miss);
+            }
+            let (starts, lens) = rows
+                .iter()
+                .map(|r| match r {
+                    ReHit::Hit(g) => {
+                        let (st, ln) = g[0].unwrap_or((-1, -1));
+                        (Some(st), Some(ln))
+                    }
+                    _ => (Some(-1), Some(-1)),
+                })
+                .unzip();
+            let v = with_match_length(starts, lens);
+            if ascii {
+                tag_byte_path(&v);
+            }
+            if captures {
+                set_capture_attrs(&v, &rows, &names);
+            }
+            v
+        })
+        .collect();
+    mk_list(per)
+}
+
+/// `regexec` without `perl` (R's `.Internal(regexec)` over TRE): per element,
+/// the first match followed by each group, positions and widths alike. TRE
+/// reports a group that did not take part as -1/-1, so R's `rm_so + 1` and
+/// `rm_eo - rm_so` make it 0/0. An `NA` subject is `NA` with only
+/// `match.length`.
+fn regexec_tre(re: &crate::re::Re, x: &[Option<String>], ascii: bool) -> Value {
+    let per: Vec<Value> = x
+        .iter()
+        .map(|s| match re_first(re, s) {
+            ReHit::Na => with_match_length(vec![None], vec![None]),
+            hit => {
+                let (starts, lens) = match hit {
+                    ReHit::Hit(groups) => groups
+                        .iter()
+                        .map(|g| {
+                            let (st, ln) = g.unwrap_or((0, 0));
+                            (Some(st), Some(ln))
+                        })
+                        .unzip(),
+                    _ => (vec![Some(-1)], vec![Some(-1)]),
+                };
+                let v = with_match_length(starts, lens);
+                if ascii {
+                    tag_byte_path(&v);
+                }
+                v
+            }
+        })
+        .collect();
+    mk_list(per)
+}
+
+/// `regexec(perl = TRUE)`, which R implements in R on top of
+/// `regexpr(perl = TRUE)`: each matched element is the match position followed
+/// by the `capture.start` row (unset groups 0), named `c("", capture.names)`
+/// when any group is named. Every element, `NA` and no-match included, then
+/// gets `useBytes` and `index.type` in that order, copied off the `regexpr`
+/// result.
+fn regexec_perl(re: &crate::re::Re, x: &[Option<String>], ascii: bool) -> Value {
+    let names = re.capture_names();
+    let named = names.iter().any(|n| !n.is_empty());
+    let per: Vec<Value> = x
+        .iter()
+        .map(|s| {
+            let v = match re_first(re, s) {
+                ReHit::Na => with_match_length(vec![None], vec![None]),
+                ReHit::Miss => with_match_length(vec![Some(-1)], vec![Some(-1)]),
+                ReHit::Hit(groups) => {
+                    let (starts, lens) = groups
+                        .iter()
+                        .map(|g| {
+                            let (st, ln) = g.unwrap_or((0, 0));
+                            (Some(st), Some(ln))
+                        })
+                        .unzip();
+                    let v = with_match_length(starts, lens);
+                    if named {
+                        let mut nm = vec![Some(String::new())];
+                        nm.extend(names.iter().cloned().map(Some));
+                        set_names_attr(&v, nm);
+                    }
+                    v
+                }
+            };
+            if ascii {
+                let ub = scalar_lgl(true);
+                let it = scalar_str("chars");
+                with_host(|h| {
+                    h.set_attr(&v, "useBytes", ub);
+                    h.set_attr(&v, "index.type", it);
+                });
+            }
+            v
+        })
+        .collect();
+    mk_list(per)
+}
+
 fn compile_re(pattern: &str, fixed: bool, ignore_case: bool) -> Result<Rc<crate::re::Re>, String> {
     let body = if fixed {
         regex::escape(pattern)
