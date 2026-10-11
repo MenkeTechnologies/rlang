@@ -824,3 +824,19 @@ fn as_vector_clears_every_attribute_of_an_atomic_result_only() {
         "[1] \"foo\""
     );
 }
+
+#[test]
+fn strsplit_recycles_split_and_keeps_the_names_of_x() {
+    // `do_strsplit` takes `tok[i % tlen]`, so each element can split on its
+    // own pattern; an `NA` pattern leaves the element whole; and the result
+    // carries `names(x)` (outputs from R 4.6.0).
+    assert_eq!(
+        r(r#"strsplit(c(a = "a-b", b = "c_d", "e-f"), c("-", "_"))"#),
+        "$a\n[1] \"a\" \"b\"\n\n$b\n[1] \"c\" \"d\"\n\n[[3]]\n[1] \"e\" \"f\""
+    );
+    assert_eq!(r(r#"strsplit("a b", NA)[[1]]"#), "[1] \"a b\"");
+    assert_eq!(
+        r(r#"strsplit("abc", character(0))[[1]]"#),
+        "[1] \"a\" \"b\" \"c\""
+    );
+}

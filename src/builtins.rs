@@ -8509,38 +8509,54 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 return Err("non-character argument".into());
             }
             let x = as_str(&xv);
-            let sep = str1(&a.req(1, "split")?).unwrap_or_default();
+            // `split` is recycled along `x` (`do_strsplit` walks `tok[i % tlen]`,
+            // an empty `split` acting as `""`), and the result takes `x`'s names.
+            let mut seps = as_str(&a.req(1, "split")?);
+            if seps.is_empty() {
+                seps.push(Some(String::new()));
+            }
             let fixed = a.named("fixed").and_then(|v| lgl1(&v)).unwrap_or(false);
             // R's `split` is a regular expression by default (POSIX ERE);
-            // `fixed = TRUE` or an empty pattern falls back to character/literal
-            // splitting. A blank pattern still means "every character".
-            let re = if sep.is_empty() {
-                None
-            } else {
-                let pat = if fixed {
-                    regex::escape(&sep)
-                } else {
-                    sep.clone()
-                };
-                Some(
-                    cached_regex(&pat)
-                        .map_err(|e| format!("invalid regular expression '{sep}': {e}"))?,
-                )
-            };
+            // `fixed = TRUE` matches it literally. An empty pattern means
+            // "every character", and an `NA` one does not split at all.
+            let res = seps
+                .iter()
+                .map(|sep| match sep.as_deref() {
+                    None | Some("") => Ok(None),
+                    Some(sep) => {
+                        let pat = if fixed {
+                            regex::escape(sep)
+                        } else {
+                            sep.to_string()
+                        };
+                        cached_regex(&pat)
+                            .map(Some)
+                            .map_err(|e| format!("invalid regular expression '{sep}': {e}"))
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             let parts: Vec<Value> = x
                 .iter()
-                .map(|s| match s {
-                    Some(s) => {
-                        let pieces: Vec<Option<String>> = match &re {
-                            None => s.chars().map(|c| Some(c.to_string())).collect(),
-                            Some(re) => r_strsplit(s, re),
-                        };
-                        mk_str(pieces)
-                    }
-                    None => mk_str(vec![None]),
+                .enumerate()
+                .map(|(i, s)| {
+                    let Some(s) = s else {
+                        return mk_str(vec![None]);
+                    };
+                    let k = i % seps.len();
+                    let pieces: Vec<Option<String>> = match (&res[k], &seps[k]) {
+                        (Some(re), _) => r_strsplit(s, re),
+                        (None, None) => vec![Some(s.clone())],
+                        (None, Some(_)) => s.chars().map(|c| Some(c.to_string())).collect(),
+                    };
+                    mk_str(pieces)
                 })
                 .collect();
-            Ok(mk_list(parts))
+            let out = mk_list(parts);
+            let nm = names_of(&xv);
+            if !nm.is_empty() {
+                set_names(&out, nm);
+            }
+            Ok(out)
         }
         "sub" | "gsub" | "grepl" | "grep" => regex_op(name, &a),
         "chartr" => {

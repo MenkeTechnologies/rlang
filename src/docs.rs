@@ -1062,7 +1062,7 @@ const STRINGS: &[Entry] = &[
     (
         "strsplit",
         "strsplit(x, split, fixed = FALSE)",
-        "Split each string by a regular expression, returning one character vector per element in a list. An empty pattern splits into single characters; fixed = TRUE splits on the literal text.",
+        "Split each string by a regular expression, returning one character vector per element in a list. An empty pattern splits into single characters; fixed = TRUE splits on the literal text. split is recycled along x, an NA pattern leaves an element whole, and the list takes names(x).",
     ),
     (
         "sub",
