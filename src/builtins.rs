@@ -4225,6 +4225,215 @@ fn b_replace(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// R's `substring(u, beg, end)` on one string, in characters: `beg` below 1
+/// clamps to 1 and an `end` before `beg` is `""`.
+fn substring_chars(u: &[char], beg: i64, end: i64) -> String {
+    let from = beg.max(1) as usize - 1;
+    let to = end.min(u.len() as i64);
+    if to < from as i64 + 1 {
+        return String::new();
+    }
+    u[from..to as usize].iter().collect()
+}
+
+/// One element's match positions and widths, from a `regexpr` vector (one
+/// pair per element) or a `gregexpr`/`regexec` list (one vector per element).
+fn match_rows(m: &Value, n: usize) -> Vec<(Vec<Option<i64>>, Vec<Option<i64>>)> {
+    let pair = |v: &Value| {
+        let lens = with_host(|h| h.attr(v, "match.length"))
+            .map(|l| as_int(&l))
+            .unwrap_or_default();
+        (as_int(v), lens)
+    };
+    match data(m) {
+        RData::List(items) => items.iter().map(pair).collect(),
+        _ => {
+            let (so, ml) = pair(m);
+            (0..n)
+                .map(|i| {
+                    (
+                        vec![so.get(i).copied().flatten()],
+                        vec![ml.get(i).copied().flatten()],
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+/// `regmatches(u, so/ml, invert = TRUE)` for one element: the text around the
+/// matches, one more piece than there are matches; `u` itself for no match
+/// and `NA` for an `NA` position.
+fn regmatches_between(
+    u: Option<&str>,
+    so: &[Option<i64>],
+    ml: &[Option<i64>],
+) -> Result<Vec<Option<String>>, String> {
+    if let [one] = so {
+        match one {
+            None => return Ok(vec![None]),
+            Some(-1) => return Ok(vec![u.map(str::to_string)]),
+            _ => {}
+        }
+    }
+    let Some(u) = u else {
+        return Ok(vec![None; so.len() + 1]);
+    };
+    let chars: Vec<char> = u.chars().collect();
+    let so: Vec<i64> = so.iter().map(|s| s.unwrap_or(0)).collect();
+    let eo: Vec<i64> = so
+        .iter()
+        .zip(ml)
+        .map(|(s, l)| s + l.unwrap_or(0) - 1)
+        .collect();
+    if so.windows(2).zip(&eo).any(|(w, e)| *e >= w[1]) {
+        return Err("need non-overlapping matches for \u{2018}invert = TRUE\u{2019}".into());
+    }
+    let mut beg = vec![1];
+    beg.extend(eo.iter().map(|e| e + 1));
+    let mut end: Vec<i64> = so.iter().map(|s| s - 1).collect();
+    end.push(chars.len() as i64);
+    Ok(beg
+        .iter()
+        .zip(&end)
+        .map(|(b, e)| Some(substring_chars(&chars, *b, *e)))
+        .collect())
+}
+
+/// `regmatches(u, so/ml)` for one element: the matched text, nothing for a
+/// lone `NA` or `-1`.
+fn regmatches_within(
+    u: Option<&str>,
+    so: &[Option<i64>],
+    ml: &[Option<i64>],
+) -> Vec<Option<String>> {
+    if let [one] = so {
+        if one.is_none_or(|s| s == -1) {
+            return Vec::new();
+        }
+    }
+    let chars: Vec<char> = u.map(|u| u.chars().collect()).unwrap_or_default();
+    so.iter()
+        .zip(ml)
+        .map(|(s, l)| {
+            u?;
+            let (s, l) = ((*s)?, (*l)?);
+            Some(substring_chars(&chars, s, s + l - 1))
+        })
+        .collect()
+}
+
+/// `regmatches(x, m, invert) <- value`, ported from R's `regmatches<-`: split
+/// each element around its matches (`regmatches(x, m, !invert)`), then paste
+/// the replacements back in between.
+fn regmatches_assign(x: &Value, m: &Value, invert: bool, value: &Value) -> Result<Value, String> {
+    let xs = as_str(x);
+    if xs.is_empty() {
+        return Ok(x.clone());
+    }
+    let rows = match_rows(m, xs.len());
+    let u = |i: usize| xs.get(i).cloned().flatten();
+    let ili = kind(m) == RKind::List;
+    // A `regexpr` result, not inverted: each matched element is exactly two
+    // pieces, and gets the next replacement between them.
+    if !ili && !invert {
+        let values = as_str(value);
+        if values.iter().any(Option::is_none) {
+            return Err("missing replacement values are not allowed".into());
+        }
+        let mut pieces = Vec::with_capacity(xs.len());
+        for (i, (so, ml)) in rows.iter().enumerate() {
+            pieces.push(regmatches_between(u(i).as_deref(), so, ml)?);
+        }
+        let pos: Vec<usize> = (0..pieces.len())
+            .filter(|&i| pieces[i].len() == 2)
+            .collect();
+        if pos.len() != values.len() && values.is_empty() {
+            return Err("must have replacement values for matches".into());
+        }
+        let mut out = xs.clone();
+        for (k, &i) in pos.iter().enumerate() {
+            let v = values[k % values.len()].as_deref().unwrap_or_default();
+            out[i] = Some(match (&pieces[i][0], &pieces[i][1]) {
+                (Some(a), Some(b)) => format!("{a}{v}{b}"),
+                (a, b) => format!(
+                    "{}{v}{}",
+                    a.as_deref().unwrap_or("NA"),
+                    b.as_deref().unwrap_or("NA")
+                ),
+            });
+        }
+        let res = copy_of(x);
+        let fresh = mk_str(out);
+        return Ok(with_host(|h| {
+            let attrs = h.attrs_of(&res);
+            let d = h.data_of(&fresh);
+            h.alloc_with(d, attrs)
+        }));
+    }
+    let mut y = Vec::with_capacity(xs.len());
+    for (i, (so, ml)) in rows.iter().enumerate() {
+        y.push(if invert {
+            regmatches_within(u(i).as_deref(), so, ml)
+        } else {
+            regmatches_between(u(i).as_deref(), so, ml)?
+        });
+    }
+    // `lapply(value, as.character)`: a list keeps one vector per element, an
+    // atomic vector gives one string per element.
+    let values: Vec<Vec<Option<String>>> = match data(value) {
+        RData::List(items) => items.iter().map(as_str).collect(),
+        _ => as_str(value).into_iter().map(|s| vec![s]).collect(),
+    };
+    if values.iter().any(|v| matches!(v[..], [None])) {
+        return Err("missing replacement values are not allowed".into());
+    }
+    if values.is_empty() {
+        return Err("value does not provide any replacement values".into());
+    }
+    let mut out = Vec::with_capacity(y.len());
+    for (i, u) in y.iter().enumerate() {
+        let v = &values[i % values.len()];
+        let want = if invert {
+            u.len() + 1
+        } else {
+            u.len().saturating_sub(1)
+        };
+        if v.len() != want && v.is_empty() {
+            return Err(if invert {
+                "must have replacements for non-matches".into()
+            } else {
+                "must have replacements for matches".into()
+            });
+        }
+        let v: Vec<String> = (0..want)
+            .map(|k| v[k % v.len()].clone().unwrap_or_default())
+            .collect();
+        // `paste0(a, b, collapse = "")` over the interleaving; an `NA` piece
+        // pastes as "NA", as `paste0` does.
+        let text = |p: &Option<String>| p.clone().unwrap_or_else(|| "NA".into());
+        let mut s = String::new();
+        if invert {
+            for (k, vk) in v.iter().enumerate() {
+                s.push_str(vk);
+                s.push_str(&u.get(k).map(text).unwrap_or_default());
+            }
+        } else {
+            for (k, uk) in u.iter().enumerate() {
+                s.push_str(&text(uk));
+                s.push_str(v.get(k).map(String::as_str).unwrap_or(""));
+            }
+        }
+        out.push(Some(s));
+    }
+    let res = mk_str(out);
+    let nm = names_of(x);
+    if !nm.is_empty() {
+        set_names(&res, nm);
+    }
+    Ok(res)
+}
+
 fn replacement(
     fname: &str,
     x: &Value,
@@ -4431,6 +4640,20 @@ fn replacement(
             };
             with_host(|h| h.set_attr(&out, "dimnames", dn));
             Ok(out)
+        }
+        "regmatches" => {
+            // `m` and `invert` by name, else by position after `x`.
+            let named = |n: &str| extra.iter().find(|(t, _)| t.as_deref() == Some(n));
+            let mut positional = extra.iter().filter(|(t, _)| t.is_none());
+            let m = named("m")
+                .or_else(|| positional.next())
+                .map(|(_, v)| v.clone())
+                .ok_or("argument \"m\" is missing, with no default")?;
+            let invert = named("invert")
+                .or_else(|| positional.next())
+                .and_then(|(_, v)| lgl1(v))
+                .unwrap_or(false);
+            regmatches_assign(x, &m, invert, value)
         }
         "substr" => {
             // `substr(x, start, stop) <- value`: overwrite chars start..=stop in

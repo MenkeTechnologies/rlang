@@ -1102,7 +1102,7 @@ const STRINGS: &[Entry] = &[
     (
         "regmatches",
         "regmatches(x, m)",
-        "The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter.",
+        "The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter. `regmatches(x, m, invert) <- value` pastes replacements in place of the matches (or, with invert = TRUE, of the text around them).",
     ),
     (
         "str",

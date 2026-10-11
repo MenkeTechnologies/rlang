@@ -454,6 +454,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `regmatches` cuts to `""`; and `perl = TRUE` adds the `capture.start`,
   `capture.length` and `capture.names` attributes, with `regexec(perl = TRUE)`
   naming its positions after named groups as R's R-level implementation does.
+  `regmatches<-` is a port of R's, for `regexpr` and `gregexpr` results and
+  `invert = TRUE`; a failure names the assignment (`regmatches(x, m) <- v`)
+  where R names its `` `regmatches<-`(`*tmp*`, …) `` closure frame.
 - **`sprintf` checks the argument against the conversion** the way
   `do_sprintf` does: `%d` takes an integer, a logical, or a double whose every
   element is whole; `%f`/`%e`/`%g` take any number; a character argument is only

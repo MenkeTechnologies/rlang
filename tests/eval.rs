@@ -840,3 +840,34 @@ fn strsplit_recycles_split_and_keeps_the_names_of_x() {
         "[1] \"a\" \"b\" \"c\""
     );
 }
+
+#[test]
+fn regmatches_assignment_pastes_replacements_between_the_matches() {
+    // A port of R's `regmatches<-` (outputs from R 4.6.0): a regexpr result
+    // replaces each matched element's match, recycling `value` over the
+    // matches and keeping names; a gregexpr result takes one vector per
+    // element; `invert = TRUE` replaces the text around the matches.
+    assert_eq!(
+        r(
+            r##"x <- c(p = "a1b2", q = "zz", r = "c3"); regmatches(x, regexpr("[0-9]", x)) <- "#"; x"##
+        ),
+        "     p      q      r \n\"a#b2\"   \"zz\"   \"c#\""
+    );
+    assert_eq!(
+        r(
+            r#"x <- c("a1b22", "zz", "c3"); regmatches(x, gregexpr("[0-9]+", x)) <- list(c("<1>", "<2>"), character(0), "<3>"); x"#
+        ),
+        "[1] \"a<1>b<2>\" \"zz\"       \"c<3>\""
+    );
+    assert_eq!(
+        r(
+            r#"x <- c("a1b2", "zz"); regmatches(x, gregexpr("[0-9]", x), invert = TRUE) <- list(c("A", "B", "C"), "Q"); x"#
+        ),
+        "[1] \"A1B2C\" \"Q\""
+    );
+    // An NA element pastes as "NA", as R's paste0 does.
+    assert_eq!(
+        r(r#"x <- c("one two", NA); regmatches(x, gregexpr("o", x)) <- list("0"); x"#),
+        "[1] \"0ne tw0\" \"NA\""
+    );
+}
