@@ -5167,24 +5167,35 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `mode =` is a coercion, not a hint: `as.vector(2^31, "integer")` is
             // the same coercion as `as.integer(2^31)` and must narrow to NA the
             // same way. Ignoring it returned the argument untouched.
+            //
+            // R's `do_asvector`: an atomic result loses *every* attribute
+            // (`CLEAR_ATTRIB`), names and user attributes alike, while a list
+            // result keeps them — a list already of the asked mode comes back
+            // as it is, and an atomic vector coerced to one keeps its names
+            // (`coerceVectorList`).
             match a.get(1, "mode").and_then(|v| str1(&v)).as_deref() {
                 Some("integer") => return Ok(mk_int(int_range_na(as_int(&x))?)),
                 Some("double") | Some("numeric") => return Ok(mk_dbl(as_dbl(&x))),
                 Some("character") => return Ok(mk_str(as_str(&x))),
                 Some("logical") => return Ok(mk_lgl(as_lgl(&x))),
-                Some("list") => return Ok(mk_list(elements(&x))),
+                Some("list") if kind(&x) == RKind::List => return Ok(x),
+                Some("list") => {
+                    let out = mk_list(elements(&x));
+                    let nm = names_of(&x);
+                    if !nm.is_empty() {
+                        set_names(&out, nm);
+                    }
+                    return Ok(out);
+                }
                 _ => {}
             }
-            // `as.vector` drops attributes (names, dim, class, levels), so a
-            // `table` collapses to its plain integer counts.
-            let out = copy_of(&x);
-            with_host(|h| {
-                let nl = h.null();
-                for attr in ["names", "dim", "class", "levels", "dimnames"] {
-                    h.set_attr(&out, attr, nl.clone());
-                }
-            });
-            Ok(out)
+            match kind(&x) {
+                RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str => Ok(with_host(|h| {
+                    let d = h.data_of(&x);
+                    h.alloc(d)
+                })),
+                _ => Ok(x),
+            }
         }
         // `call(name, ...)`: the call of the function named `name` with the
         // (already evaluated) arguments, as `do_call` builds it.

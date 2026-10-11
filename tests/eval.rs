@@ -802,3 +802,25 @@ fn perl_regexpr_reports_its_capture_groups() {
         "$p\n            key     val \n\"k1=v1\"    \"k1\"    \"v1\""
     );
 }
+
+#[test]
+fn as_vector_clears_every_attribute_of_an_atomic_result_only() {
+    // `do_asvector` runs `CLEAR_ATTRIB` on an atomic result — user attributes
+    // too, not just names/dim/class — but leaves a list alone, and an atomic
+    // vector coerced to a list keeps its names.
+    let x = r#"x <- structure(1:3, foo = "a", names = c("a", "b", "c"))"#;
+    assert_eq!(r(&format!("{x}; as.vector(x)")), "[1] 1 2 3");
+    assert_eq!(
+        r(&format!("{x}; attributes(as.vector(x, \"character\"))")),
+        "NULL"
+    );
+    assert_eq!(
+        r(&format!("{x}; names(as.vector(x, \"list\"))")),
+        "[1] \"a\" \"b\" \"c\""
+    );
+    assert_eq!(r("names(as.vector(list(a = 1, b = 2)))"), "[1] \"a\" \"b\"");
+    assert_eq!(
+        r(r#"class(as.vector(structure(list(1), class = "foo")))"#),
+        "[1] \"foo\""
+    );
+}
