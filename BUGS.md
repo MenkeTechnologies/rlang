@@ -255,6 +255,24 @@ run that compared nothing — no cases generated, or an oracle that never answer
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
   a margin onto its result) work, and so do the array-specific helpers
   `slice.index` and `arrayInd`.
+- **`apply` with a named margin answers silently wrong.** R's `apply` accepts a
+  character `MARGIN` and matches it against `names(dimnames(X))`; rlang reads
+  `MARGIN` through `as_int`, so a name becomes `NA`, is dropped, and the margin
+  list is empty — `FUN` is then called once on the whole array, with no error
+  or warning. Measured at 0.1.10 against R 4.6.0 (2026-04-24):
+
+  ```r
+  m <- matrix(1:6, 2, dimnames = list(rows = c("a", "b"), cols = c("x", "y", "z")))
+  apply(m, "rows", sum)                          # R:  a 9, b 12   rlang: 21
+  apply(m, "cols", sum)                          # R:  x 3, y 7, z 11   rlang: 21
+  apply(m, c("cols", "rows"), function(v) v * 10)
+  ```
+
+  The third gives R's 3 x 2 matrix with dimnames `cols`/`rows`; rlang prints a
+  6 x 1 matrix with no labels. Numeric margins are unaffected. The fix is
+  `apply`'s own `MARGIN` resolution in `src/builtins.rs`: match a character
+  margin against the dimnames' names and raise R's `not all elements of
+  'MARGIN' are names of dimensions` when one does not match.
 - **`dimnames` work at any rank**: `matrix(dimnames=)` and `array(dimnames=)`,
   `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
   the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix and
