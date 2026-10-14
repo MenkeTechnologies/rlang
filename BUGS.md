@@ -518,7 +518,8 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `<generic>.<class>` first, so a `print.myclass` takes over both `print(x)` and
   top-level autoprint.
 - **No S4 (`setClass`, `setGeneric`, `isVirtualClass`), no Reference Classes,
-  no R6.** `@` parses and reads an attribute, which is not S4 slot semantics.
+  no R6.** `@` parses but is compiled as `$` (see the 2026-10-14 audit section
+  below), which is not S4 slot semantics.
 - **S3 group generics dispatch.** An operator on an object with a class calls
   `<op>.<class>` or `Ops.<class>` (left operand first, the right one's method
   when the left has none, and R's "Incompatible methods" warning and the
@@ -558,3 +559,126 @@ run that compared nothing — no cases generated, or an oracle that never answer
   general first-class function synthesis (`as.function`, `body<-`, `Compose`,
   building a closure from a body expression). `Recall()` re-invokes the executing
   closure.
+
+## Open defects found by the 2026-10-14 book audit
+
+Each was observed at 0.1.10+43 (the debug `Rscript` built from that source)
+against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
+
+- **`rbind`/`cbind` lose their deparsed labels in any file that defines a
+  function.** The seam labels described under *Types* are computed from the
+  argument expressions after the promise rewrite in `src/compiler.rs`; slot mode
+  skips that rewrite, so a unit with no `function` keeps the labels, but once
+  any `function` appears anywhere in the file every symbol argument arrives as
+  `.rlang_promise(function() x)` and no longer matches as a bare symbol.
+  Explicitly named arguments (`rbind(a = 1:2)`) are unaffected.
+
+  ```r
+  f <- function() 1        # delete this line and rlang matches R
+  x <- 1:2; y <- 3:4
+  rbind(x, y)              # R: rownames x, y      rlang: [1,], [2,]
+  cbind(x, y)              # R: colnames x, y      rlang: [,1], [,2]
+  ```
+
+- **Doubles that print alike are treated as equal by the matching and set
+  functions.** `0.1 + 0.2` and `0.3` differ in the last bit; R keeps them apart,
+  rlang merges them in `match`, `%in%`, `duplicated`, `setdiff`, `union`,
+  `intersect` and `unique`:
+
+  ```r
+  x <- c(0.1 + 0.2, 0.3)
+  match(0.3, 0.1 + 0.2)              # R: NA                rlang: 1
+  (0.1 + 0.2) %in% 0.3               # R: FALSE             rlang: TRUE
+  duplicated(x)                      # R: FALSE FALSE       rlang: FALSE TRUE
+  length(unique(x))                  # R: 2                 rlang: 1
+  length(setdiff(x, 0.3))            # R: 1                 rlang: 0
+  length(union(x, x))                # R: 2                 rlang: 1
+  length(intersect(0.1 + 0.2, 0.3))  # R: 0                 rlang: 1
+  ```
+
+  `split` agrees with R on these inputs (R groups through `as.character`, which
+  also merges them at 15 significant digits).
+
+- **`.Call` silently passes only the first element of a longer vector.**
+  `r_to_fusevm` in `src/builtins.rs` takes `as_int(v).first()` / `num1` /
+  `str1`, so the rest of the vector is dropped with no error, while the error
+  arm claims arguments "must be length-1":
+
+  ```r
+  .rust('#[no_mangle] pub extern "C" fn twice(x: i64) -> i64 { x * 2 }')
+  .Call("twice", c(1L, 2L, 3L))      # rlang: [1] 2
+  ```
+
+  Expected: a length-1 marshaller rejects a length-3 argument rather than
+  truncating it (R's `.Call` hands the routine the whole vector).
+
+- **`x@name` is compiled as `x$name`.** The compiler lowers `IndexKind::At`
+  through the same arm as `IndexKind::Dollar`, so `@` reads a list element;
+  it does not read an attribute, and R 4.6's error for a non-S4 object is never
+  raised:
+
+  ```r
+  x <- structure(list(a = 1), foo = 2)
+  x@a     # R: Error in x@a : no applicable method for `@` applied to an
+          #    object of class "list"          rlang: [1] 1
+  x@foo   # R: the same error                  rlang: NULL
+  ```
+
+- **`NaN:3` gives `NA` where R stops.**
+
+  ```r
+  NaN:3   # R: Error in NaN:3 : NA/NaN argument      rlang: [1] NA
+  ```
+
+- **`print` writes a raw bell byte for `"\a"`.** R escapes it on print;
+  rlang emits byte 0x07 between the quotes:
+
+  ```r
+  print("\a")   # R: [1] "\a"      rlang: [1] "<BEL>"  (od -c shows \a)
+  ```
+
+- **`cor` does not warn on a zero standard deviation.**
+
+  ```r
+  cor(c(1, 1, 1), c(1, 2, 3))
+  # R: [1] NA, plus  Warning message: In cor(c(1, 1, 1), c(1, 2, 3)) :
+  #    the standard deviation is zero          rlang: [1] NA, no warning
+  ```
+
+- **`exists()` with `envir=` does not find builtins.** Without `envir` it
+  answers `TRUE`; with one it looks only at user bindings, so every primitive
+  and every function rlang implements natively is reported absent:
+
+  ```r
+  exists("sum", envir = globalenv())    # R: TRUE   rlang: FALSE
+  exists("mean", envir = globalenv())   # R: TRUE   rlang: FALSE
+  exists("sum", envir = new.env())      # R: TRUE   rlang: FALSE
+  ```
+
+  `baseenv()` is also missing (`could not find function "baseenv"`).
+
+- **`missing()` on a forwarded missing argument gives `FALSE`.** R follows the
+  promise chain: a formal bound to a caller's missing formal is itself missing.
+
+  ```r
+  g <- function(y) missing(y)
+  f <- function(x) g(x)
+  f()     # R: [1] TRUE      rlang: [1] FALSE
+  ```
+
+- **Rejecting 8,000 lexically nested closure calls takes ~47 s and 5.7 GB on
+  the debug build.** rlang does stop with `evaluation nested too deeply:
+  infinite recursion?`, but only after that cost; R refuses the same program
+  at parse time in under a second (`Error: contextstack overflow`, 0.7 s,
+  78 MB RSS). Plain recursion to the same depth is fast (0.17 s), and 8,000
+  nested calls of the builtin `identity` succeed in 24 s (R refuses those at parse time
+  too), so the cost tracks lexical nesting rather than the depth check. Generated with:
+
+  ```sh
+  perl -e 'print "f <- function(x) x\nx <- ", "f(" x 8000, "1", ")" x 8000, "\nprint(x)\n"' > deep.R
+  /usr/bin/time -l Rscript deep.R    # rlang: 47.35 real, 5708693504 max RSS
+  ```
+
+`options()$digits` being `NULL` (with `getOption("digits")` answering 7) is the
+case already recorded under *Printing and formatting*: a bare `options()`
+returns only what has been set.
