@@ -596,8 +596,14 @@ against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
   length(intersect(0.1 + 0.2, 0.3))  # R: 0                 rlang: 1
   ```
 
-  `split` agrees with R on these inputs (R groups through `as.character`, which
-  also merges them at 15 significant digits).
+  `split` (and `factor`) diverge the other way: R groups through `as.character`,
+  which merges the two at 15 significant digits, but rlang builds the level set
+  from the raw doubles (`factor_levels` in `src/builtins.rs`), so it keeps them apart:
+
+  ```r
+  split(1:2, x)        # R: one group `0.3` = 1 2   rlang: two groups both named `0.3`
+  levels(factor(x))    # R: "0.3"                   rlang: "0.3" "0.3"
+  ```
 
 - **`.Call` silently passes only the first element of a longer vector.**
   `r_to_fusevm` in `src/builtins.rs` takes `as_int(v).first()` / `num1` /
