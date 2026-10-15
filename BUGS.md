@@ -596,14 +596,26 @@ against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
   length(intersect(0.1 + 0.2, 0.3))  # R: 0                 rlang: 1
   ```
 
-  `split` (and `factor`) diverge the other way: R groups through `as.character`,
-  which merges the two at 15 significant digits, but rlang builds the level set
-  from the raw doubles (`factor_levels` in `src/builtins.rs`), so it keeps them apart:
+  `split` and `factor` go wrong differently: R groups through `as.character`
+  (15 significant digits), but rlang builds the level set from the raw doubles
+  (`factor_levels` in `src/builtins.rs`), so two distinct doubles that format
+  alike become two levels with the same label, and `split` then puts every
+  element whose label matches into each of them. rlang's labels also carry fewer
+  digits than `as.character` (`1 + 1e-10` labels as `1`), so `y` below collides
+  where R keeps it apart. In both cases each element lands in both groups:
 
   ```r
-  split(1:2, x)        # R: one group `0.3` = 1 2   rlang: two groups both named `0.3`
+  split(1:2, x)        # R: one group `0.3` = 1 2
+                       # rlang: two groups, both named `0.3`, each = 1 2
   levels(factor(x))    # R: "0.3"                   rlang: "0.3" "0.3"
+
+  y <- c(1, 1 + 1e-10)
+  split(1:2, y)        # R: `1` = 1, `1.0000000001` = 2
+                       # rlang: two groups, both named `1`, each = 1 2
+  levels(factor(y))    # R: "1" "1.0000000001"      rlang: "1" "1"
   ```
+
+  Measured with rlang 0.1.10 (`RLANG_NO_CRAN=1 target/debug/Rscript`).
 
 - **`.Call` silently passes only the first element of a longer vector.**
   `r_to_fusevm` in `src/builtins.rs` takes `as_int(v).first()` / `num1` /
