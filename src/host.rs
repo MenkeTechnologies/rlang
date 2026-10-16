@@ -676,6 +676,15 @@ pub fn start_capture() {
     CAPTURE.with(|c| *c.borrow_mut() = Some(String::new()));
 }
 
+/// Run `f` with stdout captured, returning its result and what it wrote. Unlike
+/// [`start_capture`] it nests: an enclosing capture is restored afterwards.
+pub fn with_capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let outer = CAPTURE.with(|c| c.borrow_mut().replace(String::new()));
+    let out = f();
+    let text = CAPTURE.with(|c| std::mem::replace(&mut *c.borrow_mut(), outer));
+    (out, text.unwrap_or_default())
+}
+
 /// Stop capturing and return everything written since [`start_capture`].
 pub fn take_capture() -> String {
     CAPTURE.with(|c| c.borrow_mut().take().unwrap_or_default())

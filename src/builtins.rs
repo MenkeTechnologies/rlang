@@ -18750,6 +18750,21 @@ fn is_plain_list(v: &Value) -> bool {
     !has_print_layout(v) && matches!(kind(v), RKind::List | RKind::Args)
 }
 
+/// What a user-defined `print.<class>` method writes for `v`, as lines. R's
+/// `printValueRec` prints a classed list element by calling `print` on it, so
+/// the method runs even though the list itself is laid out by `print.default`.
+/// `None` when `v` has no such method (or the method failed), and the element
+/// is laid out as `print.default` would.
+fn print_method_lines(v: &Value) -> Option<Vec<String>> {
+    let (result, text) = crate::host::with_capture(|| {
+        s3_primitive_method("print", std::slice::from_ref(&(None, v.clone())))
+    });
+    match result {
+        Some(Ok(_)) => Some(text.strip_suffix('\n').unwrap_or(&text).split('\n').map(String::from).collect()),
+        _ => None,
+    }
+}
+
 /// Render a list, heading each element with the full path taken to reach it.
 /// R does not restart the tags inside a nested list: `list(a = list(b = 1))`
 /// prints `$a` and then `$a$b`, not a second bare `$b`.
@@ -18778,7 +18793,9 @@ fn format_list_at(v: &Value, prefix: &str) -> Vec<String> {
         };
         let path = format!("{prefix}{tag}");
         out.push(path.clone());
-        if is_plain_list(it) {
+        if let Some(lines) = print_method_lines(it) {
+            out.extend(lines);
+        } else if is_plain_list(it) {
             out.extend(format_list_at(it, &path));
             out.extend(format_extra_attrs(it));
         } else {

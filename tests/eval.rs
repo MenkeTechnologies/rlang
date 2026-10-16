@@ -911,3 +911,19 @@ fn break_and_next_in_a_lazy_body_act_on_the_enclosing_loop() {
         "[1] \"no loop for break/next, jumping to top level\""
     );
 }
+
+#[test]
+fn a_list_prints_its_classed_elements_through_their_print_method() {
+    // R's `printValueRec` calls `print` on an element with a class, so a user
+    // `print.<class>` method lays the element out inside the list.
+    let setup = "print.rec <- function(x, ...) { cat(\"<rec>\\n\"); invisible(x) }; \
+                 x <- structure(list(a = 1), class = \"rec\"); ";
+    assert_eq!(
+        r(&format!("{setup}list(x, 1)")),
+        "[[1]]\n<rec>\n\n[[2]]\n[1] 1"
+    );
+    assert_eq!(
+        r(&format!("{setup}list(p = x, q = list(r = x))")),
+        "$p\n<rec>\n\n$q\n$q$r\n<rec>"
+    );
+}
