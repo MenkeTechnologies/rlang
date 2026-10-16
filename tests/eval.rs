@@ -941,3 +941,47 @@ fn a_recursive_subscript_on_an_atomic_vector_errors_before_the_value_is_checked(
         "[1] \"more elements supplied than there are to replace\""
     );
 }
+
+/// `all.equal(...)` as the one-line `deparse` of its result, so a vector of
+/// messages reads as R's `c("…", "…")`.
+fn all_equal(args: &str) -> String {
+    r(&format!("deparse(all.equal({args}), width.cutoff = 500L)"))
+}
+
+#[test]
+fn all_equal_reports_what_differs_the_way_the_r_methods_do() {
+    // Messages read off R 4.6's `all.equal.numeric` / `.character` / `.raw` /
+    // `.list` / `.factor` and `attr.all.equal`.
+    assert_eq!(all_equal("c(a = 1), c(b = 1)"), "[1] \"\\\"Names: 1 string mismatch\\\"\"");
+    assert_eq!(all_equal("c(1, 2), c(1, 2, 3)"), "[1] \"\\\"Numeric: lengths (2, 3) differ\\\"\"");
+    assert_eq!(
+        all_equal("c(\"a\", \"b\", \"c\"), c(\"x\", \"y\", \"c\")"),
+        "[1] \"\\\"2 string mismatches\\\"\""
+    );
+    assert_eq!(
+        all_equal("c(TRUE, FALSE), c(TRUE, TRUE)"),
+        "[1] \"\\\"1 element mismatch\\\"\""
+    );
+    assert_eq!(
+        all_equal("list(1, \"a\"), list(1, \"b\")"),
+        "[1] \"\\\"Component 2: 1 string mismatch\\\"\""
+    );
+    assert_eq!(
+        all_equal("matrix(1:4, 2), matrix(1:4, 2, dimnames = list(NULL, c(\"a\", \"b\")))"),
+        "[1] \"\\\"Attributes: < Length mismatch: comparison on first 1 components >\\\"\""
+    );
+    assert_eq!(
+        all_equal("factor(\"a\"), factor(\"b\")"),
+        "[1] \"c(\\\"Attributes: < Component “levels”: 1 string mismatch >\\\", \\\"1 string mismatch\\\")\""
+    );
+}
+
+#[test]
+fn all_equal_honours_tolerance_and_a_stopifnot_failure_names_both_sides() {
+    assert_eq!(r("all.equal(1, 1.001, tolerance = 0.01)"), "[1] TRUE");
+    assert_eq!(r("all.equal(100, 101, 0.1)"), "[1] TRUE");
+    assert_eq!(
+        r("tryCatch(stopifnot(all.equal(1, 2)), error = function(e) conditionMessage(e))"),
+        "[1] \"1 and 2 are not equal:\\n  Mean relative difference: 1\""
+    );
+}

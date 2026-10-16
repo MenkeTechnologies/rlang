@@ -6294,6 +6294,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     return Err(t.clone());
                 }
                 let what = written.get(i).cloned().unwrap_or_default();
+                if let Some(msg) = not_equal_message(&what, v) {
+                    return Err(msg);
+                }
                 let tail = match flags.len() > 1 {
                     true => "are not all TRUE",
                     false => "is not TRUE",
@@ -6777,52 +6780,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             });
             Ok(out)
         }
-        "all.equal" => {
-            // Numeric near-equality within R's default tolerance (~1.5e-8);
-            // returns TRUE or a short difference message. Non-numerics compare
-            // with `identical`.
-            let x = a.req(0, "target")?;
-            let y = a.req(1, "current")?;
-            let (xs, ys) = (as_dbl(&x), as_dbl(&y));
-            let numeric = matches!(kind(&x), RKind::Dbl | RKind::Int)
-                && matches!(kind(&y), RKind::Dbl | RKind::Int);
-            if numeric && xs.len() == ys.len() {
-                let tol = 1.5e-8;
-                let mut sum_abs_diff = 0.0;
-                let mut sum_abs_tgt = 0.0;
-                for (a, b) in xs.iter().zip(ys.iter()) {
-                    match (a, b) {
-                        // R's default `countEQ = FALSE` scales only over the
-                        // elements that actually differ.
-                        (Some(a), Some(b)) if a != b => {
-                            sum_abs_diff += (a - b).abs();
-                            sum_abs_tgt += a.abs();
-                        }
-                        (Some(_), Some(_)) => {}
-                        _ => return Ok(scalar_str("'is.NA' value mismatch")),
-                    }
-                }
-                let rel = if sum_abs_tgt > tol {
-                    sum_abs_diff / sum_abs_tgt
-                } else {
-                    sum_abs_diff
-                };
-                if rel <= tol {
-                    Ok(scalar_lgl(true))
-                } else {
-                    Ok(scalar_str(format!(
-                        "Mean relative difference: {}",
-                        crate::host::format_dbl(rel)
-                    )))
-                }
-            } else {
-                Ok(if identical(&x, &y) {
-                    scalar_lgl(true)
-                } else {
-                    scalar_str("objects differ")
-                })
-            }
-        }
+        "all.equal" => all_equal_call(&a),
         "head" | "tail" => {
             let x = a.req(0, "x")?;
             let n = a.get(1, "n").and_then(|v| num1(&v)).unwrap_or(6.0) as i64;
@@ -19241,4 +19199,384 @@ fn b_take_loop_signal(_: &mut VM, _: u8) -> Value {
         with_host(|h| h.signal = None);
     }
     Value::Int(code)
+}
+
+// ── all.equal ───────────────────────────────────────────────────────────
+
+/// The options `all.equal` threads through its methods: `all.equal.numeric`,
+/// `.character`, `.raw`, `.list`, `.factor` and `attr.all.equal` of R 4.6.
+#[derive(Clone)]
+struct AllEq {
+    tolerance: f64,
+    scale: Option<f64>,
+    count_eq: bool,
+    check_attributes: bool,
+    check_names: bool,
+    use_names: bool,
+}
+
+/// R's `mode(x)`.
+fn mode_name(v: &Value) -> &'static str {
+    match with_host(|h| h.type_of(v)) {
+        "integer" | "double" => "numeric",
+        "closure" | "builtin" | "special" => "function",
+        "language" => "call",
+        "symbol" => "name",
+        other => other,
+    }
+}
+
+/// R's `data.class(x)`: the first class, else `matrix` / `array`, else the mode.
+fn data_class(v: &Value) -> String {
+    if let Some(c) = with_host(|h| h.attr(v, "class")).and_then(|c| as_str(&c).into_iter().next()) {
+        return c.unwrap_or_default();
+    }
+    match dim_rank(v) {
+        0 => mode_name(v).to_string(),
+        2 => "matrix".to_string(),
+        _ => "array".to_string(),
+    }
+}
+
+/// `grepl("\\bLengths\\b", s)`.
+fn mentions_lengths(s: &str) -> bool {
+    s.match_indices("Lengths").any(|(i, w)| {
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !word(s[..i].chars().next_back()) && !word(s[i + w.len()..].chars().next())
+    })
+}
+
+/// `msg <- msg[-grep("\\bLengths\\b", msg)]`, including its quirk: with no
+/// match the negative index is empty and *everything* is dropped.
+fn drop_lengths_messages(msg: &mut Vec<String>) {
+    if !msg.is_empty() {
+        let any = msg.iter().any(|m| mentions_lengths(m));
+        msg.retain(|m| any && !mentions_lengths(m));
+    }
+}
+
+fn is_missing_double(x: &Option<f64>) -> bool {
+    x.map_or(true, f64::is_nan)
+}
+
+/// `attr.all.equal`: mode, length, names and the remaining attributes.
+fn attr_all_equal(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    let mut msg = Vec::new();
+    if mode_name(x) != mode_name(y) {
+        msg.push(format!("Modes: {}, {}", mode_name(x), mode_name(y)));
+    }
+    if len(x) != len(y) {
+        msg.push(format!("Lengths: {}, {}", len(x), len(y)));
+    }
+    let attrs = |v: &Value| -> Vec<(String, Value)> {
+        let mut a: Vec<(String, Value)> = with_host(|h| h.attrs_of(v)).into_iter().collect();
+        a.retain(|(k, _)| k != "names");
+        a
+    };
+    let (mut ax, mut ay) = (attrs(x), attrs(y));
+    if o.check_names {
+        let (nx, ny) = (names_of(x), names_of(y));
+        let (lx, ly) = (nx.len(), ny.len());
+        if lx > 0 && ly > 0 {
+            let plain = AllEq { check_attributes: o.check_attributes, ..o.clone() };
+            msg.extend(
+                all_equal_character(&mk_str(nx), &mk_str(ny), &plain)
+                    .into_iter()
+                    .map(|m| format!("Names: {m}")),
+            );
+        } else if lx > 0 {
+            msg.push("names for target but not for current".into());
+        } else if ly > 0 {
+            msg.push("names for current but not for target".into());
+        }
+    }
+    if o.check_attributes && (!ax.is_empty() || !ay.is_empty()) {
+        ax.sort_by(|a, b| a.0.cmp(&b.0));
+        ay.sort_by(|a, b| a.0.cmp(&b.0));
+        // `attributes(x)` is `NULL`, not an empty list, for a bare vector.
+        let as_list = |a: Vec<(String, Value)>| {
+            if a.is_empty() {
+                return null();
+            }
+            let names = a.iter().map(|(k, _)| Some(k.clone())).collect();
+            let l = mk_list(a.into_iter().map(|(_, v)| v).collect());
+            set_names(&l, names);
+            l
+        };
+        msg.extend(
+            all_equal(&as_list(ax), &as_list(ay), o)
+                .into_iter()
+                .map(|t| format!("Attributes: < {t} >")),
+        );
+    }
+    msg
+}
+
+/// The dispatch of `all.equal` on `target`, as a list of messages (empty for
+/// `TRUE`).
+fn all_equal(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    if is_factor(x) {
+        return all_equal_factor(x, y, o);
+    }
+    match kind(x) {
+        RKind::List | RKind::Args => all_equal_list(x, y, o),
+        RKind::Dbl | RKind::Int => all_equal_numeric(x, y, o),
+        RKind::Str => all_equal_character(x, y, o),
+        RKind::Lgl => all_equal_raw(x, y, o),
+        RKind::Null => match (data_class(x), data_class(y)) {
+            (a, b) if a != b => vec![format!("target is {a}, current is {b}")],
+            _ => Vec::new(),
+        },
+        _ if identical(x, y) => Vec::new(),
+        _ => vec!["objects differ".into()],
+    }
+}
+
+/// The `check.class` prefix every vector method shares. `Some(msg)` when the
+/// classes differ and the comparison stops there.
+fn class_mismatch(x: &Value, y: &Value, mut msg: Vec<String>) -> Result<Vec<String>, Vec<String>> {
+    if data_class(x) != data_class(y) {
+        msg.push(format!("target is {}, current is {}", data_class(x), data_class(y)));
+        return Err(msg);
+    }
+    Ok(msg)
+}
+
+fn all_equal_numeric(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    let msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let mut msg = match class_mismatch(x, y, msg) {
+        Ok(m) => m,
+        Err(m) => return m,
+    };
+    if len(x) != len(y) {
+        drop_lengths_messages(&mut msg);
+        msg.push(format!("Numeric: lengths ({}, {}) differ", len(x), len(y)));
+        return msg;
+    }
+    let (t, c) = (as_dbl(x), as_dbl(y));
+    let (na_t, na_c) = (
+        t.iter().filter(|v| is_missing_double(v)).count(),
+        c.iter().filter(|v| is_missing_double(v)).count(),
+    );
+    if t.iter().zip(&c).any(|(a, b)| is_missing_double(a) != is_missing_double(b)) {
+        msg.push(format!("'is.NA' value mismatch: {na_c} in current {na_t} in target"));
+        return msg;
+    }
+    let same: Vec<bool> = t
+        .iter()
+        .zip(&c)
+        .map(|(a, b)| is_missing_double(a) || a == b)
+        .collect();
+    if same.iter().all(|s| *s) {
+        return msg;
+    }
+    let any_same = same.iter().any(|s| *s);
+    let sabst0 = match (o.count_eq, any_same) {
+        (true, true) => {
+            let eq: Vec<f64> = t
+                .iter()
+                .zip(&same)
+                .filter(|(_, s)| **s)
+                .map(|(v, _)| v.map_or(f64::NAN, f64::abs))
+                .collect();
+            eq.iter().sum::<f64>() / eq.len() as f64
+        }
+        _ => 0.0,
+    };
+    let (t, c): (Vec<f64>, Vec<f64>) = t
+        .iter()
+        .zip(&c)
+        .zip(&same)
+        .filter(|(_, s)| !**s)
+        .map(|((a, b), _)| (a.unwrap_or(f64::NAN), b.unwrap_or(f64::NAN)))
+        .unzip();
+    let n = t.len() as f64;
+    let (what, scale) = match o.scale {
+        None => {
+            let s = sabst0 + t.iter().map(|v| v.abs() / n).sum::<f64>();
+            if s.is_finite() && s > o.tolerance {
+                ("relative", s)
+            } else {
+                ("absolute", 1.0)
+            }
+        }
+        Some(s) if (s - 1.0).abs() < 1e-7 => ("absolute", s),
+        Some(s) => ("scaled", s),
+    };
+    let xy: f64 = t.iter().zip(&c).map(|(a, b)| (a - b).abs() / (n * scale)).sum();
+    if xy.is_nan() || xy > o.tolerance {
+        msg.push(format!("Mean {what} difference: {}", crate::host::format_dbl(xy)));
+    }
+    msg
+}
+
+/// The comparison `all.equal.character` and `all.equal.raw` share: lengths,
+/// `NA` pattern, then a count of the elements that differ.
+fn all_equal_elementwise(
+    x: &Value,
+    y: &Value,
+    o: &AllEq,
+    length_msg: impl Fn(usize, usize, usize) -> String,
+    count_msg: impl Fn(usize) -> String,
+    text: impl Fn(&Value) -> Vec<Option<String>>,
+) -> Vec<String> {
+    let msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let mut msg = match class_mismatch(x, y, msg) {
+        Ok(m) => m,
+        Err(m) => return m,
+    };
+    let (mut t, mut c) = (text(x), text(y));
+    if t.len() != c.len() {
+        drop_lengths_messages(&mut msg);
+        let keep = t.len().min(c.len());
+        msg.push(length_msg(t.len(), c.len(), keep));
+        t.truncate(keep);
+        c.truncate(keep);
+    }
+    let (na_t, na_c) = (
+        t.iter().filter(|v| v.is_none()).count(),
+        c.iter().filter(|v| v.is_none()).count(),
+    );
+    if t.iter().zip(&c).any(|(a, b)| a.is_none() != b.is_none()) {
+        msg.push(format!("'is.NA' value mismatch: {na_c} in current {na_t} in target"));
+        return msg;
+    }
+    let ne = t.iter().zip(&c).filter(|(a, b)| a.is_some() && a != b).count();
+    if ne > 0 {
+        msg.push(count_msg(ne));
+    }
+    msg
+}
+
+fn all_equal_character(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    all_equal_elementwise(
+        x,
+        y,
+        o,
+        |lt, lc, keep| format!("Lengths ({lt}, {lc}) differ (string compare on first {keep})"),
+        |n| match n {
+            1 => "1 string mismatch".to_string(),
+            n => format!("{n} string mismatches"),
+        },
+        as_str,
+    )
+}
+
+/// `all.equal.raw`, which `all.equal.default` uses for a logical vector.
+fn all_equal_raw(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    all_equal_elementwise(
+        x,
+        y,
+        o,
+        |lt, lc, keep| format!("Lengths ({lt}, {lc}) differ (comparison on first {keep} components)"),
+        |n| match n {
+            1 => "1 element mismatch".to_string(),
+            n => format!("{n} element mismatches"),
+        },
+        |v| as_lgl(v).into_iter().map(|b| b.map(|b| b.to_string())).collect(),
+    )
+}
+
+fn all_equal_list(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    let mut msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    if matches!(kind(y), RKind::Null | RKind::Closure | RKind::Builtin) {
+        msg.push("current is not list-like".into());
+        return msg;
+    }
+    let (ex, ey) = (elements(x), elements(y));
+    let n = ex.len().min(ey.len());
+    if ex.len() != ey.len() {
+        drop_lengths_messages(&mut msg);
+        msg.push(format!("Length mismatch: comparison on first {n} components"));
+    }
+    let (nt, nc) = (names_of(x), names_of(y));
+    let use_names = o.use_names && nt.len() >= n && nc.len() >= n && n > 0;
+    let inner = AllEq { use_names, ..o.clone() };
+    for i in 0..n {
+        let label = match (use_names, nt.get(i), nc.get(i)) {
+            (true, Some(Some(a)), Some(Some(b))) if a == b => format!("\u{201c}{a}\u{201d}"),
+            _ => (i + 1).to_string(),
+        };
+        msg.extend(
+            all_equal(&ex[i], &ey[i], &inner)
+                .into_iter()
+                .map(|m| format!("Component {label}: {m}")),
+        );
+    }
+    msg
+}
+
+fn all_equal_factor(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
+    if !is_factor(y) {
+        return vec!["'current' is not a factor".into()];
+    }
+    let mut msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let (nax, nay): (Vec<bool>, Vec<bool>) = (
+        as_int(x).iter().map(Option::is_none).collect(),
+        as_int(y).iter().map(Option::is_none).collect(),
+    );
+    let mismatches = nax.iter().zip(&nay).filter(|(a, b)| a != b).count();
+    match mismatches {
+        0 => {
+            let present = |v: &Value| {
+                let labels = factor_labels(v);
+                mk_str(labels.into_iter().filter(Option::is_some).collect())
+            };
+            msg.extend(all_equal_character(&present(x), &present(y), o));
+        }
+        1 => msg.push("1, NA mismatch".into()),
+        n => msg.push(format!("{n} NA mismatches")),
+    }
+    msg
+}
+
+/// `stopifnot(all.equal(a, b))`: R words the failure of that exact call as
+/// ``a and b are not equal:\n  <differences>``. `what` is the call as written
+/// and `result` what it returned; `None` for any other expression.
+fn not_equal_message(what: &str, result: &Value) -> Option<String> {
+    let Some(Expr::Call { fun, args }) = crate::parser::parse(what).ok()?.pop() else {
+        return None;
+    };
+    if !matches!(*fun, Expr::Ident(ref n) if n == "all.equal") || kind(result) != RKind::Str {
+        return None;
+    }
+    let plain: Vec<_> = args.iter().filter(|a| a.name.is_none()).collect();
+    let [target, current] = plain.as_slice() else {
+        return None;
+    };
+    let show = |a: &&Arg| a.value.as_ref().map(crate::deparse::deparse_expr).unwrap_or_default();
+    let diffs: Vec<String> = as_str(result).into_iter().flatten().collect();
+    Some(format!(
+        "{} and {} are not equal:\n  {}",
+        show(target),
+        show(current),
+        diffs.join("\n  ")
+    ))
+}
+
+/// `all.equal(target, current, tolerance, scale, countEQ, check.attributes,
+/// check.names, use.names)`: `TRUE`, or the character vector of differences.
+fn all_equal_call(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "target")?;
+    let y = a.req(1, "current")?;
+    if a.get(2, "tolerance").is_some_and(|t| !matches!(kind(&t), RKind::Dbl | RKind::Int)) {
+        return Err("'tolerance' should be numeric".into());
+    }
+    let flag = |name: &str, default: bool| a.named(name).and_then(|v| lgl1(&v)).unwrap_or(default);
+    let o = AllEq {
+        tolerance: a.get(2, "tolerance").and_then(|v| num1(&v)).unwrap_or(1.5e-8),
+        scale: a.named("scale").and_then(|v| num1(&v)),
+        count_eq: flag("countEQ", false),
+        check_attributes: flag("check.attributes", true),
+        check_names: flag("check.names", true),
+        use_names: flag("use.names", true),
+    };
+    if o.scale.is_some_and(|s| s <= 0.0) {
+        return Err("all(scale > 0) is not TRUE".into());
+    }
+    let msg = all_equal(&x, &y, &o);
+    Ok(match msg.is_empty() {
+        true => scalar_lgl(true),
+        false => mk_str(msg.into_iter().map(Some).collect()),
+    })
 }

@@ -447,8 +447,8 @@ const SEQUENCES: &[Entry] = &[
     ),
     (
         "all.equal",
-        "all.equal(target, current)",
-        "TRUE when two numeric vectors agree within a mean relative difference of 1.5e-8, else the string \"Mean relative difference: <d>\". Only differing elements enter the scale, matching R's default countEQ = FALSE. Non-numeric arguments compare with identical.",
+        "all.equal(target, current, tolerance = 1.5e-8, scale = NULL, countEQ = FALSE, check.attributes = TRUE)",
+        "TRUE, or the character vector of differences, following R's all.equal.numeric, .character, .raw, .list and .factor and attr.all.equal: names, other attributes, lengths, NA pattern, element mismatches, and the mean relative (or absolute, or scaled) difference. Only differing elements enter the scale unless countEQ = TRUE. Inside stopifnot(), a failure reads \"a and b are not equal:\" followed by the differences.",
     ),
     (
         "head",

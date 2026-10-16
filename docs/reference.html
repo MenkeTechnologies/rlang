@@ -586,9 +586,9 @@
       </article>
       <article class="doc-entry" id="doc-all-equal">
         <h3><a class="doc-anchor" href="#doc-all-equal">#</a> <code>all.equal</code></h3>
-        <pre><code class="lang-r r">all.equal(target, current)
+        <pre><code class="lang-r r">all.equal(target, current, tolerance = 1.5e-8, scale = NULL, countEQ = FALSE, check.attributes = TRUE)
 </code></pre>
-        <p>TRUE when two numeric vectors agree within a mean relative difference of 1.5e-8, else the string "Mean relative difference: &lt;d&gt;". Only differing elements enter the scale, matching R's default countEQ = FALSE. Non-numeric arguments compare with identical.</p>
+        <p>TRUE, or the character vector of differences, following R's all.equal.numeric, .character, .raw, .list and .factor and attr.all.equal: names, other attributes, lengths, NA pattern, element mismatches, and the mean relative (or absolute, or scaled) difference. Only differing elements enter the scale unless countEQ = TRUE. Inside stopifnot(), a failure reads "a and b are not equal:" followed by the differences.</p>
       </article>
       <article class="doc-entry" id="doc-head">
         <h3><a class="doc-anchor" href="#doc-head">#</a> <code>head</code></h3>
@@ -1466,7 +1466,7 @@
         <h3><a class="doc-anchor" href="#doc-strsplit">#</a> <code>strsplit</code></h3>
         <pre><code class="lang-r r">strsplit(x, split, fixed = FALSE)
 </code></pre>
-        <p>Split each string by a regular expression, returning one character vector per element in a list. An empty pattern splits into single characters; fixed = TRUE splits on the literal text.</p>
+        <p>Split each string by a regular expression, returning one character vector per element in a list. An empty pattern splits into single characters; fixed = TRUE splits on the literal text. split is recycled along x, an NA pattern leaves an element whole, and the list takes names(x).</p>
       </article>
       <article class="doc-entry" id="doc-sub">
         <h3><a class="doc-anchor" href="#doc-sub">#</a> <code>sub</code></h3>
@@ -1494,27 +1494,27 @@
       </article>
       <article class="doc-entry" id="doc-regexpr">
         <h3><a class="doc-anchor" href="#doc-regexpr">#</a> <code>regexpr</code></h3>
-        <pre><code class="lang-r r">regexpr(pattern, text)
+        <pre><code class="lang-r r">regexpr(pattern, text, perl = FALSE)
 </code></pre>
-        <p>The 1-based character position of the first match in each element, or -1 for no match, carrying the width of each match on the `match.length` attribute.</p>
+        <p>The 1-based character position of the first match in each element, -1 for no match or NA for an NA element, carrying the width of each match on the `match.length` attribute; with perl = TRUE and capture groups, also `capture.start`, `capture.length` and `capture.names`.</p>
       </article>
       <article class="doc-entry" id="doc-gregexpr">
         <h3><a class="doc-anchor" href="#doc-gregexpr">#</a> <code>gregexpr</code></h3>
-        <pre><code class="lang-r r">gregexpr(pattern, text)
+        <pre><code class="lang-r r">gregexpr(pattern, text, perl = FALSE)
 </code></pre>
-        <p>A list with every match position for each element, each vector carrying its own `match.length`.</p>
+        <p>A list with every match position for each element, each vector carrying its own `match.length` (and with perl = TRUE, one capture row per match).</p>
       </article>
       <article class="doc-entry" id="doc-regexec">
         <h3><a class="doc-anchor" href="#doc-regexec">#</a> <code>regexec</code></h3>
-        <pre><code class="lang-r r">regexec(pattern, text)
+        <pre><code class="lang-r r">regexec(pattern, text, perl = FALSE)
 </code></pre>
-        <p>A list whose element per text is the first match's position followed by each capture group's, with the widths on `match.length`.</p>
+        <p>A list whose element per text is the first match's position followed by each capture group's (0 for a group that did not take part), with the widths on `match.length`; perl = TRUE names the positions after named groups.</p>
       </article>
       <article class="doc-entry" id="doc-regmatches">
         <h3><a class="doc-anchor" href="#doc-regmatches">#</a> <code>regmatches</code></h3>
         <pre><code class="lang-r r">regmatches(x, m)
 </code></pre>
-        <p>The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter.</p>
+        <p>The matched substrings a regexpr or gregexpr result identifies — a character vector for the former, a list for the latter. `regmatches(x, m, invert) &lt;- value` pastes replacements in place of the matches (or, with invert = TRUE, of the text around them).</p>
       </article>
       <article class="doc-entry" id="doc-str">
         <h3><a class="doc-anchor" href="#doc-str">#</a> <code>str</code></h3>
