@@ -927,3 +927,17 @@ fn a_list_prints_its_classed_elements_through_their_print_method() {
         "$p\n<rec>\n\n$q\n$q$r\n<rec>"
     );
 }
+
+#[test]
+fn a_recursive_subscript_on_an_atomic_vector_errors_before_the_value_is_checked() {
+    // `do_subassign2` rejects the length-2 subscript first, so a length-2
+    // replacement reports the subscript, not "more elements supplied".
+    assert_eq!(
+        r("x <- 1:5; tryCatch({ x[[c(1, 3)]] <- c(3L, 0L); 0 }, error = function(e) conditionMessage(e))"),
+        "[1] \"attempt to select more than one element in vectorIndex\""
+    );
+    assert_eq!(
+        r("x <- 1:5; tryCatch({ x[[1]] <- c(3L, 0L); 0 }, error = function(e) conditionMessage(e))"),
+        "[1] \"more elements supplied than there are to replace\""
+    );
+}

@@ -3777,6 +3777,42 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     }
 }
 
+/// `[<-.factor` / `[[<-.factor`: the replacement is matched against the levels
+/// and the codes are written, so a label that is not a level becomes `NA` with
+/// a warning rather than being stored as text.
+fn assign_factor(
+    x: &Value,
+    args: &[(Option<String>, Value)],
+    value: &Value,
+    single_slot: bool,
+) -> Result<Value, String> {
+    let levels = with_host(|h| h.attr(x, "levels")).unwrap_or_else(|| mk_str(Vec::new()));
+    let class = with_host(|h| h.attr(x, "class")).unwrap_or_else(null);
+    let known = as_str(&levels);
+    let labels = as_str_labels(value);
+    let codes: Vec<Option<i64>> = labels
+        .iter()
+        .map(|l| {
+            let l = l.as_ref()?;
+            known.iter().position(|k| k.as_ref() == Some(l)).map(|i| i as i64 + 1)
+        })
+        .collect();
+    if codes.iter().zip(&labels).any(|(c, l)| c.is_none() && l.is_some()) {
+        // R names ``[<-.factor`(`*tmp*`, i, value = v)``; an index assignment carries
+        // no call text here, so this is reported without one (see BUGS.md).
+        binop_warning("invalid factor level, NA generated")?;
+    }
+    let plain = copy_of(x);
+    let no_class = null();
+    with_host(|h| h.set_attr(&plain, "class", no_class));
+    let out = assign_index(&plain, args, &mk_int(codes), single_slot, false)?;
+    with_host(|h| {
+        h.set_attr(&out, "levels", levels);
+        h.set_attr(&out, "class", class);
+    });
+    Ok(out)
+}
+
 /// `x[i] <- v` and `x[[i]] <- v`. Both promote `x` to a type that can hold `v`,
 /// grow it when the index is past the end, and (for lists) drop the element
 /// when the value is NULL.
@@ -3787,6 +3823,9 @@ fn assign_index(
     single_slot: bool,
     inplace: bool,
 ) -> Result<Value, String> {
+    if is_factor(x) {
+        return assign_factor(x, args, value, single_slot);
+    }
     // A call is a pairlist in R and subassigns like a list of its parts:
     // `e[[1]] <- as.name("g")` renames the function, `e$y <- 5` sets or adds
     // a tagged argument.
@@ -3882,7 +3921,9 @@ fn assign_index(
     }
     // An atomic target takes exactly one value through `[[<-`, and R checks
     // that before it looks at the subscript.
-    if single_slot && kind(x) != RKind::List && kind(x) != RKind::Null && len(value) > 1 {
+    // A subscript longer than one is a recursive index, which an atomic vector
+    // refuses first (below).
+    if single_slot && len(idx) <= 1 && kind(x) != RKind::List && kind(x) != RKind::Null && len(value) > 1 {
         return Err("more elements supplied than there are to replace".into());
     }
     // `x[[i]] <- v` resolves a numeric `i` through `OneIndex`, whose messages

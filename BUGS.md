@@ -131,7 +131,8 @@ run that compared nothing — no cases generated, or an oracle that never answer
 
   **An arithmetic or comparison operator is the exception: its warning reports
   no call where R names one.** `1:5 + 1:2` warns `In 1:5 + 1:2 : longer object
-  length …` in R and bare in rlang, and so does `2147483647L + 1L`. The message,
+  length …` in R and bare in rlang, and so does `2147483647L + 1L`. A subscript
+  assignment is the same: `x[5:6] <- 1:3` and `f[1] <- "z"` (R: ``In `[<-.factor`(`*tmp*`, 1, value = "z")``) warn without the call. The message,
   the queueing and the batch position are right; only the `In <call> :` line is
   absent. `+ - * /` lower to native fusevm ops that carry no call text, and
   opening a context on every one would cost the hot path the design exists to

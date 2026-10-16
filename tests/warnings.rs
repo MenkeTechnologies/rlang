@@ -375,3 +375,23 @@ fn call_false_and_append_lf_are_options_not_message_text() {
     );
     assert_eq!(merged(r#"message("a", appendLF = FALSE); message("b")"#), "ab\n");
 }
+
+#[test]
+fn assigning_into_a_factor_matches_levels_and_warns_on_unknown_ones() {
+    // `[<-.factor` stores the code of the matching level. Before, a valid label
+    // became NA and an unknown one was not reported. The call R names
+    // (``[<-.factor`(`*tmp*`, ...)``) is not carried by rlang's subscript
+    // assignment (see BUGS.md), so only the message is asserted.
+    assert_eq!(
+        merged(r#"f <- factor(c("a", "b")); f[2] <- "a"; f[[1]] <- "b"; print(f)"#),
+        "[1] b a\nLevels: a b\n"
+    );
+    assert_eq!(
+        merged(r#"f <- factor(c("a", "b")); f[1] <- "z"; print(f)"#),
+        "Warning message:\ninvalid factor level, NA generated \n[1] <NA> b   \nLevels: a b\n"
+    );
+    assert_eq!(
+        merged(r#"f <- factor(c("a", "b")); f[1:2] <- factor("b", levels = c("b", "a")); print(f)"#),
+        "[1] b b\nLevels: a b\n"
+    );
+}
