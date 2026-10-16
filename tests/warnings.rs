@@ -338,3 +338,21 @@ fn messages_and_try_errors_keep_their_place_among_the_output() {
         "[1] 1\nm\n[1] 2\nError in try(stop(\"e\")) : e\n[1] 3\ncaught w\n[1] 4\n"
     );
 }
+
+#[test]
+fn mapply_warns_when_argument_lengths_do_not_divide() {
+    // `do_mapply` checks after the loop, so the results print first, then the
+    // warning names the user's `mapply` call — or, for `Map`, the closure call
+    // `mapply(FUN = f, ..., SIMPLIFY = FALSE)` R's `Map` makes.
+    assert_eq!(
+        merged("print(mapply(function(a, b) a + b, 1:3, 1:2))"),
+        "[1] 2 4 4\nWarning message:\nIn mapply(function(a, b) a + b, 1:3, 1:2) :\n  longer argument not a multiple of length of shorter\n"
+    );
+    assert_eq!(
+        merged("invisible(Map(function(a, b) a + b, 1:3, 1:2))"),
+        "Warning message:\nIn mapply(FUN = f, ..., SIMPLIFY = FALSE) :\n  longer argument not a multiple of length of shorter\n"
+    );
+    // Lengths that divide evenly, and zero-length input, stay silent.
+    assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:4, 1:2))"), "");
+    assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:3, integer(0)))"), "");
+}

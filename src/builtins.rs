@@ -376,6 +376,15 @@ fn mapply(f: &Value, a: &Args, simplified: bool, fun_tag: &str) -> Result<Value,
         call_args.extend(more.iter().cloned());
         out.push(call_value(f, call_args, None)?);
     }
+    // `do_mapply` checks after the loop, so `FUN` has already run for every
+    // element; `Map` is the closure `mapply(FUN = f, ..., SIMPLIFY = FALSE)`.
+    if lists.iter().any(|l| !l.is_empty() && n % l.len() != 0) {
+        let call = match fun_tag {
+            "f" => Some("mapply(FUN = f, ..., SIMPLIFY = FALSE)".to_string()),
+            _ => with_host(|h| h.current_call_source()),
+        };
+        signal_warning_in("longer argument not a multiple of length of shorter", call)?;
+    }
     let res = mk_list(out);
     if a.named("USE.NAMES").and_then(|v| lgl1(&v)).unwrap_or(true) {
         label_from_first(&res, mapped.first().map(|(_, v)| v));
