@@ -985,3 +985,24 @@ fn all_equal_honours_tolerance_and_a_stopifnot_failure_names_both_sides() {
         "[1] \"1 and 2 are not equal:\\n  Mean relative difference: 1\""
     );
 }
+
+#[test]
+fn print_escapes_every_control_character_as_r_does() {
+    // `\a \b \f \v` and the other controls (as three-digit octal) were written
+    // raw, so the line printed blank where R shows the escape.
+    assert_eq!(r(r#""\f a \v""#), r#"[1] "\f a \v""#);
+    assert_eq!(r(r#"c("\a\b", "\001\177")"#), r#"[1] "\a\b"     "\001\177""#);
+    assert_eq!(r(r#"deparse("\f\v")"#), r#"[1] "\"\\f\\v\"""#);
+}
+
+#[test]
+fn trimws_strips_only_the_whitespace_class_and_takes_a_pattern() {
+    // R's default is `[ \t\r\n]`, not every Unicode space, and `\f` stays.
+    assert_eq!(r(r#"trimws("\f a \v")"#), r#"[1] "\f a \v""#);
+    assert_eq!(r("trimws(\"\\u00a0a\\u00a0\")"), "[1] \"\u{a0}a\u{a0}\"");
+    assert_eq!(r(r#"trimws("..a..", whitespace = "[.]")"#), r#"[1] "a""#);
+    assert_eq!(r(r#"trimws("xxaxx", "right", "x")"#), r#"[1] "xxa""#);
+    // `which` is partially matched; a factor is trimmed by its labels.
+    assert_eq!(r(r#"trimws("  a  ", which = "l")"#), r#"[1] "a  ""#);
+    assert_eq!(r(r#"trimws(factor(" a "))"#), r#"[1] "a""#);
+}

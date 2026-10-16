@@ -8573,24 +8573,34 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(scalar_str(x.iter().filter_map(chr).collect::<String>()))
         }
         "trimws" => {
+            // `which` is `match.arg`ed, so any prefix of an option selects it.
             let which = a
                 .get(1, "which")
                 .and_then(|v| str1(&v))
-                .unwrap_or_else(|| "both".into());
+                .and_then(|w| ["both", "left", "right"].into_iter().find(|o| !w.is_empty() && o.starts_with(&w)))
+                .unwrap_or("both")
+                .to_string();
+            // R: `sub("^<ws>+", "", x)` for the left edge, `sub("<ws>+$", "", x)`
+            // for the right, with `whitespace = "[ \t\r\n]"` by default.
+            let ws = a
+                .get(2, "whitespace")
+                .and_then(|v| str1(&v))
+                .unwrap_or_else(|| "[ \t\r\n]".into());
             let xv = a.req(0, "x")?;
+            let left = compile_re(&format!("^{ws}+"), false, false)?;
+            let right = compile_re(&format!("{ws}+$"), false, false)?;
+            let trim = |s: &str| -> String {
+                let s = match which.as_str() {
+                    "right" => s.to_string(),
+                    _ => left.replace(s, false, &|_| String::new()),
+                };
+                match which.as_str() {
+                    "left" => s,
+                    _ => right.replace(&s, false, &|_| String::new()),
+                }
+            };
             shaped_like(
-                mk_str(
-                    as_str(&xv)
-                        .iter()
-                        .map(|s| {
-                            s.as_ref().map(|s| match which.as_str() {
-                                "left" => s.trim_start().to_string(),
-                                "right" => s.trim_end().to_string(),
-                                _ => s.trim().to_string(),
-                            })
-                        })
-                        .collect(),
-                ),
+                mk_str(as_str_labels(&xv).iter().map(|s| s.as_deref().map(trim)).collect()),
                 &xv,
             )
         }
@@ -16318,20 +16328,11 @@ fn expand_char_ranges(s: &str) -> Vec<char> {
 }
 
 /// R's `encodeString`: render the C escapes for the control/quote characters so
-/// the result round-trips as a source literal.
+/// the result round-trips as a source literal — `\a \b \f \n \r \t \v`, and the
+/// other control characters as three-digit octal (`\001`, `\177`).
 pub(crate) fn encode_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(c),
-        }
-    }
-    out
+    let quoted = encode_string_quoted(s, Some('"'));
+    quoted[1..quoted.len() - 1].to_string()
 }
 
 /// R's `strsplit` regex algorithm: emit the text before each match, advance
@@ -18201,18 +18202,10 @@ fn escape_string(s: &str) -> String {
 
 /// [`escape_string`], leaving a `"` alone when the string is printed unquoted.
 fn escape_chars(s: &str, quote: bool) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' if quote => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            _ => out.push(c),
-        }
+    match quote {
+        true => encode_string(s),
+        false => encode_string_quoted(s, None),
     }
-    out
 }
 
 /// Format the elements of a vector with one shared layout — what makes R print
