@@ -51,6 +51,10 @@ struct Compiler {
     /// statement. Only there does visibility matter, and only a bare numeric
     /// literal needs help with it — see [`Compiler::expr`].
     tail: bool,
+    /// Set while lowering a lazy body (see [`lazy_thunk`]) written inside a loop:
+    /// a `break`/`next` there has no loop of its own chunk to jump in, and
+    /// raises a signal for the loop that encloses the lazy call instead.
+    lazy_loop: bool,
 }
 
 /// Builtins that reach into an environment by name; their presence makes it
@@ -1084,6 +1088,13 @@ impl Compiler {
                 }
                 self.args(b, args)?;
                 b.emit(Op::CallBuiltin(call_op, 3), 0);
+                // The body of a lazy call is a promise: a `break`/`next` in it
+                // leaves through this call to the loop that encloses it.
+                let defers = thunked.is_some()
+                    && !matches!(fun.as_ref(), Expr::Ident(n) if n == "on.exit");
+                if defers && (!self.loops.is_empty() || self.lazy_loop) {
+                    self.dispatch_loop_signal(b);
+                }
             }
             Expr::Formula { lhs, rhs } => {
                 // A formula is unevaluated language: deparse it back to R source
@@ -1222,24 +1233,22 @@ impl Compiler {
             }
             Expr::For { var, seq, body } => self.for_loop(b, var, seq, body)?,
             Expr::Break => {
-                if self.loops.is_empty() {
+                if self.loops.is_empty() && !self.lazy_loop {
                     // R reports this when the `break` is *evaluated*, as an
                     // ordinary error a `tryCatch` can see — not when the
                     // program is read.
                     return self.no_loop_error(b);
                 }
-                let j = b.emit(Op::Jump(0), 0);
-                self.loops.last_mut().unwrap().breaks.push(j);
+                self.leave_loop(b, true);
                 // Keep the stack shape uniform: the jump is taken, so this is
                 // only reached by the verifier, never at runtime.
                 b.emit(Op::CallBuiltin(ops::CONST_NULL, 0), 0);
             }
             Expr::Next => {
-                if self.loops.is_empty() {
+                if self.loops.is_empty() && !self.lazy_loop {
                     return self.no_loop_error(b);
                 }
-                let j = b.emit(Op::Jump(0), 0);
-                self.loops.last_mut().unwrap().continues.push(j);
+                self.leave_loop(b, false);
                 b.emit(Op::CallBuiltin(ops::CONST_NULL, 0), 0);
             }
             Expr::Assign {
@@ -1249,6 +1258,50 @@ impl Compiler {
             } => self.assign(b, target, value, *super_assign)?,
         }
         Ok(())
+    }
+
+    /// Leave the innermost loop: a native jump when the loop is in this chunk,
+    /// else (a lazy body written inside a loop) a signal for the loop that
+    /// encloses the call that forces this chunk.
+    fn leave_loop(&mut self, b: &mut ChunkBuilder, is_break: bool) {
+        match self.loops.last_mut() {
+            Some(ctx) => {
+                let j = b.emit(Op::Jump(0), 0);
+                if is_break {
+                    ctx.breaks.push(j);
+                } else {
+                    ctx.continues.push(j);
+                }
+            }
+            None => {
+                b.emit(Op::LoadInt(if is_break { 1 } else { 2 }), 0);
+                b.emit(Op::CallBuiltin(ops::LOOP_SIGNAL, 1), 0);
+            }
+        }
+    }
+
+    /// After a lazy call inside a loop, act on a `break`/`next` its body raised:
+    /// `[result]` stays as the call's value unless a jump is taken.
+    fn dispatch_loop_signal(&mut self, b: &mut ChunkBuilder) {
+        b.emit(Op::CallBuiltin(ops::TAKE_LOOP_SIGNAL, 0), 0);
+        let mut exits = Vec::new();
+        for code in [1, 2] {
+            b.emit(Op::Dup, 0);
+            b.emit(Op::LoadInt(code), 0);
+            b.emit(Op::NumEq, 0);
+            exits.push(b.emit(Op::JumpIfTrue(0), 0));
+        }
+        b.emit(Op::Pop, 0);
+        let done = b.emit(Op::Jump(0), 0);
+        for (j, is_break) in exits.into_iter().zip([true, false]) {
+            let here = b.current_pos();
+            b.patch_jump(j, here);
+            b.emit(Op::Pop, 0);
+            b.emit(Op::Pop, 0);
+            self.leave_loop(b, is_break);
+        }
+        let end = b.current_pos();
+        b.patch_jump(done, end);
     }
 
     /// Lower a construct R only rejects when it is *evaluated* to the error R
@@ -1632,7 +1685,11 @@ impl Compiler {
     /// Compile a `function(...)` body into its own chunk, with a prologue that
     /// fills in each defaulted formal the caller omitted.
     fn closure(&mut self, params: &[Param], body: &Expr) -> Result<usize, String> {
+        let lazy = params.first().is_some_and(|p| p.name == LAZY_MARK);
+        let params = &params[usize::from(lazy)..];
         let saved = std::mem::take(&mut self.loops);
+        let in_loop = lazy && (!saved.is_empty() || self.lazy_loop);
+        let saved_lazy = std::mem::replace(&mut self.lazy_loop, in_loop);
         let mut fb = ChunkBuilder::new();
         for p in params {
             let Some(default) = &p.default else { continue };
@@ -1660,6 +1717,7 @@ impl Compiler {
         self.tail = true;
         self.expr(&mut fb, body)?;
         self.loops = saved;
+        self.lazy_loop = saved_lazy;
         self.closures.push(ClosureDef {
             params: params.iter().map(|p| p.name.clone()).collect(),
             chunk: fb.build(),
@@ -1995,6 +2053,22 @@ fn is_native_num(e: &Expr, cand: &std::collections::HashSet<String>) -> bool {
     }
 }
 
+/// Marks the zero-formal closure [`lazy_thunk`] builds; `closure` strips it.
+const LAZY_MARK: &str = ".rlang_lazy";
+
+/// [`thunk`] for the body of a lazy base function (`tryCatch`, `try`, …), which
+/// R forces as a promise: `return`, `break` and `next` in it act on the code
+/// that wrote it, not on the thunk.
+fn lazy_thunk(body: Expr) -> Expr {
+    Expr::Function {
+        params: vec![Param {
+            name: LAZY_MARK.into(),
+            default: None,
+        }],
+        body: Box::new(body),
+    }
+}
+
 /// `function() <body>` — a zero-argument closure that defers `body`.
 fn thunk(body: Expr) -> Expr {
     Expr::Function {
@@ -2050,6 +2124,11 @@ fn quote_call(inner: &Expr, splice: bool) -> Expr {
 /// alone too — evaluating it cannot fail, cannot have an effect, and wrapping
 /// it would cost a closure and a heap object per call for nothing.
 fn promise_args(args: &[Arg]) -> Option<Vec<Arg>> {
+    // Already a closure value: promising it would only hide the loop around a
+    // lazy body from the thunk, whose `break`/`next` must reach that loop.
+    fn is_lazy_thunk(e: &Expr) -> bool {
+        matches!(e, Expr::Function { params, .. } if params.first().is_some_and(|p| p.name == LAZY_MARK))
+    }
     fn is_literal(e: &Expr) -> bool {
         matches!(
             e,
@@ -2060,7 +2139,7 @@ fn promise_args(args: &[Arg]) -> Option<Vec<Arg>> {
     let mut changed = false;
     for a in args {
         match &a.value {
-            Some(v) if !matches!(v, Expr::Dots) && !is_literal(v) => {
+            Some(v) if !matches!(v, Expr::Dots) && !is_literal(v) && !is_lazy_thunk(v) => {
                 changed = true;
                 out.push(Arg {
                     name: a.name.clone(),
@@ -2113,7 +2192,7 @@ fn thunk_lazy_args(name: &str, args: &[Arg]) -> Option<Vec<Arg>> {
             changed = true;
             out.push(Arg {
                 name: a.name.clone(),
-                value: Some(thunk(value)),
+                value: Some(lazy_thunk(value)),
             });
         } else {
             out.push(a.clone());

@@ -356,3 +356,22 @@ fn mapply_warns_when_argument_lengths_do_not_divide() {
     assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:4, 1:2))"), "");
     assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:3, integer(0)))"), "");
 }
+
+#[test]
+fn call_false_and_append_lf_are_options_not_message_text() {
+    // `call. = FALSE` drops the call from the condition and from the report;
+    // before, the `FALSE` was pasted onto the message.
+    assert_eq!(
+        merged(r#"f <- function() warning("w", call. = FALSE); f()"#),
+        "Warning message:\nw \n"
+    );
+    assert_eq!(
+        merged(r#"g <- function() stop("e", call. = FALSE); tryCatch(g(), error = function(e) print(e))"#),
+        "<simpleError: e>\n"
+    );
+    assert_eq!(
+        merged(r#"print(tryCatch(warning("x", call. = FALSE), warning = function(w) is.null(conditionCall(w))))"#),
+        "[1] TRUE\n"
+    );
+    assert_eq!(merged(r#"message("a", appendLF = FALSE); message("b")"#), "ab\n");
+}

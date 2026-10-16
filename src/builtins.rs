@@ -93,6 +93,8 @@ pub fn install(vm: &mut VM) {
     vm.register_builtin(ops::OPEN_CALL, b_open_call);
     vm.register_builtin(ops::CALL_OPENED, b_call_opened);
     vm.register_builtin(ops::LOGIC2_ARG, b_logic2_arg);
+    vm.register_builtin(ops::LOOP_SIGNAL, b_loop_signal);
+    vm.register_builtin(ops::TAKE_LOOP_SIGNAL, b_take_loop_signal);
 }
 
 // ── small host wrappers (each takes and releases the borrow) ────────────
@@ -1231,9 +1233,28 @@ fn abort_in(vm: &mut VM, msg: String, call: Option<String>) -> Value {
     Value::Undef
 }
 
-/// Stop this chunk if a control signal (`break`/`next`/`return`) is pending.
+/// The message of `stop()` / `warning()` / `message()`: every argument that is
+/// not one of their options, pasted together.
+fn condition_text(a: &Args) -> String {
+    const OPTIONS: [&str; 5] = ["call.", "immediate.", "noBreaks.", "domain", "appendLF"];
+    a.all
+        .iter()
+        .filter(|(t, _)| !t.as_deref().is_some_and(|t| OPTIONS.contains(&t)))
+        .flat_map(|(_, v)| as_str(v))
+        .flatten()
+        .collect()
+}
+
+/// `call. = FALSE` leaves the condition without a call.
+fn wants_call(a: &Args) -> bool {
+    a.named("call.").and_then(|v| lgl1(&v)).unwrap_or(true)
+}
+
+/// Stop this chunk if a `return` or an error is pending. A pending `break` or
+/// `next` does not stop it: the lazy call that raised it is followed by the
+/// jump table (`TAKE_LOOP_SIGNAL`) that sends control to the loop.
 fn propagate(vm: &mut VM, v: Value) -> Value {
-    let pending = with_host(|h| h.signal.is_some() || h.error.is_some());
+    let pending = with_host(|h| matches!(h.signal, Some(Signal::Return(_))) || h.error.is_some());
     if pending {
         vm.ip = vm.chunk.ops.len();
     }
@@ -6106,10 +6127,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             if let Some(cond) = lone {
                 return resignal_condition(name, cond);
             }
-            let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
-            // R's `message` appends a newline to the condition's message; a
-            // warning's does not.
-            let text = text.join("") + if name == "message" { "\n" } else { "" };
+            let text = condition_text(&a);
+            // R's `message` appends a newline to the condition's message (unless
+            // `appendLF = FALSE`); a warning's does not.
+            let append_lf = a.named("appendLF").and_then(|v| lgl1(&v)).unwrap_or(true);
+            let text = text + if name == "message" && append_lf { "\n" } else { "" };
             let warn = name == "warning";
             let classes: Vec<String> = if warn {
                 ["simpleWarning", "warning", "condition"]
@@ -6129,7 +6151,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             // `warning()` and `message()` are closures in R, so `findCall`
             // starts one context out and the condition names their caller.
-            let raised_in = with_host(|h| h.enclosing_call_source());
+            let raised_in = with_host(|h| h.enclosing_call_source()).filter(|_| wants_call(&a));
             match signal_condition_with_muffle(&text, &classes, muffle, raised_in.clone())? {
                 // A `tryCatch` is waiting: raise it so the unwind reaches there.
                 Signalled::Unwind => {
@@ -6138,7 +6160,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 // Nothing took it — R's default action is to report and carry on.
                 Signalled::Fell => {
-                    if warn {
+                    if warn && !wants_call(&a) {
+                        crate::host::queue_warning(&text, None);
+                    } else if warn {
                         user_warning(&text);
                     } else {
                         crate::host::emit_stderr(&text);
@@ -6153,7 +6177,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(out)
         }
         "stop" => {
-            let text: Vec<String> = a.values().iter().flat_map(as_str).flatten().collect();
+            let text = condition_text(&a);
             // `stop(cond)` re-signals an existing condition object rather than
             // building a message out of it.
             let cond = a
@@ -6167,7 +6191,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     class_of(c),
                 ),
                 None => (
-                    text.join(""),
+                    text,
                     ["simpleError", "error", "condition"]
                         .iter()
                         .map(|s| s.to_string())
@@ -6185,7 +6209,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // `call <- conditionCall(cond)`.
             let call = match &cond {
                 Some(c) => condition_call_source(c),
-                None => with_host(|h| h.enclosing_call_source()),
+                None => with_host(|h| h.enclosing_call_source()).filter(|_| wants_call(&a)),
             };
             let obj = match &cond {
                 Some(c) => c.clone(),
@@ -17242,6 +17266,9 @@ fn try_catch(a: &Args) -> Result<Value, String> {
     }
     let out = run_lazy_body_at(&body, base.saturating_sub(1));
     with_host(|h| h.calls.truncate(base));
+    // A `return()` in `expr` is still pending; `finally` and the handlers run
+    // clear of it and it is put back before the result leaves.
+    let pending = with_host(|h| h.signal.take());
     // The error's own call comes off the host with its classes: the unwind has
     // already cut the context stack back past the frame that raised it, so the
     // condition handed to the handler can only be built from what was recorded.
@@ -17316,6 +17343,11 @@ fn try_catch(a: &Args) -> Result<Value, String> {
         run_lazy_body(&f)?;
         with_host(|h| h.visible = vis);
     }
+    with_host(|h| {
+        if h.signal.is_none() {
+            h.signal = pending;
+        }
+    });
     result
 }
 
@@ -19122,4 +19154,33 @@ mod tests {
     fn doubles_share_a_decimal_width_when_printed() {
         assert_eq!(eval_to_string("c(1, 2.5)").unwrap(), "[1] 1.0 2.5");
     }
+}
+
+/// `break` / `next` written inside a lazy body (`tryCatch(…)`, `try(…)`, …)
+/// that sits in a loop. R forces that body as a promise, so the jump leaves
+/// through the forcing call to the enclosing loop. Here the body is a thunk on
+/// its own chunk: record the jump and stop the chunk; `call_closure` keeps the
+/// signal pending for the loop's jump table to take.
+fn b_loop_signal(vm: &mut VM, _: u8) -> Value {
+    let signal = match vm.pop() {
+        Value::Int(1) => Signal::Break,
+        _ => Signal::Next,
+    };
+    with_host(|h| h.signal = Some(signal));
+    vm.ip = vm.chunk.ops.len();
+    Value::Undef
+}
+
+/// The pending loop signal as an integer — 0 none, 1 `break`, 2 `next` — and
+/// clear it.
+fn b_take_loop_signal(_: &mut VM, _: u8) -> Value {
+    let code = with_host(|h| match h.signal {
+        Some(Signal::Break) => 1,
+        Some(Signal::Next) => 2,
+        _ => 0,
+    });
+    if code != 0 {
+        with_host(|h| h.signal = None);
+    }
+    Value::Int(code)
 }

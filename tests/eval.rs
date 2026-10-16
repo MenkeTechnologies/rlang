@@ -871,3 +871,43 @@ fn regmatches_assignment_pastes_replacements_between_the_matches() {
         "[1] \"0ne tw0\" \"NA\""
     );
 }
+
+#[test]
+fn return_in_a_lazy_body_leaves_the_enclosing_function() {
+    // `tryCatch(expr)` forces `expr` as a promise, so `return()` in it returns
+    // from the function that wrote it, not from the body.
+    assert_eq!(r("g <- function() { tryCatch(return(1), error = function(e) 0); 2 }; g()"), "[1] 1");
+    assert_eq!(r("g <- function() { try(return(1)); 2 }; g()"), "[1] 1");
+    assert_eq!(r("g <- function() { suppressWarnings(return(1)); 2 }; g()"), "[1] 1");
+    assert_eq!(
+        r("g <- function() { withCallingHandlers(return(1), warning = function(w) 0); 2 }; g()"),
+        "[1] 1"
+    );
+    // `finally` still runs on the way out.
+    assert_eq!(
+        r("n <- 0; g <- function() { tryCatch(return(5), finally = n <<- n + 1); 2 }; c(g(), n)"),
+        "[1] 5 1"
+    );
+}
+
+#[test]
+fn break_and_next_in_a_lazy_body_act_on_the_enclosing_loop() {
+    assert_eq!(
+        r("s <- 0; for (i in 1:5) { tryCatch({ if (i == 2) next; s <- s + i }, error = function(e) 0) }; s"),
+        "[1] 13"
+    );
+    assert_eq!(
+        r("s <- 0; for (i in 1:5) { tryCatch({ if (i == 3) break; s <- s + i }, finally = NULL) }; s"),
+        "[1] 3"
+    );
+    // Through two lazy frames, in a `repeat`.
+    assert_eq!(
+        r("i <- 0; repeat { i <- i + 1; try(suppressWarnings(if (i > 3) break)) }; i"),
+        "[1] 4"
+    );
+    // With no loop around it, `next` is still an error a handler can see.
+    assert_eq!(
+        r("tryCatch(next, error = function(e) conditionMessage(e))"),
+        "[1] \"no loop for break/next, jumping to top level\""
+    );
+}

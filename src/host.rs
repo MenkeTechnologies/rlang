@@ -144,6 +144,14 @@ pub mod ops {
     /// `which` is `"x&&"`, `"y||"`, … — the operand and the operator, which
     /// name it in the error a non-number or a longer vector raises.
     pub const LOGIC2_ARG: u16 = 60;
+    /// `[kind]` → stops the chunk with a pending `break` (1) or `next` (2).
+    /// What those mean inside a lazy body (`tryCatch(expr)` and friends), which
+    /// R evaluates as a promise: the loop that encloses the call is the target.
+    pub const LOOP_SIGNAL: u16 = 61;
+    /// `[]` → the pending loop signal as an integer (0 none, 1 break, 2 next),
+    /// cleared. Emitted after a lazy call inside a loop so its jump table can
+    /// act on a `break`/`next` the body raised.
+    pub const TAKE_LOOP_SIGNAL: u16 = 62;
 }
 
 /// A variable environment: a frame's bindings plus a link to its enclosure.
@@ -2656,6 +2664,14 @@ pub fn call_closure(
         }
     }
     let out = out?;
+    // A promise has no function of its own: a `return()` in it leaves the
+    // function that wrote the expression, so the signal stays pending for the
+    // chunk that forced it to halt on.
+    if promise {
+        if let Some(Signal::Return(v)) = with_host(|h| h.signal.clone()) {
+            return Ok(v);
+        }
+    }
     // A `return()` inside the body halted the chunk; its value is the result.
     let sig = with_host(|h| h.signal.take());
     match sig {
