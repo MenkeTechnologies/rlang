@@ -876,9 +876,15 @@ fn regmatches_assignment_pastes_replacements_between_the_matches() {
 fn return_in_a_lazy_body_leaves_the_enclosing_function() {
     // `tryCatch(expr)` forces `expr` as a promise, so `return()` in it returns
     // from the function that wrote it, not from the body.
-    assert_eq!(r("g <- function() { tryCatch(return(1), error = function(e) 0); 2 }; g()"), "[1] 1");
+    assert_eq!(
+        r("g <- function() { tryCatch(return(1), error = function(e) 0); 2 }; g()"),
+        "[1] 1"
+    );
     assert_eq!(r("g <- function() { try(return(1)); 2 }; g()"), "[1] 1");
-    assert_eq!(r("g <- function() { suppressWarnings(return(1)); 2 }; g()"), "[1] 1");
+    assert_eq!(
+        r("g <- function() { suppressWarnings(return(1)); 2 }; g()"),
+        "[1] 1"
+    );
     assert_eq!(
         r("g <- function() { withCallingHandlers(return(1), warning = function(w) 0); 2 }; g()"),
         "[1] 1"
@@ -952,8 +958,14 @@ fn all_equal(args: &str) -> String {
 fn all_equal_reports_what_differs_the_way_the_r_methods_do() {
     // Messages read off R 4.6's `all.equal.numeric` / `.character` / `.raw` /
     // `.list` / `.factor` and `attr.all.equal`.
-    assert_eq!(all_equal("c(a = 1), c(b = 1)"), "[1] \"\\\"Names: 1 string mismatch\\\"\"");
-    assert_eq!(all_equal("c(1, 2), c(1, 2, 3)"), "[1] \"\\\"Numeric: lengths (2, 3) differ\\\"\"");
+    assert_eq!(
+        all_equal("c(a = 1), c(b = 1)"),
+        "[1] \"\\\"Names: 1 string mismatch\\\"\""
+    );
+    assert_eq!(
+        all_equal("c(1, 2), c(1, 2, 3)"),
+        "[1] \"\\\"Numeric: lengths (2, 3) differ\\\"\""
+    );
     assert_eq!(
         all_equal("c(\"a\", \"b\", \"c\"), c(\"x\", \"y\", \"c\")"),
         "[1] \"\\\"2 string mismatches\\\"\""
@@ -991,7 +1003,10 @@ fn print_escapes_every_control_character_as_r_does() {
     // `\a \b \f \v` and the other controls (as three-digit octal) were written
     // raw, so the line printed blank where R shows the escape.
     assert_eq!(r(r#""\f a \v""#), r#"[1] "\f a \v""#);
-    assert_eq!(r(r#"c("\a\b", "\001\177")"#), r#"[1] "\a\b"     "\001\177""#);
+    assert_eq!(
+        r(r#"c("\a\b", "\001\177")"#),
+        r#"[1] "\a\b"     "\001\177""#
+    );
     assert_eq!(r(r#"deparse("\f\v")"#), r#"[1] "\"\\f\\v\"""#);
 }
 

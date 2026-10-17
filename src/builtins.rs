@@ -3794,10 +3794,17 @@ fn assign_factor(
         .iter()
         .map(|l| {
             let l = l.as_ref()?;
-            known.iter().position(|k| k.as_ref() == Some(l)).map(|i| i as i64 + 1)
+            known
+                .iter()
+                .position(|k| k.as_ref() == Some(l))
+                .map(|i| i as i64 + 1)
         })
         .collect();
-    if codes.iter().zip(&labels).any(|(c, l)| c.is_none() && l.is_some()) {
+    if codes
+        .iter()
+        .zip(&labels)
+        .any(|(c, l)| c.is_none() && l.is_some())
+    {
         // R names ``[<-.factor`(`*tmp*`, i, value = v)``; an index assignment carries
         // no call text here, so this is reported without one (see BUGS.md).
         binop_warning("invalid factor level, NA generated")?;
@@ -3923,7 +3930,12 @@ fn assign_index(
     // that before it looks at the subscript.
     // A subscript longer than one is a recursive index, which an atomic vector
     // refuses first (below).
-    if single_slot && len(idx) <= 1 && kind(x) != RKind::List && kind(x) != RKind::Null && len(value) > 1 {
+    if single_slot
+        && len(idx) <= 1
+        && kind(x) != RKind::List
+        && kind(x) != RKind::Null
+        && len(value) > 1
+    {
         return Err("more elements supplied than there are to replace".into());
     }
     // `x[[i]] <- v` resolves a numeric `i` through `OneIndex`, whose messages
@@ -6172,7 +6184,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // R's `message` appends a newline to the condition's message (unless
             // `appendLF = FALSE`); a warning's does not.
             let append_lf = a.named("appendLF").and_then(|v| lgl1(&v)).unwrap_or(true);
-            let text = text + if name == "message" && append_lf { "\n" } else { "" };
+            let text = text
+                + if name == "message" && append_lf {
+                    "\n"
+                } else {
+                    ""
+                };
             let warn = name == "warning";
             let classes: Vec<String> = if warn {
                 ["simpleWarning", "warning", "condition"]
@@ -8577,7 +8594,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let which = a
                 .get(1, "which")
                 .and_then(|v| str1(&v))
-                .and_then(|w| ["both", "left", "right"].into_iter().find(|o| !w.is_empty() && o.starts_with(&w)))
+                .and_then(|w| {
+                    ["both", "left", "right"]
+                        .into_iter()
+                        .find(|o| !w.is_empty() && o.starts_with(&w))
+                })
                 .unwrap_or("both")
                 .to_string();
             // R: `sub("^<ws>+", "", x)` for the left edge, `sub("<ws>+$", "", x)`
@@ -8600,7 +8621,12 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
             };
             shaped_like(
-                mk_str(as_str_labels(&xv).iter().map(|s| s.as_deref().map(trim)).collect()),
+                mk_str(
+                    as_str_labels(&xv)
+                        .iter()
+                        .map(|s| s.as_deref().map(trim))
+                        .collect(),
+                ),
                 &xv,
             )
         }
@@ -18752,7 +18778,13 @@ fn print_method_lines(v: &Value) -> Option<Vec<String>> {
         s3_primitive_method("print", std::slice::from_ref(&(None, v.clone())))
     });
     match result {
-        Some(Ok(_)) => Some(text.strip_suffix('\n').unwrap_or(&text).split('\n').map(String::from).collect()),
+        Some(Ok(_)) => Some(
+            text.strip_suffix('\n')
+                .unwrap_or(&text)
+                .split('\n')
+                .map(String::from)
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -19271,7 +19303,10 @@ fn attr_all_equal(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
         let (nx, ny) = (names_of(x), names_of(y));
         let (lx, ly) = (nx.len(), ny.len());
         if lx > 0 && ly > 0 {
-            let plain = AllEq { check_attributes: o.check_attributes, ..o.clone() };
+            let plain = AllEq {
+                check_attributes: o.check_attributes,
+                ..o.clone()
+            };
             msg.extend(
                 all_equal_character(&mk_str(nx), &mk_str(ny), &plain)
                     .into_iter()
@@ -19329,14 +19364,22 @@ fn all_equal(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
 /// classes differ and the comparison stops there.
 fn class_mismatch(x: &Value, y: &Value, mut msg: Vec<String>) -> Result<Vec<String>, Vec<String>> {
     if data_class(x) != data_class(y) {
-        msg.push(format!("target is {}, current is {}", data_class(x), data_class(y)));
+        msg.push(format!(
+            "target is {}, current is {}",
+            data_class(x),
+            data_class(y)
+        ));
         return Err(msg);
     }
     Ok(msg)
 }
 
 fn all_equal_numeric(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
-    let msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let msg = if o.check_attributes {
+        attr_all_equal(x, y, o)
+    } else {
+        Vec::new()
+    };
     let mut msg = match class_mismatch(x, y, msg) {
         Ok(m) => m,
         Err(m) => return m,
@@ -19351,8 +19394,13 @@ fn all_equal_numeric(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
         t.iter().filter(|v| is_missing_double(v)).count(),
         c.iter().filter(|v| is_missing_double(v)).count(),
     );
-    if t.iter().zip(&c).any(|(a, b)| is_missing_double(a) != is_missing_double(b)) {
-        msg.push(format!("'is.NA' value mismatch: {na_c} in current {na_t} in target"));
+    if t.iter()
+        .zip(&c)
+        .any(|(a, b)| is_missing_double(a) != is_missing_double(b))
+    {
+        msg.push(format!(
+            "'is.NA' value mismatch: {na_c} in current {na_t} in target"
+        ));
         return msg;
     }
     let same: Vec<bool> = t
@@ -19396,9 +19444,16 @@ fn all_equal_numeric(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
         Some(s) if (s - 1.0).abs() < 1e-7 => ("absolute", s),
         Some(s) => ("scaled", s),
     };
-    let xy: f64 = t.iter().zip(&c).map(|(a, b)| (a - b).abs() / (n * scale)).sum();
+    let xy: f64 = t
+        .iter()
+        .zip(&c)
+        .map(|(a, b)| (a - b).abs() / (n * scale))
+        .sum();
     if xy.is_nan() || xy > o.tolerance {
-        msg.push(format!("Mean {what} difference: {}", crate::host::format_dbl(xy)));
+        msg.push(format!(
+            "Mean {what} difference: {}",
+            crate::host::format_dbl(xy)
+        ));
     }
     msg
 }
@@ -19413,7 +19468,11 @@ fn all_equal_elementwise(
     count_msg: impl Fn(usize) -> String,
     text: impl Fn(&Value) -> Vec<Option<String>>,
 ) -> Vec<String> {
-    let msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let msg = if o.check_attributes {
+        attr_all_equal(x, y, o)
+    } else {
+        Vec::new()
+    };
     let mut msg = match class_mismatch(x, y, msg) {
         Ok(m) => m,
         Err(m) => return m,
@@ -19431,10 +19490,16 @@ fn all_equal_elementwise(
         c.iter().filter(|v| v.is_none()).count(),
     );
     if t.iter().zip(&c).any(|(a, b)| a.is_none() != b.is_none()) {
-        msg.push(format!("'is.NA' value mismatch: {na_c} in current {na_t} in target"));
+        msg.push(format!(
+            "'is.NA' value mismatch: {na_c} in current {na_t} in target"
+        ));
         return msg;
     }
-    let ne = t.iter().zip(&c).filter(|(a, b)| a.is_some() && a != b).count();
+    let ne = t
+        .iter()
+        .zip(&c)
+        .filter(|(a, b)| a.is_some() && a != b)
+        .count();
     if ne > 0 {
         msg.push(count_msg(ne));
     }
@@ -19461,17 +19526,28 @@ fn all_equal_raw(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
         x,
         y,
         o,
-        |lt, lc, keep| format!("Lengths ({lt}, {lc}) differ (comparison on first {keep} components)"),
+        |lt, lc, keep| {
+            format!("Lengths ({lt}, {lc}) differ (comparison on first {keep} components)")
+        },
         |n| match n {
             1 => "1 element mismatch".to_string(),
             n => format!("{n} element mismatches"),
         },
-        |v| as_lgl(v).into_iter().map(|b| b.map(|b| b.to_string())).collect(),
+        |v| {
+            as_lgl(v)
+                .into_iter()
+                .map(|b| b.map(|b| b.to_string()))
+                .collect()
+        },
     )
 }
 
 fn all_equal_list(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
-    let mut msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let mut msg = if o.check_attributes {
+        attr_all_equal(x, y, o)
+    } else {
+        Vec::new()
+    };
     if matches!(kind(y), RKind::Null | RKind::Closure | RKind::Builtin) {
         msg.push("current is not list-like".into());
         return msg;
@@ -19480,11 +19556,16 @@ fn all_equal_list(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
     let n = ex.len().min(ey.len());
     if ex.len() != ey.len() {
         drop_lengths_messages(&mut msg);
-        msg.push(format!("Length mismatch: comparison on first {n} components"));
+        msg.push(format!(
+            "Length mismatch: comparison on first {n} components"
+        ));
     }
     let (nt, nc) = (names_of(x), names_of(y));
     let use_names = o.use_names && nt.len() >= n && nc.len() >= n && n > 0;
-    let inner = AllEq { use_names, ..o.clone() };
+    let inner = AllEq {
+        use_names,
+        ..o.clone()
+    };
     for i in 0..n {
         let label = match (use_names, nt.get(i), nc.get(i)) {
             (true, Some(Some(a)), Some(Some(b))) if a == b => format!("\u{201c}{a}\u{201d}"),
@@ -19503,7 +19584,11 @@ fn all_equal_factor(x: &Value, y: &Value, o: &AllEq) -> Vec<String> {
     if !is_factor(y) {
         return vec!["'current' is not a factor".into()];
     }
-    let mut msg = if o.check_attributes { attr_all_equal(x, y, o) } else { Vec::new() };
+    let mut msg = if o.check_attributes {
+        attr_all_equal(x, y, o)
+    } else {
+        Vec::new()
+    };
     let (nax, nay): (Vec<bool>, Vec<bool>) = (
         as_int(x).iter().map(Option::is_none).collect(),
         as_int(y).iter().map(Option::is_none).collect(),
@@ -19537,7 +19622,12 @@ fn not_equal_message(what: &str, result: &Value) -> Option<String> {
     let [target, current] = plain.as_slice() else {
         return None;
     };
-    let show = |a: &&Arg| a.value.as_ref().map(crate::deparse::deparse_expr).unwrap_or_default();
+    let show = |a: &&Arg| {
+        a.value
+            .as_ref()
+            .map(crate::deparse::deparse_expr)
+            .unwrap_or_default()
+    };
     let diffs: Vec<String> = as_str(result).into_iter().flatten().collect();
     Some(format!(
         "{} and {} are not equal:\n  {}",
@@ -19552,12 +19642,17 @@ fn not_equal_message(what: &str, result: &Value) -> Option<String> {
 fn all_equal_call(a: &Args) -> Result<Value, String> {
     let x = a.req(0, "target")?;
     let y = a.req(1, "current")?;
-    if a.get(2, "tolerance").is_some_and(|t| !matches!(kind(&t), RKind::Dbl | RKind::Int)) {
+    if a.get(2, "tolerance")
+        .is_some_and(|t| !matches!(kind(&t), RKind::Dbl | RKind::Int))
+    {
         return Err("'tolerance' should be numeric".into());
     }
     let flag = |name: &str, default: bool| a.named(name).and_then(|v| lgl1(&v)).unwrap_or(default);
     let o = AllEq {
-        tolerance: a.get(2, "tolerance").and_then(|v| num1(&v)).unwrap_or(1.5e-8),
+        tolerance: a
+            .get(2, "tolerance")
+            .and_then(|v| num1(&v))
+            .unwrap_or(1.5e-8),
         scale: a.named("scale").and_then(|v| num1(&v)),
         count_eq: flag("countEQ", false),
         check_attributes: flag("check.attributes", true),

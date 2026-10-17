@@ -353,8 +353,14 @@ fn mapply_warns_when_argument_lengths_do_not_divide() {
         "Warning message:\nIn mapply(FUN = f, ..., SIMPLIFY = FALSE) :\n  longer argument not a multiple of length of shorter\n"
     );
     // Lengths that divide evenly, and zero-length input, stay silent.
-    assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:4, 1:2))"), "");
-    assert_eq!(merged("invisible(mapply(function(a, b) a + b, 1:3, integer(0)))"), "");
+    assert_eq!(
+        merged("invisible(mapply(function(a, b) a + b, 1:4, 1:2))"),
+        ""
+    );
+    assert_eq!(
+        merged("invisible(mapply(function(a, b) a + b, 1:3, integer(0)))"),
+        ""
+    );
 }
 
 #[test]
@@ -366,14 +372,21 @@ fn call_false_and_append_lf_are_options_not_message_text() {
         "Warning message:\nw \n"
     );
     assert_eq!(
-        merged(r#"g <- function() stop("e", call. = FALSE); tryCatch(g(), error = function(e) print(e))"#),
+        merged(
+            r#"g <- function() stop("e", call. = FALSE); tryCatch(g(), error = function(e) print(e))"#
+        ),
         "<simpleError: e>\n"
     );
     assert_eq!(
-        merged(r#"print(tryCatch(warning("x", call. = FALSE), warning = function(w) is.null(conditionCall(w))))"#),
+        merged(
+            r#"print(tryCatch(warning("x", call. = FALSE), warning = function(w) is.null(conditionCall(w))))"#
+        ),
         "[1] TRUE\n"
     );
-    assert_eq!(merged(r#"message("a", appendLF = FALSE); message("b")"#), "ab\n");
+    assert_eq!(
+        merged(r#"message("a", appendLF = FALSE); message("b")"#),
+        "ab\n"
+    );
 }
 
 #[test]
@@ -391,7 +404,9 @@ fn assigning_into_a_factor_matches_levels_and_warns_on_unknown_ones() {
         "Warning message:\ninvalid factor level, NA generated \n[1] <NA> b   \nLevels: a b\n"
     );
     assert_eq!(
-        merged(r#"f <- factor(c("a", "b")); f[1:2] <- factor("b", levels = c("b", "a")); print(f)"#),
+        merged(
+            r#"f <- factor(c("a", "b")); f[1:2] <- factor("b", levels = c("b", "a")); print(f)"#
+        ),
         "[1] b b\nLevels: a b\n"
     );
 }

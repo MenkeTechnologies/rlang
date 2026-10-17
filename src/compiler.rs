@@ -1090,8 +1090,8 @@ impl Compiler {
                 b.emit(Op::CallBuiltin(call_op, 3), 0);
                 // The body of a lazy call is a promise: a `break`/`next` in it
                 // leaves through this call to the loop that encloses it.
-                let defers = thunked.is_some()
-                    && !matches!(fun.as_ref(), Expr::Ident(n) if n == "on.exit");
+                let defers =
+                    thunked.is_some() && !matches!(fun.as_ref(), Expr::Ident(n) if n == "on.exit");
                 if defers && (!self.loops.is_empty() || self.lazy_loop) {
                     self.dispatch_loop_signal(b);
                 }
