@@ -7561,7 +7561,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         // `var(x, y)` and `var(matrix)` are `cov`; a plain `var(x)` is the
         // two-pass scalar below.
-        "var" if a.get(1, "y").is_some_and(|y| !is_null(&y)) || dims_of(&a.req(0, "x")?).len() == 2 => {
+        "var"
+            if a.get(1, "y").is_some_and(|y| !is_null(&y))
+                || dims_of(&a.req(0, "x")?).len() == 2 =>
+        {
             cov_cor(&a, false)
         }
         "var" | "sd" => {
@@ -12234,15 +12237,13 @@ fn cov_cor(a: &Args, is_cor: bool) -> Result<Value, String> {
             .filter(|v| kind(v) == RKind::Str)
             .and_then(|v| str1(&v))
     };
-    let pick = |given: Option<String>, choices: &[&'static str], dflt: &'static str| {
-        match given {
-            None => Ok(dflt),
-            Some(g) => choices
-                .iter()
-                .find(|c| c.starts_with(g.as_str()))
-                .copied()
-                .ok_or_else(|| "invalid 'use' argument".to_string()),
-        }
+    let pick = |given: Option<String>, choices: &[&'static str], dflt: &'static str| match given {
+        None => Ok(dflt),
+        Some(g) => choices
+            .iter()
+            .find(|c| c.starts_with(g.as_str()))
+            .copied()
+            .ok_or_else(|| "invalid 'use' argument".to_string()),
     };
     let mut use_given = string_arg(2, "use");
     if use_given.is_none() && a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false) {
@@ -12296,7 +12297,11 @@ fn cov_cor(a: &Args, is_cor: bool) -> Result<Value, String> {
         for (i, xcol) in xc.iter().enumerate() {
             // `cor(x)` pins the diagonal to 1 unless fewer than two rows are used.
             if is_cor && y.is_none() && i == j && use_ != "pairwise.complete.obs" {
-                let used = if use_ == "everything" { nrow } else { complete_n };
+                let used = if use_ == "everything" {
+                    nrow
+                } else {
+                    complete_n
+                };
                 if used >= 2 {
                     out.push(Some(1.0));
                     continue;
@@ -12325,7 +12330,10 @@ fn cov_cor(a: &Args, is_cor: bool) -> Result<Value, String> {
         }
     }
     if sd_zero {
-        r_warning("the standard deviation is zero", with_host(|h| h.current_call()));
+        r_warning(
+            "the standard deviation is zero",
+            with_host(|h| h.current_call()),
+        );
     }
     let res = mk_dbl(out);
     if !xm && !ym {

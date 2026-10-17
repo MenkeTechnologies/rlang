@@ -1026,9 +1026,15 @@ fn trimws_strips_only_the_whitespace_class_and_takes_a_pattern() {
 fn cor_and_cov_honour_method_and_use() {
     // Expected values read off R's `cov.c` via Rscript.
     let xy = "x <- c(1, 2, 3, 4, 5); y <- c(2, 1, 4, 3, 5); ";
-    assert_eq!(r(&format!("{xy}cor(x, y, method = \"kendall\")")), "[1] 0.6");
+    assert_eq!(
+        r(&format!("{xy}cor(x, y, method = \"kendall\")")),
+        "[1] 0.6"
+    );
     assert_eq!(r(&format!("{xy}cov(x, y, method = \"kendall\")")), "[1] 12");
-    assert_eq!(r(&format!("{xy}cor(x, y, method = \"spearman\")")), "[1] 0.8");
+    assert_eq!(
+        r(&format!("{xy}cor(x, y, method = \"spearman\")")),
+        "[1] 0.8"
+    );
     // Tied values: tau-b and average-rank Spearman.
     assert_eq!(
         r("cor(c(1, 2, 2, 4), c(2, 1, 3, 5), method = \"kendall\")"),
@@ -1068,5 +1074,8 @@ fn cor_cov_var_of_a_matrix_are_labelled_matrices() {
 #[test]
 fn rep_with_per_element_times_after_each() {
     assert_eq!(r("rep(1:3, times = c(1, 2, 3))"), "[1] 1 2 2 3 3 3");
-    assert_eq!(r("rep(1:2, each = 2, times = c(1, 0, 2, 1))"), "[1] 1 2 2 2");
+    assert_eq!(
+        r("rep(1:2, each = 2, times = c(1, 0, 2, 1))"),
+        "[1] 1 2 2 2"
+    );
 }
