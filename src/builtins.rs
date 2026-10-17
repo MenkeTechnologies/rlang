@@ -7522,34 +7522,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             };
             math2(&Args::new(vec![(None, x), (None, digits)]), 0.0, r_round)
         }
-        "cor" => {
-            // Pearson correlation of two equal-length numeric vectors.
-            let x = numeric_arg(&a, 0, "x")?;
-            let y = as_dbl(&a.req(1, "y")?)
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            let n = x.len().min(y.len());
-            if n < 2 {
-                return Ok(mk_dbl(vec![None]));
-            }
-            let mx = x[..n].iter().sum::<f64>() / n as f64;
-            let my = y[..n].iter().sum::<f64>() / n as f64;
-            let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
-            for i in 0..n {
-                let (dx, dy) = (x[i] - mx, y[i] - my);
-                sxy += dx * dy;
-                sxx += dx * dx;
-                syy += dy * dy;
-            }
-            // Zero variance in either vector makes the correlation undefined:
-            // R returns NA there, not the `0/0 = NaN` the formula would give.
-            if sxx == 0.0 || syy == 0.0 {
-                Ok(mk_dbl(vec![None]))
-            } else {
-                Ok(scalar_dbl(sxy / (sxx.sqrt() * syy.sqrt())))
-            }
-        }
+        "cor" | "cov" => cov_cor(&a, name == "cor"),
         "rle" => {
             let x = a.req(0, "x")?;
             let keys = as_str(&x);
@@ -7586,32 +7559,10 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             }
             Ok(take_positions(&values, &pos))
         }
-        // `var(x, y)` is `cov(x, y)`: R's `cov.c` with complete observations —
-        // each mean refined by one correction pass, then the cross-product sum
-        // over n - 1. NA in either vector (without `use =`) answers NA.
-        "var" | "cov" if name == "cov" || a.get(1, "y").is_some_and(|y| !is_null(&y)) => {
-            let x = as_dbl(&a.req(0, "x")?);
-            let y = as_dbl(&a.req(1, "y")?);
-            if x.len() != y.len() {
-                return Err("incompatible dimensions".into());
-            }
-            let (Some(x), Some(y)) = (
-                x.into_iter().collect::<Option<Vec<f64>>>(),
-                y.into_iter().collect::<Option<Vec<f64>>>(),
-            ) else {
-                return Ok(mk_dbl(vec![None]));
-            };
-            if x.len() < 2 {
-                return Ok(mk_dbl(vec![None]));
-            }
-            let n = x.len() as f64;
-            let mean = |v: &[f64]| {
-                let m = v.iter().sum::<f64>() / n;
-                m + v.iter().map(|e| e - m).sum::<f64>() / n
-            };
-            let (mx, my) = (mean(&x), mean(&y));
-            let s: f64 = x.iter().zip(&y).map(|(a, b)| (a - mx) * (b - my)).sum();
-            Ok(scalar_dbl(s / (n - 1.0)))
+        // `var(x, y)` and `var(matrix)` are `cov`; a plain `var(x)` is the
+        // two-pass scalar below.
+        "var" if a.get(1, "y").is_some_and(|y| !is_null(&y)) || dims_of(&a.req(0, "x")?).len() == 2 => {
+            cov_cor(&a, false)
         }
         "var" | "sd" => {
             let xs = numeric_arg(&a, 0, "x")?;
@@ -12177,6 +12128,220 @@ fn seq(a: &Args) -> Result<Value, String> {
     } else {
         mk_dbl(out)
     })
+}
+
+/// Average ranks (R's `rank(ties.method = "average")`) of a complete vector.
+fn average_ranks(v: &[f64]) -> Vec<f64> {
+    let mut idx: Vec<usize> = (0..v.len()).collect();
+    idx.sort_by(|&i, &j| v[i].total_cmp(&v[j]));
+    let mut ranks = vec![0.0; v.len()];
+    let mut i = 0;
+    while i < idx.len() {
+        let mut j = i + 1;
+        while j < idx.len() && v[idx[j]] == v[idx[i]] {
+            j += 1;
+        }
+        for &k in &idx[i..j] {
+            ranks[k] = (i + 1 + j) as f64 / 2.0;
+        }
+        i = j;
+    }
+    ranks
+}
+
+/// One cell of R's `cov.c` over complete vectors of equal length: Pearson
+/// (each mean refined by a correction pass, sums over n - 1), Spearman (Pearson
+/// on average ranks) or Kendall (sums of sign products over ordered pairs, with
+/// no n - 1 divisor). A correlation with zero spread, or fewer than two pairs,
+/// is NA; a correlation is clamped to [-1, 1].
+fn cov_cor_cell(xs: &[f64], ys: &[f64], method: &str, is_cor: bool) -> Option<f64> {
+    let n = xs.len();
+    if n < 2 {
+        return None;
+    }
+    let sign = |d: f64| {
+        if d > 0.0 {
+            1.0
+        } else if d < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    };
+    let (sxy, sxx, syy, div) = if method == "kendall" {
+        let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            for j in (0..n).filter(|&j| j != i) {
+                let (sx, sy) = (sign(xs[i] - xs[j]), sign(ys[i] - ys[j]));
+                sxy += sx * sy;
+                sxx += sx * sx;
+                syy += sy * sy;
+            }
+        }
+        (sxy, sxx, syy, 1.0)
+    } else {
+        let (rx, ry);
+        let (xs, ys) = if method == "spearman" {
+            rx = average_ranks(xs);
+            ry = average_ranks(ys);
+            (&rx[..], &ry[..])
+        } else {
+            (xs, ys)
+        };
+        let nf = n as f64;
+        let mean = |v: &[f64]| {
+            let m = v.iter().sum::<f64>() / nf;
+            m + v.iter().map(|e| e - m).sum::<f64>() / nf
+        };
+        let (mx, my) = (mean(xs), mean(ys));
+        let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+        for (x, y) in xs.iter().zip(ys) {
+            let (dx, dy) = (x - mx, y - my);
+            sxy += dx * dy;
+            sxx += dx * dx;
+            syy += dy * dy;
+        }
+        (sxy, sxx, syy, nf - 1.0)
+    };
+    if !is_cor {
+        return Some(sxy / div);
+    }
+    let (xsd, ysd) = ((sxx / div).sqrt(), (syy / div).sqrt());
+    if xsd == 0.0 || ysd == 0.0 {
+        return None;
+    }
+    Some((sxy / div / (xsd * ysd)).clamp(-1.0, 1.0))
+}
+
+/// R's `cov` / `cor` / `var(x, y)` (stats `cov.c`): vectors or matrices,
+/// `use` and `method`. Two vectors give a scalar; a matrix on either side gives
+/// the matrix of column pairs, labelled by the column names.
+fn cov_cor(a: &Args, is_cor: bool) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let y = a.get(1, "y").filter(|v| !is_null(v));
+    let is_mat = |v: &Value| dims_of(v).len() == 2;
+    let (xm, ym) = (is_mat(&x), y.as_ref().is_some_and(is_mat));
+    if y.is_none() && !xm {
+        return Err("supply both 'x' and 'y' or a matrix-like 'x'".into());
+    }
+    for v in std::iter::once(&x).chain(y.iter()) {
+        if matches!(kind(v), RKind::Str | RKind::List) {
+            return Err("is.numeric(x) || is.logical(x) is not TRUE".into());
+        }
+    }
+    let string_arg = |i: usize, name: &str| {
+        a.get(i, name)
+            .filter(|v| kind(v) == RKind::Str)
+            .and_then(|v| str1(&v))
+    };
+    let pick = |given: Option<String>, choices: &[&'static str], dflt: &'static str| {
+        match given {
+            None => Ok(dflt),
+            Some(g) => choices
+                .iter()
+                .find(|c| c.starts_with(g.as_str()))
+                .copied()
+                .ok_or_else(|| "invalid 'use' argument".to_string()),
+        }
+    };
+    let mut use_given = string_arg(2, "use");
+    if use_given.is_none() && a.named("na.rm").and_then(|v| lgl1(&v)).unwrap_or(false) {
+        use_given = Some("na.or.complete".into());
+    }
+    let use_ = pick(
+        use_given,
+        &[
+            "all.obs",
+            "complete.obs",
+            "pairwise.complete.obs",
+            "everything",
+            "na.or.complete",
+        ],
+        "everything",
+    )?;
+    let method = match string_arg(3, "method") {
+        None => "pearson",
+        Some(g) => ["pearson", "kendall", "spearman"]
+            .into_iter()
+            .find(|c| c.starts_with(g.as_str()))
+            .ok_or("'arg' should be one of \u{2018}pearson\u{2019}, \u{2018}kendall\u{2019}, \u{2018}spearman\u{2019}")?,
+    };
+    let columns = |v: &Value| -> Vec<Vec<Option<f64>>> {
+        let (nr, nc) = mat_dim(v);
+        let d = as_dbl(v);
+        (0..nc).map(|j| d[j * nr..(j + 1) * nr].to_vec()).collect()
+    };
+    let xc = columns(&x);
+    let yc = y.as_ref().map_or_else(|| xc.clone(), columns);
+    let nrow = xc.first().map_or(0, Vec::len);
+    if yc.first().map_or(0, Vec::len) != nrow {
+        return Err("incompatible dimensions".into());
+    }
+    let bad = |e: &Option<f64>| e.is_none_or(f64::is_nan);
+    let complete_row: Vec<bool> = (0..nrow)
+        .map(|r| !xc.iter().chain(&yc).any(|c| bad(&c[r])))
+        .collect();
+    let complete_n = complete_row.iter().filter(|&&c| c).count();
+    let all_complete = complete_row.iter().all(|&c| c);
+    match use_ {
+        "all.obs" if !all_complete => return Err("missing observations in cov/cor".into()),
+        "complete.obs" if !complete_row.iter().any(|&c| c) => {
+            return Err("no complete element pairs".into());
+        }
+        _ => {}
+    }
+    let mut out = Vec::with_capacity(xc.len() * yc.len());
+    let mut sd_zero = false;
+    for (j, ycol) in yc.iter().enumerate() {
+        for (i, xcol) in xc.iter().enumerate() {
+            // `cor(x)` pins the diagonal to 1 unless fewer than two rows are used.
+            if is_cor && y.is_none() && i == j && use_ != "pairwise.complete.obs" {
+                let used = if use_ == "everything" { nrow } else { complete_n };
+                if used >= 2 {
+                    out.push(Some(1.0));
+                    continue;
+                }
+            }
+            let rows: Vec<usize> = match use_ {
+                "pairwise.complete.obs" => (0..nrow)
+                    .filter(|&r| !bad(&xcol[r]) && !bad(&ycol[r]))
+                    .collect(),
+                "complete.obs" | "na.or.complete" | "all.obs" => {
+                    (0..nrow).filter(|&r| complete_row[r]).collect()
+                }
+                _ => {
+                    if (0..nrow).any(|r| bad(&xcol[r]) || bad(&ycol[r])) {
+                        out.push(None);
+                        continue;
+                    }
+                    (0..nrow).collect()
+                }
+            };
+            let xs: Vec<f64> = rows.iter().filter_map(|&r| xcol[r]).collect();
+            let ys: Vec<f64> = rows.iter().filter_map(|&r| ycol[r]).collect();
+            let cell = cov_cor_cell(&xs, &ys, method, is_cor);
+            sd_zero |= is_cor && cell.is_none() && xs.len() >= 2;
+            out.push(cell);
+        }
+    }
+    if sd_zero {
+        r_warning("the standard deviation is zero", with_host(|h| h.current_call()));
+    }
+    let res = mk_dbl(out);
+    if !xm && !ym {
+        return Ok(res);
+    }
+    let dim = mk_int(vec![Some(xc.len() as i64), Some(yc.len() as i64)]);
+    with_host(|h| h.set_attr(&res, "dim", dim));
+    let colnames = |v: &Value| dimnames_of(v).get(1).cloned().flatten();
+    let rn = if xm { colnames(&x) } else { None };
+    let cn = match &y {
+        Some(yv) if ym => colnames(yv),
+        Some(_) => None,
+        None => rn.clone(),
+    };
+    set_dimnames(&res, rn, cn);
+    Ok(res)
 }
 
 /// `rep(x, times=, each=)`. A missing or negative `times` or `each` is R's

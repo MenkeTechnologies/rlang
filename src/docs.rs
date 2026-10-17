@@ -428,7 +428,7 @@ const SEQUENCES: &[Entry] = &[
     (
         "rep",
         "rep(x, times = 1, each = 1)",
-        "Repeat x: each element `each` times, the whole sequence `times` times. A vector-valued `times` — R's per-element repeat count — is not supported; only its first element is read.",
+        "Repeat x: each element `each` times, the whole sequence `times` times. A vector-valued `times` gives a per-element repeat count (after `each`), and `length.out` truncates or recycles the result.",
     ),
     (
         "rep_len",
@@ -536,7 +536,7 @@ const ORDERING: &[Entry] = &[
     (
         "which",
         "which(x)",
-        "The 1-based positions where x is TRUE, carrying the names of the selected elements. `arr.ind` is not supported.",
+        "The 1-based positions where x is TRUE, carrying the names of the selected elements. With `arr.ind = TRUE` an array answers one row of per-margin subscripts per hit.",
     ),
     (
         "which.max",
@@ -588,13 +588,13 @@ const SUMMARIES: &[Entry] = &[
     ),
     (
         "cor",
-        "cor(x, y)",
-        "The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.",
+        "cor(x, y = NULL, use = \"everything\", method = \"pearson\")",
+        "The correlation of two equal-length numeric vectors, or of the column pairs of a matrix (labelled by column name), by method \"pearson\", \"spearman\" (Pearson on average ranks) or \"kendall\" (tau-b). `use` selects how missing values are handled: \"everything\", \"all.obs\", \"complete.obs\", \"na.or.complete\" or \"pairwise.complete.obs\". Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN.",
     ),
     (
         "cov",
-        "cov(x, y)",
-        "The sample covariance of two equal-length numeric vectors (n-1 denominator), each mean refined by a correction pass as R's cov.c does. A missing value in either gives NA; the use argument and matrix arguments are not supported.",
+        "cov(x, y = NULL, use = \"everything\", method = \"pearson\")",
+        "The sample covariance of two equal-length numeric vectors or of the column pairs of a matrix (n-1 denominator; \"kendall\" is the unscaled sum of sign products), each mean refined by a correction pass as R's cov.c does. A missing value gives NA unless `use` drops it, as for cor.",
     ),
     (
         "rle",
@@ -609,7 +609,7 @@ const SUMMARIES: &[Entry] = &[
     (
         "var",
         "var(x, y = NULL, na.rm = FALSE)",
-        "The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A covariance matrix of a matrix argument is not supported.",
+        "The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A matrix argument gives its covariance matrix.",
     ),
     (
         "sd",

@@ -1021,3 +1021,52 @@ fn trimws_strips_only_the_whitespace_class_and_takes_a_pattern() {
     assert_eq!(r(r#"trimws("  a  ", which = "l")"#), r#"[1] "a  ""#);
     assert_eq!(r(r#"trimws(factor(" a "))"#), r#"[1] "a""#);
 }
+
+#[test]
+fn cor_and_cov_honour_method_and_use() {
+    // Expected values read off R's `cov.c` via Rscript.
+    let xy = "x <- c(1, 2, 3, 4, 5); y <- c(2, 1, 4, 3, 5); ";
+    assert_eq!(r(&format!("{xy}cor(x, y, method = \"kendall\")")), "[1] 0.6");
+    assert_eq!(r(&format!("{xy}cov(x, y, method = \"kendall\")")), "[1] 12");
+    assert_eq!(r(&format!("{xy}cor(x, y, method = \"spearman\")")), "[1] 0.8");
+    // Tied values: tau-b and average-rank Spearman.
+    assert_eq!(
+        r("cor(c(1, 2, 2, 4), c(2, 1, 3, 5), method = \"kendall\")"),
+        "[1] 0.5477226"
+    );
+    assert_eq!(
+        r("cor(c(1, 2, 2, 4), c(2, 1, 3, 5), method = \"spearman\")"),
+        "[1] 0.6324555"
+    );
+    assert_eq!(
+        r("cor(c(1, 2, NA, 4, 6), c(2, 1, 3, 5, 4), use = \"pairwise.complete.obs\")"),
+        "[1] 0.7410483"
+    );
+}
+
+#[test]
+fn cor_cov_var_of_a_matrix_are_labelled_matrices() {
+    let m = "m <- cbind(a = c(1, 2, 3, 5), b = c(2, 1, 4, 3), c = c(9, 7, 8, 1)); ";
+    assert_eq!(
+        r(&format!("{m}cor(m)")),
+        "           a          b          c\n\
+         a  1.0000000  0.5291503 -0.9096513\n\
+         b  0.5291503  1.0000000 -0.1796053\n\
+         c -0.9096513 -0.1796053  1.0000000"
+    );
+    assert_eq!(r(&format!("{m}identical(var(m), cov(m))")), "[1] TRUE");
+    // The diagonal of `cor(x)` is 1 even for a column holding NA; the
+    // off-diagonal is NA until `use` drops the incomplete row.
+    let na = "n <- cbind(a = c(1, NA, 3, 5), b = c(2, 1, 4, 3)); ";
+    assert_eq!(r(&format!("{na}cor(n)")), "   a  b\na  1 NA\nb NA  1");
+    assert_eq!(
+        r(&format!("{na}cor(n, use = \"complete.obs\")")),
+        "    a   b\na 1.0 0.5\nb 0.5 1.0"
+    );
+}
+
+#[test]
+fn rep_with_per_element_times_after_each() {
+    assert_eq!(r("rep(1:3, times = c(1, 2, 3))"), "[1] 1 2 2 3 3 3");
+    assert_eq!(r("rep(1:2, each = 2, times = c(1, 0, 2, 1))"), "[1] 1 2 2 2");
+}

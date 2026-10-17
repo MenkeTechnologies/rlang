@@ -564,7 +564,7 @@
         <h3><a class="doc-anchor" href="#doc-rep">#</a> <code>rep</code></h3>
         <pre><code class="lang-r r">rep(x, times = 1, each = 1)
 </code></pre>
-        <p>Repeat x: each element `each` times, the whole sequence `times` times. A vector-valued `times` — R's per-element repeat count — is not supported; only its first element is read.</p>
+        <p>Repeat x: each element `each` times, the whole sequence `times` times. A vector-valued `times` gives a per-element repeat count (after `each`), and `length.out` truncates or recycles the result.</p>
       </article>
       <article class="doc-entry" id="doc-rep-len">
         <h3><a class="doc-anchor" href="#doc-rep-len">#</a> <code>rep_len</code></h3>
@@ -694,7 +694,7 @@
         <h3><a class="doc-anchor" href="#doc-which">#</a> <code>which</code></h3>
         <pre><code class="lang-r r">which(x)
 </code></pre>
-        <p>The 1-based positions where x is TRUE, carrying the names of the selected elements. `arr.ind` is not supported.</p>
+        <p>The 1-based positions where x is TRUE, carrying the names of the selected elements. With `arr.ind = TRUE` an array answers one row of per-margin subscripts per hit.</p>
       </article>
       <article class="doc-entry" id="doc-which-max">
         <h3><a class="doc-anchor" href="#doc-which-max">#</a> <code>which.max</code></h3>
@@ -756,15 +756,15 @@
       </article>
       <article class="doc-entry" id="doc-cor">
         <h3><a class="doc-anchor" href="#doc-cor">#</a> <code>cor</code></h3>
-        <pre><code class="lang-r r">cor(x, y)
+        <pre><code class="lang-r r">cor(x, y = NULL, use = "everything", method = "pearson")
 </code></pre>
-        <p>The Pearson correlation of two equal-length numeric vectors. Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN. Spearman and Kendall are not implemented.</p>
+        <p>The correlation of two equal-length numeric vectors, or of the column pairs of a matrix (labelled by column name), by method "pearson", "spearman" (Pearson on average ranks) or "kendall" (tau-b). `use` selects how missing values are handled: "everything", "all.obs", "complete.obs", "na.or.complete" or "pairwise.complete.obs". Zero variance in either vector, or fewer than two pairs, gives NA rather than NaN.</p>
       </article>
       <article class="doc-entry" id="doc-cov">
         <h3><a class="doc-anchor" href="#doc-cov">#</a> <code>cov</code></h3>
-        <pre><code class="lang-r r">cov(x, y)
+        <pre><code class="lang-r r">cov(x, y = NULL, use = "everything", method = "pearson")
 </code></pre>
-        <p>The sample covariance of two equal-length numeric vectors (n-1 denominator), each mean refined by a correction pass as R's cov.c does. A missing value in either gives NA; the use argument and matrix arguments are not supported.</p>
+        <p>The sample covariance of two equal-length numeric vectors or of the column pairs of a matrix (n-1 denominator; "kendall" is the unscaled sum of sign products), each mean refined by a correction pass as R's cov.c does. A missing value gives NA unless `use` drops it, as for cor.</p>
       </article>
       <article class="doc-entry" id="doc-rle">
         <h3><a class="doc-anchor" href="#doc-rle">#</a> <code>rle</code></h3>
@@ -782,7 +782,7 @@
         <h3><a class="doc-anchor" href="#doc-var">#</a> <code>var</code></h3>
         <pre><code class="lang-r r">var(x, y = NULL, na.rm = FALSE)
 </code></pre>
-        <p>The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A covariance matrix of a matrix argument is not supported.</p>
+        <p>The sample variance with the n-1 denominator, computed in the same two-pass form as R's C code so the last printed digit agrees. With y, the covariance of two equal-length vectors, as cov(x, y). A matrix argument gives its covariance matrix.</p>
       </article>
       <article class="doc-entry" id="doc-sd">
         <h3><a class="doc-anchor" href="#doc-sd">#</a> <code>sd</code></h3>
