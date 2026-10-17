@@ -4319,9 +4319,12 @@ fn substring_chars(u: &[char], beg: i64, end: i64) -> String {
     u[from..to as usize].iter().collect()
 }
 
+/// A match's start positions and widths for one element.
+type MatchRow = (Vec<Option<i64>>, Vec<Option<i64>>);
+
 /// One element's match positions and widths, from a `regexpr` vector (one
 /// pair per element) or a `gregexpr`/`regexec` list (one vector per element).
-fn match_rows(m: &Value, n: usize) -> Vec<(Vec<Option<i64>>, Vec<Option<i64>>)> {
+fn match_rows(m: &Value, n: usize) -> Vec<MatchRow> {
     let pair = |v: &Value| {
         let lens = with_host(|h| h.attr(v, "match.length"))
             .map(|l| as_int(&l))
@@ -6046,7 +6049,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "Sys.setenv" => {
             if a.all
                 .iter()
-                .any(|(t, _)| t.as_deref().map_or(true, str::is_empty))
+                .any(|(t, _)| t.as_deref().is_none_or(str::is_empty))
             {
                 return Err("all arguments must be named".into());
             }
@@ -6816,7 +6819,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // rather than being renumbered from one. `head` needs none —
                 // its rows already start at one.
                 let dn = dimnames_of(&x);
-                if name == "tail" && dn.first().map_or(true, |d| d.is_none()) {
+                if name == "tail" && dn.first().is_none_or(|d| d.is_none()) {
                     let labels = taken.iter().map(|r| Some(format!("[{},]", r + 1)));
                     let cols = dn.get(1).and_then(|c| c.clone());
                     set_dimnames(&out, Some(labels.collect()), cols);
@@ -7412,7 +7415,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let x = as_dbl(&a.req(0, "x")?);
             let na_rm = a.get(1, "na.rm").and_then(|v| lgl1(&v)).unwrap_or(true);
             let na5 = || mk_lgl(vec![None; 5]);
-            if !na_rm && x.iter().any(|e| e.map_or(true, f64::is_nan)) {
+            if !na_rm && x.iter().any(|e| e.is_none_or(f64::is_nan)) {
                 return Ok(na5());
             }
             let mut xs: Vec<f64> = x.into_iter().flatten().filter(|v| !v.is_nan()).collect();
@@ -8245,7 +8248,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 RData::Dbl(v) => v
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.map_or(true, f64::is_nan))
+                    .filter(|(_, e)| e.is_none_or(f64::is_nan))
                     .map(|(i, _)| i)
                     .collect(),
                 RData::Int(v) => (0..v.len()).filter(|&i| v[i].is_none()).collect(),
@@ -10883,7 +10886,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 .unwrap_or_default();
             let na_excluded = exclude
                 .as_ref()
-                .map_or(true, |e| as_str(e).iter().any(|s| s.is_none()));
+                .is_none_or(|e| as_str(e).iter().any(|s| s.is_none()));
             let use_na = match a.named("useNA").and_then(|v| str1(&v)) {
                 Some(u) => u,
                 None if !na_excluded => "ifany".into(),
@@ -12055,7 +12058,7 @@ fn seq(a: &Args) -> Result<Value, String> {
     }
     // `seq.default`'s argument checks, which treat an `NA` as supplied-but-bad
     // rather than as absent.
-    let scalar_na = |v: &Value| len(v) == 1 && num1(v).map_or(true, f64::is_nan);
+    let scalar_na = |v: &Value| len(v) == 1 && num1(v).is_none_or(f64::is_nan);
     for (name, pos) in [("from", 0usize), ("to", 1)] {
         if let Some(v) = a.get(pos, name) {
             if scalar_na(&v) || num1(&v).is_some_and(|n| !n.is_finite()) {
@@ -13357,7 +13360,7 @@ enum MatOp {
 /// when `x` has length one, an outer one. A missing or `NULL` `y` makes
 /// `crossprod`/`tcrossprod` the symmetric product of `x` with itself.
 fn matprod(op: MatOp, x: &Value, y: Option<&Value>) -> Result<Value, String> {
-    let sym = y.map_or(true, is_null);
+    let sym = y.is_none_or(is_null);
     let y = match y {
         Some(v) if !(sym && op != MatOp::Prod) => v.clone(),
         _ if op != MatOp::Prod => x.clone(),
@@ -14358,7 +14361,7 @@ fn quantile_default(a: &Args) -> Result<Value, String> {
     let mut xs = as_dbl(&x);
     if na_rm {
         xs.retain(|e| matches!(e, Some(v) if !v.is_nan()));
-    } else if xs.iter().any(|e| e.map_or(true, f64::is_nan)) {
+    } else if xs.iter().any(|e| e.is_none_or(f64::is_nan)) {
         return Err("missing values and NaN's not allowed if 'na.rm' is FALSE".into());
     }
     let mut xs: Vec<f64> = xs.into_iter().flatten().collect();
@@ -16053,7 +16056,7 @@ fn str_lines(x: &Value, nest: usize, o: &StrOpts) -> Vec<String> {
             ));
         } else {
             out.push(format!("List of {le}"));
-            if o.max_level.map_or(true, |m| nest < m) {
+            if o.max_level.is_none_or(|m| nest < m) {
                 let labels: Vec<String> = (0..le)
                     .map(|i| names.get(i).cloned().flatten().unwrap_or_default())
                     .collect();
@@ -19281,7 +19284,7 @@ fn drop_lengths_messages(msg: &mut Vec<String>) {
 }
 
 fn is_missing_double(x: &Option<f64>) -> bool {
-    x.map_or(true, f64::is_nan)
+    x.is_none_or(f64::is_nan)
 }
 
 /// `attr.all.equal`: mode, length, names and the remaining attributes.
