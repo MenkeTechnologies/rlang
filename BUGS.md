@@ -256,24 +256,20 @@ run that compared nothing — no cases generated, or an oracle that never answer
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
   a margin onto its result) work, and so do the array-specific helpers
   `slice.index` and `arrayInd`.
-- **`apply` with a named margin answers silently wrong.** R's `apply` accepts a
-  character `MARGIN` and matches it against `names(dimnames(X))`; rlang reads
-  `MARGIN` through `as_int`, so a name becomes `NA`, is dropped, and the margin
-  list is empty — `FUN` is then called once on the whole array, with no error
-  or warning. Measured at 0.1.10 against R 4.6.0 (2026-04-24):
-
-  ```r
-  m <- matrix(1:6, 2, dimnames = list(rows = c("a", "b"), cols = c("x", "y", "z")))
-  apply(m, "rows", sum)                          # R:  a 9, b 12   rlang: 21
-  apply(m, "cols", sum)                          # R:  x 3, y 7, z 11   rlang: 21
-  apply(m, c("cols", "rows"), function(v) v * 10)
-  ```
-
-  The third gives R's 3 x 2 matrix with dimnames `cols`/`rows`; rlang prints a
-  6 x 1 matrix with no labels. Numeric margins are unaffected. The fix is
-  `apply`'s own `MARGIN` resolution in `src/builtins.rs`: match a character
-  margin against the dimnames' names and raise R's `not all elements of
-  'MARGIN' are names of dimensions` when one does not match.
+- **`apply` with a named margin answered silently wrong** — fixed. R's `apply`
+  accepts a character `MARGIN` and matches it against `names(dimnames(X))`;
+  rlang read `MARGIN` through `as_int`, so a name became `NA`, was dropped, and
+  the margin list was empty — `FUN` was called once on the whole array, with no
+  error or warning (`apply(m, "rows", sum)` gave `21` where R gives `a 9, b
+  12`). The arm now follows base R's closure: a character margin is `match`ed
+  against the dimnames' names, an unnamed dimension answering to `""`, with
+  R's `'X' must have named dimnames` when there are none and `not all elements
+  of 'MARGIN' are names of dimensions` when one does not resolve. A numeric
+  margin is range-checked the way `d[MARGIN]` reports `NA` in R — `apply(m, 3,
+  sum)` raises `'MARGIN' does not match dim(X)` where it used to index past
+  `dim(X)` and abort the interpreter. Regression:
+  `tests/eval.rs::apply_resolves_a_character_margin_against_the_dimnames_names`,
+  nine assertions read off R 4.6.1.
 - **`dimnames` work at any rank**: `matrix(dimnames=)` and `array(dimnames=)`,
   `rbind`/`cbind` carrying an input vector's names onto the cross dimension,
   the `dimnames`/`rownames`/`colnames` accessors, dimname-aware matrix and

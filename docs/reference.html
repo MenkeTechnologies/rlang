@@ -1726,7 +1726,7 @@
         <h3><a class="doc-anchor" href="#doc-apply">#</a> <code>apply</code></h3>
         <pre><code class="lang-r r">apply(X, MARGIN, FUN)
 </code></pre>
-        <p>Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A slice keeps the labels of the dimensions it spans — its dim and dimnames at rank 2 or more, its names at rank 1 — so FUN sees a named row or a matrix. Several margins with scalar results reshape into an array, and the margins' labels land on the result.</p>
+        <p>Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A character MARGIN is matched against names(dimnames(X)), raising R's error when a name does not resolve, and a numeric one must index dim(X). A slice keeps the labels of the dimensions it spans — its dim and dimnames at rank 2 or more, its names at rank 1 — so FUN sees a named row or a matrix. Several margins with scalar results reshape into an array, and the margins' labels land on the result.</p>
       </article>
       <article class="doc-entry" id="doc-diag">
         <h3><a class="doc-anchor" href="#doc-diag">#</a> <code>diag</code></h3>

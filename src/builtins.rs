@@ -9802,11 +9802,35 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 return Err("dim(X) must have a positive length".into());
             }
             let dims = dims_of(&x);
-            let margins: Vec<usize> = as_int(&a.req(1, "MARGIN")?)
-                .into_iter()
-                .flatten()
-                .map(|m| (m - 1) as usize)
-                .collect();
+            let dn_names: Option<Vec<Option<String>>> = with_host(|h| h.attr(&x, "dimnames"))
+                .and_then(|d| with_host(|h| h.attr(&d, "names")))
+                .map(|n| as_str(&n));
+            let margin_arg = a.req(1, "MARGIN")?;
+            // R's `apply`: a character MARGIN is `match`ed against
+            // `names(dimnames(X))`, an unnamed dimension answering to "";
+            // a numeric one must index `dim(X)`, which `d[MARGIN]` reports as
+            // NA otherwise.
+            let margins: Vec<usize> = if kind(&margin_arg) == RKind::Str {
+                let Some(dnn) = &dn_names else {
+                    return Err("'X' must have named dimnames".into());
+                };
+                as_str(&margin_arg)
+                    .into_iter()
+                    .map(|m| {
+                        dnn.iter()
+                            .position(|n| n.as_deref().unwrap_or("") == m.as_deref().unwrap_or(""))
+                            .ok_or("not all elements of 'MARGIN' are names of dimensions")
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                as_int(&margin_arg)
+                    .into_iter()
+                    .map(|m| match m {
+                        Some(m) if m >= 1 && (m as usize) <= dims.len() => Ok((m - 1) as usize),
+                        _ => Err("'MARGIN' does not match dim(X)"),
+                    })
+                    .collect::<Result<_, _>>()?
+            };
             let f = a.req(2, "FUN")?;
             // `apply(X, MARGIN, FUN, ..., simplify)`: whatever is left once the
             // three formals are filled goes to every call of `FUN`.
@@ -9826,9 +9850,6 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     None => extra.push((None, v.clone())),
                 }
             }
-            let dn_names: Option<Vec<Option<String>>> = with_host(|h| h.attr(&x, "dimnames"))
-                .and_then(|d| with_host(|h| h.attr(&d, "names")))
-                .map(|n| as_str(&n));
             let others: Vec<usize> = (0..dims.len()).filter(|d| !margins.contains(d)).collect();
             let mut stride = vec![1usize; dims.len()];
             for d in 1..dims.len() {

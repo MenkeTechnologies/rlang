@@ -1278,7 +1278,7 @@ const MATRICES: &[Entry] = &[
     (
         "apply",
         "apply(X, MARGIN, FUN)",
-        "Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A slice keeps the labels of the dimensions it spans — its dim and dimnames at rank 2 or more, its names at rank 1 — so FUN sees a named row or a matrix. Several margins with scalar results reshape into an array, and the margins' labels land on the result.",
+        "Apply FUN over the given margins of an array, walking the remaining dimensions for each slice. A character MARGIN is matched against names(dimnames(X)), raising R's error when a name does not resolve, and a numeric one must index dim(X). A slice keeps the labels of the dimensions it spans — its dim and dimnames at rank 2 or more, its names at rank 1 — so FUN sees a named row or a matrix. Several margins with scalar results reshape into an array, and the margins' labels land on the result.",
     ),
     (
         "diag",

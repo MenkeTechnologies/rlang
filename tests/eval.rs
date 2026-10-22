@@ -1079,3 +1079,35 @@ fn rep_with_per_element_times_after_each() {
         "[1] 1 2 2 2"
     );
 }
+
+#[test]
+fn apply_resolves_a_character_margin_against_the_dimnames_names() {
+    // R's `apply` matches a character MARGIN against `names(dimnames(X))`;
+    // every expectation here was read off R 4.6.1.
+    const M: &str = "m <- matrix(1:6, 2, dimnames = list(rows = c(\"a\", \"b\"), cols = c(\"x\", \"y\", \"z\")))";
+    assert_eq!(r(&format!("{M}; apply(m, \"rows\", sum)")), " a  b \n 9 12");
+    assert_eq!(r(&format!("{M}; apply(m, \"cols\", sum)")), " x  y  z \n 3  7 11");
+    // Two named margins reshape to an array over them, in the order written,
+    // and the margins' names label its dimnames.
+    assert_eq!(
+        r(&format!("{M}; apply(m, c(\"cols\", \"rows\"), function(v) v * 10)")),
+        "    rows\ncols  a  b\n   x 10 20\n   y 30 40\n   z 50 60"
+    );
+    // An unnamed dimension answers to "" the way `match("", names(dn))` does.
+    const A: &str = "a <- array(1:8, c(2, 2, 2), dimnames = list(i = c(\"a\", \"b\"), NULL, k = c(\"x\", \"y\")))";
+    assert_eq!(r(&format!("{A}; apply(a, \"k\", sum)")), " x  y \n10 26");
+    assert_eq!(r(&format!("{A}; apply(a, \"\", sum)")), "[1] 14 22");
+    // R's two errors for a name that does not resolve, and the range check
+    // on a numeric margin (which used to index past `dim(X)` instead).
+    let msg = |call: &str| r(&format!("{M}; tryCatch({call}, error = function(e) conditionMessage(e))"));
+    assert_eq!(
+        msg("apply(m, \"nope\", sum)"),
+        "[1] \"not all elements of 'MARGIN' are names of dimensions\""
+    );
+    assert_eq!(
+        msg("apply(matrix(1:4, 2), \"rows\", sum)"),
+        "[1] \"'X' must have named dimnames\""
+    );
+    assert_eq!(msg("apply(m, 3, sum)"), "[1] \"'MARGIN' does not match dim(X)\"");
+    assert_eq!(msg("apply(m, NA, sum)"), "[1] \"'MARGIN' does not match dim(X)\"");
+}
