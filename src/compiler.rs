@@ -947,6 +947,39 @@ impl Compiler {
                     }
                     _ => None,
                 };
+                // `rbind`/`cbind` label the binding seam with the deparsed
+                // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
+                // receives values, not expressions, so the deparsed text is
+                // read here — before the promise rewrite below wraps every
+                // symbol in `.rlang_promise(function() x)` — and rides along
+                // as two vectors, one element per argument: `.deparse.sym`
+                // carries a bare symbol's name (R's default `deparse.level =
+                // 1`) and `.deparse.txt` the full deparse (`deparse.level =
+                // 2`). Skipped when `...` is present — its runtime expansion
+                // would slide the arguments out of alignment with the vectors.
+                let bind_labels: Option<Vec<BindLabel>> = match fun.as_ref() {
+                    Expr::Ident(n)
+                        if (n == "rbind" || n == "cbind")
+                            && !args.is_empty()
+                            && !args.iter().any(|a| {
+                                matches!(a.value, Some(Expr::Dots)) || a.value.is_none()
+                            }) =>
+                    {
+                        Some(
+                            args.iter()
+                                .map(|a| {
+                                    let e = a.value.as_ref().expect("checked above");
+                                    let sym = match e {
+                                        Expr::Ident(s) => Some(s.clone()),
+                                        _ => None,
+                                    };
+                                    (sym, deparse_expr(e))
+                                })
+                                .collect(),
+                        )
+                    }
+                    _ => None,
+                };
                 // R binds a CLOSURE's arguments as promises: the expression is
                 // evaluated on first read, in the caller's environment, and not
                 // at all if the formal is never read. `f <- function(x) 42;
@@ -1040,29 +1073,19 @@ impl Compiler {
                     b.emit(Op::CallBuiltin(call_op, 3), 0);
                     return Ok(());
                 }
-                // `rbind`/`cbind` label the binding seam with the deparsed
-                // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
-                // receives values, not expressions, so the deparsed text rides
-                // along: `.deparse.sym` carries a bare symbol's name (R's
-                // default `deparse.level = 1`) and `.deparse.txt` the full
-                // deparse (`deparse.level = 2`), one element per argument.
-                // Skipped when `...` is present — its runtime expansion would
-                // slide the arguments out of alignment with these vectors.
-                let is_bind =
-                    matches!(fun.as_ref(), Expr::Ident(n) if n == "rbind" || n == "cbind");
-                let has_dots = args
-                    .iter()
-                    .any(|a| matches!(a.value, Some(Expr::Dots)) || a.value.is_none());
-                if is_bind && !has_dots && !args.is_empty() {
-                    let label = |f: &dyn Fn(&Expr) -> Option<String>| Arg {
+                // The seam labels `rbind`/`cbind` read off the argument
+                // expressions (taken above, before the promise rewrite) ride
+                // along as `.deparse.sym` and `.deparse.txt`.
+                if let Some(labels) = bind_labels {
+                    let label = |f: &dyn Fn(&BindLabel) -> Option<String>| Arg {
                         name: None,
                         value: Some(Expr::Call {
                             fun: Box::new(Expr::Ident("c".into())),
-                            args: args
+                            args: labels
                                 .iter()
-                                .map(|a| Arg {
+                                .map(|l| Arg {
                                     name: None,
-                                    value: Some(match a.value.as_ref().and_then(f) {
+                                    value: Some(match f(l) {
                                         Some(s) => Expr::Str(s),
                                         None => Expr::Na(NaKind::Character),
                                     }),
@@ -1073,14 +1096,11 @@ impl Compiler {
                     let mut rewritten = args.to_vec();
                     rewritten.push(Arg {
                         name: Some(".deparse.sym".into()),
-                        ..label(&|e| match e {
-                            Expr::Ident(s) => Some(s.clone()),
-                            _ => None,
-                        })
+                        ..label(&|(sym, _)| sym.clone())
                     });
                     rewritten.push(Arg {
                         name: Some(".deparse.txt".into()),
-                        ..label(&|e| Some(deparse_expr(e)))
+                        ..label(&|(_, txt)| Some(txt.clone()))
                     });
                     self.args(b, &rewritten)?;
                     b.emit(Op::CallBuiltin(call_op, 3), 0);
@@ -2114,6 +2134,11 @@ fn quote_call(inner: &Expr, splice: bool) -> Expr {
         args,
     }
 }
+
+/// One `rbind`/`cbind` argument's seam label as written: the bare symbol's
+/// name, when it is one (R's `deparse.level = 1`), and its full deparse
+/// (`deparse.level = 2`).
+type BindLabel = (Option<String>, String);
 
 /// Wrap each argument of a closure call in `.rlang_promise(function() <arg>)`,
 /// or `None` when the call has nothing to defer.

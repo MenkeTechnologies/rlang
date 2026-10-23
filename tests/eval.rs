@@ -1086,11 +1086,16 @@ fn apply_resolves_a_character_margin_against_the_dimnames_names() {
     // every expectation here was read off R 4.6.1.
     const M: &str = "m <- matrix(1:6, 2, dimnames = list(rows = c(\"a\", \"b\"), cols = c(\"x\", \"y\", \"z\")))";
     assert_eq!(r(&format!("{M}; apply(m, \"rows\", sum)")), " a  b \n 9 12");
-    assert_eq!(r(&format!("{M}; apply(m, \"cols\", sum)")), " x  y  z \n 3  7 11");
+    assert_eq!(
+        r(&format!("{M}; apply(m, \"cols\", sum)")),
+        " x  y  z \n 3  7 11"
+    );
     // Two named margins reshape to an array over them, in the order written,
     // and the margins' names label its dimnames.
     assert_eq!(
-        r(&format!("{M}; apply(m, c(\"cols\", \"rows\"), function(v) v * 10)")),
+        r(&format!(
+            "{M}; apply(m, c(\"cols\", \"rows\"), function(v) v * 10)"
+        )),
         "    rows\ncols  a  b\n   x 10 20\n   y 30 40\n   z 50 60"
     );
     // An unnamed dimension answers to "" the way `match("", names(dn))` does.
@@ -1099,7 +1104,11 @@ fn apply_resolves_a_character_margin_against_the_dimnames_names() {
     assert_eq!(r(&format!("{A}; apply(a, \"\", sum)")), "[1] 14 22");
     // R's two errors for a name that does not resolve, and the range check
     // on a numeric margin (which used to index past `dim(X)` instead).
-    let msg = |call: &str| r(&format!("{M}; tryCatch({call}, error = function(e) conditionMessage(e))"));
+    let msg = |call: &str| {
+        r(&format!(
+            "{M}; tryCatch({call}, error = function(e) conditionMessage(e))"
+        ))
+    };
     assert_eq!(
         msg("apply(m, \"nope\", sum)"),
         "[1] \"not all elements of 'MARGIN' are names of dimensions\""
@@ -1108,6 +1117,52 @@ fn apply_resolves_a_character_margin_against_the_dimnames_names() {
         msg("apply(matrix(1:4, 2), \"rows\", sum)"),
         "[1] \"'X' must have named dimnames\""
     );
-    assert_eq!(msg("apply(m, 3, sum)"), "[1] \"'MARGIN' does not match dim(X)\"");
-    assert_eq!(msg("apply(m, NA, sum)"), "[1] \"'MARGIN' does not match dim(X)\"");
+    assert_eq!(
+        msg("apply(m, 3, sum)"),
+        "[1] \"'MARGIN' does not match dim(X)\""
+    );
+    assert_eq!(
+        msg("apply(m, NA, sum)"),
+        "[1] \"'MARGIN' does not match dim(X)\""
+    );
+}
+
+#[test]
+fn bind_labels_survive_the_promise_rewrite() {
+    // `rbind`/`cbind` label the seam with the deparsed argument. The labels
+    // used to be read after the compiler had wrapped every closure-call
+    // argument in `.rlang_promise(function() x)`, so any unit containing a
+    // `function` lost them (and `deparse.level = 2` printed the wrapper).
+    // Every expectation here was read off R 4.6.1.
+    const F: &str = "f <- function(a, b) rbind(a, b); x <- 1:2; y <- 3:4";
+    assert_eq!(
+        r(&format!("{F}; rbind(x, y)")),
+        "  [,1] [,2]\nx    1    2\ny    3    4"
+    );
+    assert_eq!(
+        r(&format!("{F}; cbind(x, y)")),
+        "     x y\n[1,] 1 3\n[2,] 2 4"
+    );
+    // Inside the closure the labels are its own formals.
+    assert_eq!(
+        r(&format!("{F}; f(x, y)")),
+        "  [,1] [,2]\na    1    2\nb    3    4"
+    );
+    // A tag wins over the symbol; an expression labels only at level 2.
+    assert_eq!(
+        r(&format!("{F}; cbind(x, z = y)")),
+        "     x z\n[1,] 1 3\n[2,] 2 4"
+    );
+    assert_eq!(
+        r(&format!("{F}; rbind(x, y + 1)")),
+        "  [,1] [,2]\nx    1    2\n     4    5"
+    );
+    assert_eq!(
+        r(&format!("{F}; rbind(x, y + 1, deparse.level = 2)")),
+        "      [,1] [,2]\nx        1    2\ny + 1    4    5"
+    );
+    assert_eq!(
+        r(&format!("{F}; rbind(x, y, deparse.level = 0)")),
+        "     [,1] [,2]\n[1,]    1    2\n[2,]    3    4"
+    );
 }

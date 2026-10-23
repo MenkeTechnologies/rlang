@@ -562,20 +562,20 @@ run that compared nothing — no cases generated, or an oracle that never answer
 Each was observed at 0.1.10+43 (the debug `Rscript` built from that source)
 against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
 
-- **`rbind`/`cbind` lose their deparsed labels in any file that defines a
-  function.** The seam labels described under *Types* are computed from the
-  argument expressions after the promise rewrite in `src/compiler.rs`; slot mode
-  skips that rewrite, so a unit with no `function` keeps the labels, but once
-  any `function` appears anywhere in the file every symbol argument arrives as
-  `.rlang_promise(function() x)` and no longer matches as a bare symbol.
-  Explicitly named arguments (`rbind(a = 1:2)`) are unaffected.
-
-  ```r
-  f <- function() 1        # delete this line and rlang matches R
-  x <- 1:2; y <- 3:4
-  rbind(x, y)              # R: rownames x, y      rlang: [1,], [2,]
-  cbind(x, y)              # R: colnames x, y      rlang: [,1], [,2]
-  ```
+- **`rbind`/`cbind` lost their deparsed labels in any file that defines a
+  function** — fixed. The seam labels described under *Types* were computed
+  from the argument expressions after the promise rewrite in
+  `src/compiler.rs`; slot mode skips that rewrite, so a unit with no `function`
+  kept the labels, but once any `function` appeared anywhere in the file every
+  symbol argument arrived as `.rlang_promise(function() x)` and no longer
+  matched as a bare symbol (`rbind(x, y)` printed `[1,]`, `[2,]` where R
+  prints `x`, `y`; at `deparse.level = 2` the wrapper itself became the
+  label). The labels are now read off the arguments as written, before the
+  rewrite, the way `table`'s `.dnn` already was — so a call inside a closure
+  body labels with the closure's own formals, as R does. Explicitly named
+  arguments were unaffected. Regression:
+  `tests/eval.rs::bind_labels_survive_the_promise_rewrite`, seven assertions
+  read off R 4.6.1.
 
 - **Doubles that print alike are treated as equal by the matching and set
   functions.** `0.1 + 0.2` and `0.3` differ in the last bit; R keeps them apart,
