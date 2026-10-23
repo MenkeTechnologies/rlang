@@ -88,7 +88,9 @@ no VM of its own. Highlights:
 - **Three-valued logic** — `NA & FALSE` is FALSE and `NA | TRUE` is TRUE, because
   the answer is decided regardless of the missing value.
 - **S3 dispatch** — `UseMethod` walks the class vector then `.default`, with
-  implicit classes for the builtin types.
+  implicit classes for the builtin types. The subset and subassign operators
+  (`[`, `[[`, `$`, `[<-`, `[[<-`, `$<-`) dispatch to an object's `[.cls` /
+  `$<-.cls` methods the way R's `DispatchOrEval` does, `NextMethod()` included.
 - **AOP intercepts** — a glob-matched before/after/around call-intercept
   registry, the same design as zshrs's function intercepts.
 - **Native executables** — `Rscript --aot FILE` lowers the script to a fusevm
@@ -225,7 +227,8 @@ Implemented and checked against the reference `Rscript`:
 - **Operators** — the full precedence ladder from `?Syntax`, `%%`/`%/%` with the
   sign of the divisor, `%in%`, user-defined `%op%`, and the native pipe `|>`.
 - **S3** — `class()`, `inherits()`, `structure()`, `UseMethod` dispatch with
-  implicit classes and `.default` fallback.
+  implicit classes and `.default` fallback, and method dispatch on the
+  subset and replacement operators.
 - **Primitive library** — the apply family (`lapply`/`sapply`/`Map`/`Filter`/
   `Reduce`/`do.call`), string and regex functions (`paste`, `sprintf`, `substr`,
   `strsplit`, `grepl`, `sub`, `gsub`), numeric summaries (`sum`, `mean`,

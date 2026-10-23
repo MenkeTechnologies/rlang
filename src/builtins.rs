@@ -2903,13 +2903,45 @@ fn foreign_index_set(
     }
 }
 
+/// The subset and subassign primitives R dispatches S3 methods for.
+const SUBSET_GENERICS: &[&str] = &["[", "[[", "$", "[<-", "[[<-", "$<-"];
+
+/// R's `DispatchOrEval` for the subset and subassign primitives: when `x` is an
+/// object (it carries a `class` attribute) and some `<op>.<class>` — or
+/// `<op>.default` — is defined, that method is called with the call's
+/// arguments and its value is the result. `None` lets the primitive run.
+///
+/// `args` builds the argument list only once the cheap class test has passed,
+/// so an index on a plain vector pays one attribute lookup. The list is the one
+/// R hands the method: `x` first, the subscripts as written, and for the
+/// replacement forms the new value last, tagged `value`. `$` and `$<-` pass the
+/// name as a character string, as `do_subset3` / `do_subassign3` rewrite it.
+fn s3_subset_method(
+    op: &str,
+    x: &Value,
+    args: impl FnOnce() -> Vec<(Option<String>, Value)>,
+) -> Option<Result<Value, String>> {
+    with_host(|h| h.attr(x, "class"))?;
+    let res = s3_primitive_method(op, &args())?;
+    // `[`, `[[` and `$` are builtins R evaluates with `R_Visible` forced on, so
+    // a method's `invisible()` does not survive them: `x[1]` at top level
+    // prints whatever `[.cls` returned.
+    if !op.ends_with("<-") {
+        with_host(|h| h.visible = true);
+    }
+    Some(res)
+}
+
 fn b_index(vm: &mut VM, _: u8) -> Value {
     let argv = vm.pop();
     let x = vm.pop();
     if kind(&x) == RKind::RForeign {
         return foreign_index(vm, "[", x, args_of(&argv));
     }
-    match index_single(&x, &args_of(&argv)) {
+    let args = args_of(&argv);
+    let res = s3_subset_method("[", &x, || with_object(&x, &args))
+        .unwrap_or_else(|| index_single(&x, &args));
+    match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -2921,10 +2953,20 @@ fn b_index2(vm: &mut VM, _: u8) -> Value {
     if kind(&x) == RKind::RForeign {
         return foreign_index(vm, "[[", x, args_of(&argv));
     }
-    match index_double(&x, &args_of(&argv)) {
+    let args = args_of(&argv);
+    let res = s3_subset_method("[[", &x, || with_object(&x, &args))
+        .unwrap_or_else(|| index_double(&x, &args));
+    match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
+}
+
+/// `(x, args…)`: the argument list a subset method is called with.
+fn with_object(x: &Value, args: &[(Option<String>, Value)]) -> Vec<(Option<String>, Value)> {
+    std::iter::once((None, x.clone()))
+        .chain(args.iter().cloned())
+        .collect()
 }
 
 fn b_dollar(vm: &mut VM, _: u8) -> Value {
@@ -2934,25 +2976,34 @@ fn b_dollar(vm: &mut VM, _: u8) -> Value {
         // `df$col` on a foreign object is `df[["col"]]` in R.
         return foreign_index(vm, "[[", x, vec![(None, scalar_str(name))]);
     }
-    match data(&x) {
-        RData::Environment(e) => e.borrow().vars.get(&name).cloned().unwrap_or_else(null),
+    let res = s3_subset_method("$", &x, || {
+        vec![(None, x.clone()), (None, scalar_str(name.clone()))]
+    })
+    .unwrap_or_else(|| dollar_get(&x, &name));
+    match res {
+        Ok(v) => v,
+        Err(e) => abort(vm, e),
+    }
+}
+
+/// `x$name` with no dispatch: R's `R_subset3_dflt`, exact matching only.
+fn dollar_get(x: &Value, name: &str) -> Result<Value, String> {
+    match data(x) {
+        RData::Environment(e) => Ok(e.borrow().vars.get(name).cloned().unwrap_or_else(null)),
         // `$` is for lists and environments; an atomic vector refuses it.
         RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_) => {
-            abort(vm, "$ operator is invalid for atomic vectors".to_string())
+            Err("$ operator is invalid for atomic vectors".to_string())
         }
-        _ => {
-            let names = names_of(&x);
-            match names
-                .iter()
-                .position(|n| n.as_deref() == Some(name.as_str()))
-            {
-                Some(i) => match data(&x) {
-                    RData::List(xs) => xs.get(i).cloned().unwrap_or_else(null),
-                    _ => element_at(&x, i),
-                },
-                None => null(),
-            }
-        }
+        RData::List(xs) => Ok(names_of(x)
+            .iter()
+            .position(|n| n.as_deref() == Some(name))
+            .and_then(|i| xs.get(i).cloned())
+            .unwrap_or_else(null)),
+        _ => Ok(names_of(x)
+            .iter()
+            .position(|n| n.as_deref() == Some(name))
+            .map(|i| element_at(x, i))
+            .unwrap_or_else(null)),
     }
 }
 
@@ -3568,6 +3619,9 @@ fn index_double(x: &Value, args: &[(Option<String>, Value)]) -> Result<Value, St
     let Some(&first) = subs.first() else {
         return Err("invalid subscript type 'symbol'".into());
     };
+    if matches!(first, Value::Undef) {
+        return Err("missing subscript".into());
+    }
     if let RData::Environment(e) = data(x) {
         return match data(first) {
             RData::Str(k) if k.len() == 1 => {
@@ -3704,8 +3758,13 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
     if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[<-", x, args_of(&argv), value);
     }
-    let inplace = may_mutate(vm, &x);
-    match assign_index(&x, &args_of(&argv), &value, false, inplace) {
+    let args = args_of(&argv);
+    let res = s3_subset_method("[<-", &x, || with_value(with_object(&x, &args), &value))
+        .unwrap_or_else(|| {
+            let inplace = may_mutate(vm, &x);
+            assign_index(&x, &args, &value, false, inplace)
+        });
+    match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -3715,16 +3774,40 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let argv = vm.pop();
     let x = vm.pop();
-    let Some(x) = null_target_as_list(x, &value) else {
-        return null();
-    };
     if kind(&x) == RKind::RForeign {
         return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
     }
-    let inplace = may_mutate(vm, &x);
-    match assign_index(&x, &args_of(&argv), &value, true, inplace) {
+    let args = args_of(&argv);
+    let res = s3_subset_method("[[<-", &x, || with_value(with_object(&x, &args), &value))
+        .unwrap_or_else(|| {
+            let inplace = may_mutate(vm, &x);
+            index2_assign(x.clone(), &args, &value, inplace)
+        });
+    match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
+    }
+}
+
+/// A replacement method's argument list: the call's, then `value = v`.
+fn with_value(
+    mut args: Vec<(Option<String>, Value)>,
+    value: &Value,
+) -> Vec<(Option<String>, Value)> {
+    args.push((Some("value".to_string()), value.clone()));
+    args
+}
+
+/// `x[[i]] <- v` with no dispatch.
+fn index2_assign(
+    x: Value,
+    args: &[(Option<String>, Value)],
+    value: &Value,
+    inplace: bool,
+) -> Result<Value, String> {
+    match null_target_as_list(x, value) {
+        Some(x) => assign_index(&x, args, value, true, inplace),
+        None => Ok(null()),
     }
 }
 
@@ -3742,39 +3825,48 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
     let value = vm.pop();
     let name = name_of(&vm.pop());
     let x = vm.pop();
-    let Some(mut x) = null_target_as_list(x, &value) else {
-        return null();
-    };
-    if let RData::Environment(e) = data(&x) {
-        with_host(|h| h.bind(&e, &name, value));
-        return x;
-    }
     if kind(&x) == RKind::RForeign {
         // `df$n <- v` is `df[["n"]] <- v` in R.
         return foreign_index_set(vm, "[[<-", x, vec![(None, scalar_str(name))], value);
     }
-    // R_subassign3_dflt: an atomic vector is coerced to a list (keeping its
-    // names) before `$<-` writes into it.
+    let res = s3_subset_method("$<-", &x, || {
+        let args = vec![(None, x.clone()), (None, scalar_str(name.clone()))];
+        with_value(args, &value)
+    })
+    .unwrap_or_else(|| {
+        let inplace = may_mutate(vm, &x);
+        dollar_assign(x.clone(), &name, value, inplace)
+    });
+    match res {
+        Ok(v) => v,
+        Err(e) => abort(vm, e),
+    }
+}
+
+/// `x$name <- v` with no dispatch: R's `R_subassign3_dflt`.
+fn dollar_assign(x: Value, name: &str, value: Value, inplace: bool) -> Result<Value, String> {
+    let Some(mut x) = null_target_as_list(x, &value) else {
+        return Ok(null());
+    };
+    if let RData::Environment(e) = data(&x) {
+        with_host(|h| h.bind(&e, name, value));
+        return Ok(x);
+    }
+    // An atomic vector is coerced to a list (keeping its names) before `$<-`
+    // writes into it.
     if matches!(
         data(&x),
         RData::Lgl(_) | RData::Int(_) | RData::Dbl(_) | RData::Str(_)
     ) {
-        if let Err(e) = signal_warning("Coercing LHS to a list") {
-            return abort(vm, e);
-        }
+        signal_warning("Coercing LHS to a list")?;
         let nm = names_of(&x);
         x = mk_list(elements(&x));
         if !nm.is_empty() {
             set_names(&x, nm);
         }
     }
-    let key = scalar_str(name);
-    let args = vec![(None, key)];
-    let inplace = may_mutate(vm, &x);
-    match assign_index(&x, &args, &value, true, inplace) {
-        Ok(v) => v,
-        Err(e) => abort(vm, e),
-    }
+    let args = vec![(None, scalar_str(name))];
+    assign_index(&x, &args, &value, true, inplace)
 }
 
 /// `[<-.factor` / `[[<-.factor`: the replacement is matched against the levels
@@ -3915,7 +4007,13 @@ fn assign_index(
         }
     }
     let Some((_, idx)) = args.iter().find(|(_, v)| !matches!(v, Value::Undef)) else {
-        return Ok(x.clone());
+        if single_slot {
+            return Err("missing subscript".into());
+        }
+        // `x[] <- v`: R's `SubassignN` with a missing subscript selects every
+        // position, so the value recycles over all of x and its attributes stay.
+        let all = mk_int((1..=len(x) as i64).map(Some).collect());
+        return assign_index(x, &[(None, all)], value, false, inplace);
     };
     // `x[[NA]] <- v`: an integer or logical `NA` reaches `integerOneIndex` as
     // `INT_MIN`, which that function reads as a negative subscript.
@@ -4865,7 +4963,8 @@ thread_local! {
 /// The operators reachable as functions through their backtick names.
 pub const OPERATORS: &[&str] = &[
     "+", "-", "*", "/", "^", "%%", "%/%", "==", "!=", "<", ">", "<=", ">=", "&", "|", "!", ":",
-    "[", "[[", "$", "%in%", "if", "for", "while", "repeat", "{", "(", "<-", "<<-", "=", "&&", "||",
+    "[", "[[", "$", "[<-", "[[<-", "$<-", "%in%", "if", "for", "while", "repeat", "{", "(", "<-",
+    "<<-", "=", "&&", "||",
 ];
 
 /// Every primitive rlang implements; also the corpus the LSP completes from.
@@ -11436,9 +11535,44 @@ fn call_operator(
         .first()
         .cloned()
         .ok_or_else(|| format!("argument to '{name}' is missing"))?;
+    if dispatch && SUBSET_GENERICS.contains(&name) {
+        if let Some(res) = s3_subset_method(name, &first, || args.to_vec()) {
+            return res;
+        }
+    }
+    // The name a `$` / `$<-` call selects: a string or a symbol.
+    let selector = || match vals.get(1) {
+        Some(v) => match data(v) {
+            RData::Sym(n) => Ok(n),
+            _ => str1(v).ok_or_else(|| "invalid subscript type".to_string()),
+        },
+        None => Err(format!("argument to '{name}' is missing")),
+    };
+    // A replacement form's value is its last argument, as `SubAssignArgs`
+    // takes it; the subscripts are everything between `x` and it.
+    let replacement = || match args {
+        [_, subs @ .., (_, value)] => Ok((subs, value.clone())),
+        _ => Err("SubAssignArgs: invalid number of arguments".to_string()),
+    };
     match name {
         "[" => return index_single(&first, &args[1..]),
         "[[" => return index_double(&first, &args[1..]),
+        "$" => return dollar_get(&first, &selector()?),
+        "[<-" => {
+            let (subs, value) = replacement()?;
+            return assign_index(&first, subs, &value, false, false);
+        }
+        "[[<-" => {
+            let (subs, value) = replacement()?;
+            return index2_assign(first, subs, &value, false);
+        }
+        "$<-" => {
+            let value = vals
+                .get(2)
+                .cloned()
+                .ok_or("argument \"value\" is missing, with no default")?;
+            return dollar_assign(first, &selector()?, value, false);
+        }
         // `%in%` reached as a function value (`Reduce(`%in%`, …)`); the infix
         // spelling compiles straight to the same `value_in`.
         "%in%" => {
@@ -11447,19 +11581,6 @@ fn call_operator(
                 .cloned()
                 .ok_or("argument \"table\" is missing, with no default")?;
             return Ok(value_in(&first, &table));
-        }
-        "$" => {
-            let key = vals.get(1).and_then(str1).unwrap_or_default();
-            let names = names_of(&first);
-            return Ok(
-                match names
-                    .iter()
-                    .position(|n| n.as_deref() == Some(key.as_str()))
-                {
-                    Some(i) => element_at(&first, i),
-                    None => null(),
-                },
-            );
         }
         _ => {}
     }
@@ -16861,6 +16982,12 @@ fn strip_g_zeros(s: &str) -> String {
 /// Only names rlang implements as primitives are listed; a generic with no
 /// primitive behind it is reached through `UseMethod` instead.
 const INTERNAL_GENERICS: &[&str] = &[
+    "[",
+    "[[",
+    "$",
+    "[<-",
+    "[[<-",
+    "$<-",
     "print",
     "format",
     "summary",
@@ -17739,13 +17866,36 @@ fn next_method() -> Result<Value, String> {
     // inside the callee, so the frame on top may be the promise's. R evaluates
     // it in the method's own frame, which is what this looks past to —
     // `as.character.money <- function(x, ...) paste0("$", NextMethod())`.
-    let (dispatch, args) = with_host(|h| {
+    let (dispatch, args, params, env) = with_host(|h| {
         let f = h.innermost_call();
         (
             f.and_then(|f| f.dispatch.clone()),
             f.map(|f| f.args.clone()).unwrap_or_default(),
+            f.and_then(|f| f.fun.as_ref())
+                .and_then(|(id, _)| h.closures.get(*id))
+                .map(|d| d.params.clone())
+                .unwrap_or_default(),
+            f.map(|f| f.env.clone()),
         )
     });
+    // R's `do_nextmethod`: every supplied argument that matched a formal is
+    // passed on as that formal's CURRENT value in the method's frame (a
+    // promise of the symbol there), so a method that changes `x` before
+    // calling `NextMethod()` hands the next method the changed `x`. Arguments
+    // that went to `...` and the call's own tags are kept as they were.
+    let mut args = args;
+    if let Some(env) = env {
+        let tags: Vec<Option<String>> = args.iter().map(|(t, _)| t.clone()).collect();
+        let to = crate::host::match_positions(&params, &tags)?;
+        for ((_, v), slot) in args.iter_mut().zip(&to) {
+            let Some(p) = slot.map(|i| &params[i]).filter(|p| *p != "...") else {
+                continue;
+            };
+            if let Some(cur) = env.borrow().vars.get(p) {
+                *v = cur.clone();
+            }
+        }
+    }
     // Dispatch reads the arguments as VALUES — it picks a method by their
     // class — so any still-unforced promise among them is forced here, which
     // is the read R's `NextMethod` performs too.

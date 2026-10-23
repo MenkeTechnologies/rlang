@@ -2780,8 +2780,13 @@ pub fn match_args(
         if p == "..." {
             continue;
         }
+        // An empty argument (`f(1, )`, `x[i, ]` reaching a `[` method) is R's
+        // `R_MissingArg`: the formal stays unbound, so `missing()` answers TRUE
+        // and the default, if any, fills it.
         if let Some(v) = &bound[i] {
-            out.push((p.clone(), v.clone()));
+            if !matches!(v, Value::Undef) {
+                out.push((p.clone(), v.clone()));
+            }
         }
     }
     // leftovers → `...`, or an error

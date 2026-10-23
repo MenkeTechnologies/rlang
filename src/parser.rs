@@ -350,7 +350,7 @@ impl Parser {
                 }
                 Tok::LBracket => {
                     self.pos += 1;
-                    let args = self.args(&Tok::RBracket)?;
+                    let args = bracket_args(self.args(&Tok::RBracket)?);
                     self.expect(Tok::RBracket)?;
                     e = Expr::Index {
                         kind: IndexKind::Single,
@@ -360,7 +360,7 @@ impl Parser {
                 }
                 Tok::LBracket2 => {
                     self.pos += 1;
-                    let args = self.args(&Tok::RBracket)?;
+                    let args = bracket_args(self.args(&Tok::RBracket)?);
                     // `[[` is closed by two separate `]` tokens (see lexer).
                     self.expect(Tok::RBracket)?;
                     self.expect(Tok::RBracket)?;
@@ -591,6 +591,19 @@ impl Parser {
         }
         Ok(out)
     }
+}
+
+/// The subscripts of `x[...]` / `x[[...]]`. R parses empty brackets as one empty
+/// argument — `quote(x[])` has length 3 — so `x[]` selects everything,
+/// `x[] <- v` fills every element, and a `[` method sees `nargs()` of 2.
+fn bracket_args(args: Vec<Arg>) -> Vec<Arg> {
+    if args.is_empty() {
+        return vec![Arg {
+            name: None,
+            value: None,
+        }];
+    }
+    args
 }
 
 fn bin(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {

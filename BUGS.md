@@ -514,6 +514,31 @@ run that compared nothing — no cases generated, or an oracle that never answer
   primitive's own implementation. Those primitives hand off to a user's
   `<generic>.<class>` first, so a `print.myclass` takes over both `print(x)` and
   top-level autoprint.
+- **The subset and subassign operators dispatch** — fixed. `[`, `[[`, `$`,
+  `[<-`, `[[<-` and `$<-` used to run their defaults on every object, so a
+  `$.rec` / `[[<-.rec` was never called (`x$a` on a classed list read the
+  element; `x$a <- v` wrote it). Each now does R's `DispatchOrEval`: an object
+  with a `class` attribute and a matching `<op>.<class>` (or `<op>.default`)
+  method gets the call, `$` / `$<-` hand the method the name as a string, the
+  replacement forms tag the new value `value`, and the getters force
+  visibility on as R's builtins do. The same holds when the operator is called
+  as a function value (`` sapply(xs, `[[`, "k") ``), and `[<-`, `[[<-`, `$<-`
+  are now callable that way too. Two prerequisites were ported with it: an
+  empty argument (`m[1, ]`, `f(1, )`) is R's `R_MissingArg`, so `missing()` is
+  TRUE and the default fills it, and `x[]` parses as one empty subscript, so
+  `x[] <- v` fills every element (it used to leave `x` unchanged).
+  `NextMethod()` now passes each matched formal's *current* value, as
+  `do_nextmethod` does, so a method that changes `x` before `NextMethod()`
+  forwards the changed `x`. Regressions: `tests/eval.rs`
+  `subset_operators_dispatch_to_s3_methods`,
+  `subassign_operators_dispatch_to_replacement_methods`,
+  `next_method_from_a_subset_method_reaches_the_default`,
+  `an_empty_argument_is_missing`, all read off R 4.6.1.
+  Residue: a method reached by internal dispatch (this one, `length.cls`,
+  `print.cls`) runs with no call context of its own, so `sys.call()` inside it
+  is `NULL` where R gives `` `$.sc`(s, hello) ``, and `conditionCall()` of an
+  error raised inside it is not the method call. `@` still compiles to `$`, so
+  it would dispatch to `$.cls`.
 - **No S4 (`setClass`, `setGeneric`, `isVirtualClass`), no Reference Classes,
   no R6.** `@` parses but is compiled as `$` (see the 2026-10-14 audit section
   below), which is not S4 slot semantics.

@@ -1909,17 +1909,32 @@ pub const OPERATORS: &[Entry] = &[
     (
         "[",
         "x[i]\nx[i, j]\n`[`(x, i)",
-        "Subsetting, which keeps the container type and the names. Positive positions select, negative positions drop, a logical mask recycles, and a character subscript matches names. Given as many subscripts as an array has dimensions it selects a slice and drops the length-1 dimensions; a character subscript against dimnames selects nothing, unlike R.",
+        "Subsetting, which keeps the container type and the names. Positive positions select, negative positions drop, a logical mask recycles, and a character subscript matches names. Given as many subscripts as an array has dimensions it selects a slice and drops the length-1 dimensions; a character subscript against dimnames selects nothing, unlike R. On an object with a class, a `[.<class>` method is called instead.",
     ),
     (
         "[[",
         "x[[i]]\n`[[`(x, i)",
-        "Extract exactly one element, by position or by name. A name that is not present yields NULL, an out-of-range position raises \"subscript out of bounds\", and on an environment it reads a binding.",
+        "Extract exactly one element, by position or by name. A name that is not present yields NULL, an out-of-range position raises \"subscript out of bounds\", and on an environment it reads a binding. On an object with a class, a `[[.<class>` method is called instead.",
     ),
     (
         "$",
         "x$name\n`$`(x, name)",
-        "The element of a named list or vector bound to `name`, or NULL when there is none. rlang also answers on an atomic vector, where R raises \"$ operator is invalid for atomic vectors\".",
+        "The element of a named list bound to `name` (exact match), or NULL when there is none; on an environment it reads a binding, and an atomic vector raises \"$ operator is invalid for atomic vectors\". On an object with a class, a `$.<class>` method is called with the name as a string.",
+    ),
+    (
+        "[<-",
+        "x[i] <- value\n`[<-`(x, i, value)",
+        "Subassignment: writes value into the selected positions, recycling it, growing x past its end and promoting its type to hold value. On an object with a class, a `[<-.<class>` method is called with value tagged `value`, and its result is assigned back.",
+    ),
+    (
+        "[[<-",
+        "x[[i]] <- value\n`[[<-`(x, i, value)",
+        "Replace exactly one element; a NULL value removes a list element, and NULL becomes a list when written into. On an object with a class, a `[[<-.<class>` method is called with value tagged `value`.",
+    ),
+    (
+        "$<-",
+        "x$name <- value\n`$<-`(x, name, value)",
+        "Replace or add the element bound to `name`; an environment gains the binding, and an atomic vector is coerced to a list with a warning. On an object with a class, a `$<-.<class>` method is called with the name as a string.",
     ),
     (
         "%in%",

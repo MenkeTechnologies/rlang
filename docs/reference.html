@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 368 primitive functions and 32 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 368 primitive functions and 35 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 400 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 403 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 368 primitives and 32 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 368 primitives and 35 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -146,7 +146,7 @@
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">17</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
         <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">93</span></li>
-        <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">32</span></li>
+        <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">35</span></li>
       </ul>
     </section>
     <section class="tutorial-section" id="ch-Construction-and-coercion">
@@ -2407,7 +2407,7 @@
     </section>
     <section class="tutorial-section" id="ch-Operators">
       <h2>Operators</h2>
-      <p class="chapter-meta">32 entries</p>
+      <p class="chapter-meta">35 entries</p>
       <article class="doc-entry" id="doc-plus">
         <h3><a class="doc-anchor" href="#doc-plus">#</a> <code>+</code></h3>
         <pre><code class="lang-r r">x + y
@@ -2533,21 +2533,42 @@
 x[i, j]
 `[`(x, i)
 </code></pre>
-        <p>Subsetting, which keeps the container type and the names. Positive positions select, negative positions drop, a logical mask recycles, and a character subscript matches names. Given as many subscripts as an array has dimensions it selects a slice and drops the length-1 dimensions; a character subscript against dimnames selects nothing, unlike R.</p>
+        <p>Subsetting, which keeps the container type and the names. Positive positions select, negative positions drop, a logical mask recycles, and a character subscript matches names. Given as many subscripts as an array has dimensions it selects a slice and drops the length-1 dimensions; a character subscript against dimnames selects nothing, unlike R. On an object with a class, a `[.&lt;class&gt;` method is called instead.</p>
       </article>
       <article class="doc-entry" id="doc-bracketbracket">
         <h3><a class="doc-anchor" href="#doc-bracketbracket">#</a> <code>[[</code></h3>
         <pre><code class="lang-r r">x[[i]]
 `[[`(x, i)
 </code></pre>
-        <p>Extract exactly one element, by position or by name. A name that is not present yields NULL, an out-of-range position raises "subscript out of bounds", and on an environment it reads a binding.</p>
+        <p>Extract exactly one element, by position or by name. A name that is not present yields NULL, an out-of-range position raises "subscript out of bounds", and on an environment it reads a binding. On an object with a class, a `[[.&lt;class&gt;` method is called instead.</p>
       </article>
       <article class="doc-entry" id="doc-dollar">
         <h3><a class="doc-anchor" href="#doc-dollar">#</a> <code>$</code></h3>
         <pre><code class="lang-r r">x$name
 `$`(x, name)
 </code></pre>
-        <p>The element of a named list or vector bound to `name`, or NULL when there is none. rlang also answers on an atomic vector, where R raises "$ operator is invalid for atomic vectors".</p>
+        <p>The element of a named list bound to `name` (exact match), or NULL when there is none; on an environment it reads a binding, and an atomic vector raises "$ operator is invalid for atomic vectors". On an object with a class, a `$.&lt;class&gt;` method is called with the name as a string.</p>
+      </article>
+      <article class="doc-entry" id="doc-bracketltminus">
+        <h3><a class="doc-anchor" href="#doc-bracketltminus">#</a> <code>[&lt;-</code></h3>
+        <pre><code class="lang-r r">x[i] &lt;- value
+`[&lt;-`(x, i, value)
+</code></pre>
+        <p>Subassignment: writes value into the selected positions, recycling it, growing x past its end and promoting its type to hold value. On an object with a class, a `[&lt;-.&lt;class&gt;` method is called with value tagged `value`, and its result is assigned back.</p>
+      </article>
+      <article class="doc-entry" id="doc-bracketbracketltminus">
+        <h3><a class="doc-anchor" href="#doc-bracketbracketltminus">#</a> <code>[[&lt;-</code></h3>
+        <pre><code class="lang-r r">x[[i]] &lt;- value
+`[[&lt;-`(x, i, value)
+</code></pre>
+        <p>Replace exactly one element; a NULL value removes a list element, and NULL becomes a list when written into. On an object with a class, a `[[&lt;-.&lt;class&gt;` method is called with value tagged `value`.</p>
+      </article>
+      <article class="doc-entry" id="doc-dollarltminus">
+        <h3><a class="doc-anchor" href="#doc-dollarltminus">#</a> <code>$&lt;-</code></h3>
+        <pre><code class="lang-r r">x$name &lt;- value
+`$&lt;-`(x, name, value)
+</code></pre>
+        <p>Replace or add the element bound to `name`; an environment gains the binding, and an atomic vector is coerced to a list with a warning. On an object with a class, a `$&lt;-.&lt;class&gt;` method is called with the name as a string.</p>
       </article>
       <article class="doc-entry" id="doc-pctinpct">
         <h3><a class="doc-anchor" href="#doc-pctinpct">#</a> <code>%in%</code></h3>

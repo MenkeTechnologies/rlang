@@ -1166,3 +1166,111 @@ fn bind_labels_survive_the_promise_rewrite() {
         "     [,1] [,2]\n[1,]    1    2\n[2,]    3    4"
     );
 }
+
+#[test]
+fn subset_operators_dispatch_to_s3_methods() {
+    // R's `DispatchOrEval` in `do_subset`, `do_subset2` and `do_subset3`: an
+    // object's `[.cls`, `[[.cls` and `$.cls` take over, and `$` hands the
+    // method its name as a string. Every expectation was read off R 4.6.1.
+    const D: &str = "x <- structure(list(a = 1, b = 2), class = \"rec\"); \
+        `$.rec` <- function(x, name) paste(\"dollar\", name); \
+        `[[.rec` <- function(x, i, ...) paste(\"dbl\", i); \
+        `[.rec` <- function(x, i) paste(\"single\", i)";
+    let at = |s: &str| r(&format!("{D}; {s}"));
+    assert_eq!(at("x$a"), "[1] \"dollar a\"");
+    assert_eq!(at("x[[2]]"), "[1] \"dbl 2\"");
+    assert_eq!(at("x[\"b\"]"), "[1] \"single b\"");
+    // Called as a function value, the operator dispatches the same way.
+    assert_eq!(at("`[[`(x, \"a\")"), "[1] \"dbl a\"");
+    assert_eq!(
+        at("sapply(list(x, x), `[[`, \"q\")"),
+        "[1] \"dbl q\" \"dbl q\""
+    );
+    // Without the class the default runs.
+    assert_eq!(at("unclass(x)$a"), "[1] 1");
+}
+
+#[test]
+fn subassign_operators_dispatch_to_replacement_methods() {
+    // `do_subassign`, `do_subassign2` and `do_subassign3` dispatch to
+    // `[<-.cls`, `[[<-.cls` and `$<-.cls` with the value tagged `value`, and
+    // the method's result is what gets assigned back — including one level
+    // down in `w$inner$a <- v`. Read off R 4.6.1.
+    const S: &str = "`$<-.rec` <- function(x, name, value) { y <- unclass(x); y[[name]] <- value * 10; structure(y, class = \"rec\") }; \
+        `[[<-.rec` <- function(x, i, value) { y <- unclass(x); y[[i]] <- value + 100; structure(y, class = \"rec\") }; \
+        `[<-.rec` <- function(x, i, value) { y <- unclass(x); y[i] <- list(value - 1); structure(y, class = \"rec\") }; \
+        x <- structure(list(a = 1, b = 2), class = \"rec\")";
+    let at = |s: &str| r(&format!("{S}; {s}"));
+    assert_eq!(at("x$a <- 5; unclass(x)$a"), "[1] 50");
+    assert_eq!(at("x[[\"b\"]] <- 1; unclass(x)$b"), "[1] 101");
+    assert_eq!(at("x[\"a\"] <- 7; unclass(x)$a"), "[1] 6");
+    assert_eq!(
+        at("w <- list(inner = x); w$inner$a <- 3; unclass(w$inner)$a"),
+        "[1] 30"
+    );
+    assert_eq!(at("x$z <- 4; names(x)"), "[1] \"a\" \"b\" \"z\"");
+    // A classed environment dispatches too, before the binding default.
+    assert_eq!(
+        r("e <- new.env(); class(e) <- \"obj\"; \
+           `$.obj` <- function(x, name) paste(\"field\", name); \
+           `$<-.obj` <- function(x, name, value) { assign(name, value * 2, envir = x); x }; \
+           e$bar <- 21; c(e$foo, get(\"bar\", envir = e))"),
+        "[1] \"field foo\" \"42\""
+    );
+}
+
+#[test]
+fn next_method_from_a_subset_method_reaches_the_default() {
+    const N: &str = "v <- structure(c(10, 20, 30), class = \"vec\"); \
+        `[.vec` <- function(x, i) structure(NextMethod(), class = \"vec\"); \
+        `[<-.vec` <- function(x, i, value) { attr(x, \"log\") <- \"seen\"; NextMethod() }; \
+        `$<-.lst` <- function(x, name, value) NextMethod(); \
+        `[[.lst` <- function(x, i) toupper(NextMethod()); \
+        l <- structure(list(p = \"a\"), class = \"lst\")";
+    let at = |s: &str| r(&format!("{N}; {s}"));
+    assert_eq!(at("unclass(v[2:3])"), "[1] 20 30");
+    assert_eq!(at("class(v[2:3])"), "[1] \"vec\"");
+    assert_eq!(at("v[1] <- 99; c(unclass(v))"), "[1] 99 20 30");
+    assert_eq!(at("v[1] <- 99; attr(v, \"log\")"), "[1] \"seen\"");
+    assert_eq!(at("l$q <- \"b\"; l[[\"q\"]]"), "[1] \"B\"");
+    assert_eq!(at("l$q <- \"b\"; class(l)"), "[1] \"lst\"");
+    // A factor has no user method, so its native `[<-` still runs.
+    assert_eq!(
+        r("f <- factor(c(\"a\", \"b\", \"a\")); f[1] <- \"b\"; f[2:3]"),
+        "[1] b a\nLevels: a b"
+    );
+}
+
+#[test]
+fn an_empty_argument_is_missing() {
+    // R binds an empty argument as `R_MissingArg`: `missing()` is TRUE, the
+    // default fills it, and `nargs()` still counts it. `x[]` parses as one
+    // empty subscript, so a `[` method sees two arguments and `x[] <- v`
+    // fills every element. Read off R 4.6.1.
+    const M: &str = "m <- structure(list(), class = \"mat\"); \
+        `[.mat` <- function(x, i, j, drop = TRUE) c(missing(i), missing(j), drop, nargs())";
+    let at = |s: &str| r(&format!("{M}; {s}"));
+    assert_eq!(at("m[1, ]"), "[1] 0 1 1 3");
+    assert_eq!(at("m[, 2]"), "[1] 1 0 1 3");
+    assert_eq!(at("m[1, 2, drop = FALSE]"), "[1] 0 0 0 4");
+    assert_eq!(at("m[]"), "[1] 1 1 1 2");
+    assert_eq!(
+        r("f <- function(a, b = 2) c(missing(b), b); f(1, )"),
+        "[1] 1 2"
+    );
+    assert_eq!(r("g <- function(...) nargs(); g(1, )"), "[1] 2");
+    assert_eq!(r("length(quote(x[]))"), "[1] 3");
+    assert_eq!(
+        r("x <- c(a = 1, b = 2, c = 3); x[] <- 0; x"),
+        "a b c \n0 0 0"
+    );
+    assert_eq!(r("y <- 1:4; y[] <- c(7L, 8L); y"), "[1] 7 8 7 8");
+    assert_eq!(
+        r("m <- matrix(1:4, 2); m[] <- 0; m"),
+        "     [,1] [,2]\n[1,]    0    0\n[2,]    0    0"
+    );
+    assert_eq!(
+        r("tryCatch(list(1)[[]], error = function(e) conditionMessage(e))"),
+        "[1] \"missing subscript\""
+    );
+}
