@@ -1675,6 +1675,68 @@ impl RHost {
             .or_else(|| self.frames.iter().rev().find(|f| !f.promise))
     }
 
+    /// The expression an unforced promise holds, with the environment it was
+    /// written in — R's `PREXPR`/`PRENV`. The thunk `function() <expr>` the
+    /// compiler wraps an argument in keeps its source, so the body is read
+    /// back from there.
+    pub fn promise_expr(&self, v: &Value) -> Option<(crate::ast::Expr, Env)> {
+        let RData::Promise {
+            thunk, value: None, ..
+        } = &self.get(v)?.data
+        else {
+            return None;
+        };
+        let RData::Closure { id, env } = &self.get(thunk)?.data else {
+            return None;
+        };
+        let src = self.closures.get(*id)?.src.join("\n");
+        let mut exprs = crate::parser::parse(&src).ok()?;
+        match exprs.pop() {
+            Some(crate::ast::Expr::Function { params, body })
+                if exprs.is_empty() && params.is_empty() =>
+            {
+                Some((*body, env.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::promise_expr`] when the expression is a bare symbol.
+    pub fn promise_symbol(&self, v: &Value) -> Option<(String, Env)> {
+        match self.promise_expr(v)? {
+            (crate::ast::Expr::Ident(s), env) => Some((s, env)),
+            _ => None,
+        }
+    }
+
+    /// R's `R_isMissing(symbol, rho)`: whether `name`, as bound in `env`, is an
+    /// argument its caller never supplied — followed through a promise whose
+    /// expression is itself a bare symbol, so `g <- function(y) f(y)` makes
+    /// `missing(x)` in `f` answer for `g`'s `y`. rlang leaves an omitted formal
+    /// with no default unbound, which is R's `R_MissingArg`; a formal the
+    /// default filled in is R's `MISSING == 2` and does NOT count here (only
+    /// `missing()` on the formal itself sees it), so a forwarded default reads
+    /// as supplied, as it does in R.
+    pub fn is_missing_in(&self, env: &Env, name: &str) -> bool {
+        let bound = env.borrow().vars.get(name).cloned();
+        match bound {
+            None => self.frames.iter().rev().any(|f| {
+                !f.promise
+                    && Rc::ptr_eq(&f.env, env)
+                    && f.fun
+                        .as_ref()
+                        .and_then(|(id, _)| self.closures.get(*id))
+                        .is_some_and(|c| c.params.iter().any(|p| p == name))
+            }),
+            Some(v) => match self.promise_symbol(&v) {
+                // `function(a = a)`: R's PRSEEN guard answers missing.
+                Some((s, e)) if s == name && Rc::ptr_eq(&e, env) => true,
+                Some((s, e)) => self.is_missing_in(&e, &s),
+                None => false,
+            },
+        }
+    }
+
     /// R's `parent.frame(n)`: the environment `n` calling generations above
     /// the one `parent.frame` was written in.
     ///

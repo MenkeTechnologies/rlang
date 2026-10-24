@@ -1274,3 +1274,168 @@ fn an_empty_argument_is_missing() {
         "[1] \"missing subscript\""
     );
 }
+
+#[test]
+fn missing_follows_a_forwarded_bare_symbol() {
+    // `do_missing` asks `R_isMissing` of the symbol a promise holds, in the
+    // environment that wrote it: an omitted formal passed on by name is still
+    // missing one call down, through any number of hand-offs. A formal its own
+    // default filled in (`MISSING == 2`) reads as supplied once forwarded, and
+    // an expression or a reassigned name is never missing. Read off R 4.6.1.
+    const F: &str = "f <- function(x) missing(x)";
+    let at = |s: &str| r(&format!("{F}; {s}"));
+    assert_eq!(at("g <- function(y) f(y); g()"), "[1] TRUE");
+    assert_eq!(at("g <- function(y) f(y); g(1)"), "[1] FALSE");
+    assert_eq!(
+        at("g <- function(y) f(y); h <- function(z) g(z); h()"),
+        "[1] TRUE"
+    );
+    assert_eq!(at("g <- function(y = 2) f(y); g()"), "[1] FALSE");
+    assert_eq!(at("g <- function(y) f(y + 1); g()"), "[1] FALSE");
+    assert_eq!(at("g <- function(y) { y <- 5; f(y) }; g()"), "[1] FALSE");
+    assert_eq!(
+        r("h <- function(a, b) if (missing(b)) \"nob\" else b; k <- function(a, b) h(a, b); c(k(1), k(1, 2))"),
+        "[1] \"nob\" \"2\""
+    );
+}
+
+#[test]
+fn exists_inherits_through_to_the_base_bindings() {
+    // Every enclosure chain in R ends in base, so an inheriting search from
+    // the global environment, or a new one, sees `sum` and `pi`.
+    assert_eq!(r("exists(\"sum\", envir = globalenv())"), "[1] TRUE");
+    assert_eq!(r("exists(\"pi\", envir = globalenv())"), "[1] TRUE");
+    assert_eq!(r("exists(\"sum\", envir = new.env())"), "[1] TRUE");
+    assert_eq!(
+        r("exists(\"sum\", envir = new.env(), inherits = FALSE)"),
+        "[1] FALSE"
+    );
+    assert_eq!(r("exists(\"sum\", inherits = FALSE)"), "[1] FALSE");
+    assert_eq!(r("exists(\"nope\", envir = globalenv())"), "[1] FALSE");
+}
+
+#[test]
+fn t_and_f_are_bindings_not_keywords() {
+    // `T`/`F` are variables in base: a formal or a global can shadow them,
+    // and `isTRUE` demands an actual logical.
+    assert_eq!(r("c(T, F)"), "[1]  TRUE FALSE");
+    assert_eq!(r("g <- function(F) F * 2; g(3)"), "[1] 6");
+    assert_eq!(r("T <- 5; T + 1"), "[1] 6");
+    assert_eq!(r("deparse(quote(F | x))"), "[1] \"F | x\"");
+    assert_eq!(
+        r("c(isTRUE(5), isTRUE(\"TRUE\"), isTRUE(c(a = TRUE)), isFALSE(0))"),
+        "[1] FALSE FALSE  TRUE FALSE"
+    );
+}
+
+#[test]
+fn match_fun_resolves_from_the_callers_caller() {
+    assert_eq!(r("match.fun(\"sum\")(1:3)"), "[1] 6");
+    assert_eq!(r("match.fun(mean)(c(1, 3))"), "[1] 2");
+    assert_eq!(r("match.fun(quote(sqrt))(16)"), "[1] 4");
+    assert_eq!(
+        r("g <- function(F) { F <- match.fun(F); F(4) }; g(\"sqrt\")"),
+        "[1] 2"
+    );
+    // A non-function binding is skipped, as `get(mode = "function")` does.
+    assert_eq!(r("sum <- 3; match.fun(\"sum\")(1:3)"), "[1] 6");
+    // R looks in `parent.frame(2)`, so a local of the immediate caller is
+    // not found, while one of ITS caller is.
+    assert_eq!(
+        r("g <- function() { myf <- function(x) x + 1; match.fun(\"myf\")(1) }; tryCatch(g(), error = function(e) conditionMessage(e))"),
+        "[1] \"object 'myf' of mode 'function' was not found\""
+    );
+    assert_eq!(
+        r("h <- function() { myf <- function(x) x + 1; k <- function(f) match.fun(f)(1); k(\"myf\") }; h()"),
+        "[1] 2"
+    );
+    assert_eq!(
+        r("tryCatch(match.fun(1), error = function(e) conditionMessage(e))"),
+        "[1] \"'1' is not a function, character or symbol\""
+    );
+}
+
+#[test]
+fn get_s3_method_needs_a_generic_and_a_method() {
+    const G: &str = "gen <- function(x) UseMethod(\"gen\"); gen.bar <- function(x) \"bar\"";
+    let msg = |s: &str| {
+        r(&format!(
+            "{G}; tryCatch({s}, error = function(e) conditionMessage(e))"
+        ))
+    };
+    assert_eq!(
+        r(&format!("{G}; getS3method(\"gen\", \"bar\")(1)")),
+        "[1] \"bar\""
+    );
+    assert_eq!(
+        r("print.foo <- function(x, ...) \"foo\"; getS3method(\"print\", \"foo\")(1)"),
+        "[1] \"foo\""
+    );
+    assert_eq!(
+        msg("getS3method(\"paste\", \"foo\")"),
+        "[1] \"no function 'paste' could be found\""
+    );
+    assert_eq!(
+        msg("getS3method(\"print\", \"zzz\")"),
+        "[1] \"S3 method 'print.zzz' not found\""
+    );
+    assert_eq!(
+        msg("getS3method(1, \"bar\")"),
+        "[1] \"is.character(f) is not TRUE\""
+    );
+    assert_eq!(
+        r("is.null(getS3method(\"paste\", \"foo\", optional = TRUE))"),
+        "[1] TRUE"
+    );
+    // The generic may sit in braces or an `if` branch, as utils' `isUME` reads.
+    assert_eq!(
+        r("g2 <- function(x) { if (FALSE) 1 else UseMethod(\"g2\") }; g2.q <- function(x) 7; getS3method(\"g2\", \"q\")(0)"),
+        "[1] 7"
+    );
+}
+
+#[test]
+fn subset_ports_the_default_and_matrix_methods() {
+    assert_eq!(r("x <- c(5, NA, 7, 1); subset(x, x > 2)"), "[1] 5 7");
+    assert_eq!(
+        r("subset(c(a = 1, b = 2, c = 3), c(TRUE, NA, TRUE))"),
+        "a c \n1 3"
+    );
+    assert_eq!(
+        r("tryCatch(subset(1:3, 1), error = function(e) conditionMessage(e))"),
+        "[1] \"'subset' must be logical\""
+    );
+    assert_eq!(
+        r("f <- function(x) { lim <- 1; subset(x, x > lim) }; f(1:3)"),
+        "[1] 2 3"
+    );
+    const M: &str = "m <- matrix(1:6, 3, dimnames = list(NULL, c(\"a\", \"b\")))";
+    let at = |s: &str| r(&format!("{M}; {s}"));
+    assert_eq!(
+        at("subset(m, m[, \"a\"] > 1)"),
+        "     a b\n[1,] 2 5\n[2,] 3 6"
+    );
+    // `select` is read unevaluated, with each column name bound to its index.
+    assert_eq!(
+        at("subset(m, m[, \"a\"] > 1, select = b)"),
+        "     b\n[1,] 5\n[2,] 6"
+    );
+    assert_eq!(
+        at("subset(m, m[, \"a\"] > 1, select = b, drop = TRUE)"),
+        "[1] 5 6"
+    );
+    assert_eq!(
+        at("subset(m, select = -a)"),
+        "     b\n[1,] 4\n[2,] 5\n[3,] 6"
+    );
+    assert_eq!(at("dim(subset(m, select = a:b))"), "[1] 3 2");
+    assert_eq!(
+        at("k <- 2; subset(m, select = k)"),
+        "     b\n[1,] 4\n[2,] 5\n[3,] 6"
+    );
+    // A user method on the class takes over, as `UseMethod("subset")` would.
+    assert_eq!(
+        r("subset.qq <- function(x, ...) \"qq\"; subset(structure(1, class = \"qq\"))"),
+        "[1] \"qq\""
+    );
+}

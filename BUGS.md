@@ -685,26 +685,63 @@ against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
   #    the standard deviation is zero          rlang: [1] NA, no warning
   ```
 
-- **`exists()` with `envir=` does not find builtins.** Without `envir` it
-  answers `TRUE`; with one it looks only at user bindings, so every primitive
-  and every function rlang implements natively is reported absent:
+- **`exists()` with `envir=` does not find builtins** — fixed. An inheriting
+  search from any environment now ends in the base bindings (the primitives
+  and the base constants), because every enclosure chain in R ends in base:
+  `exists("sum", envir = globalenv())` and `exists("pi", envir = new.env())`
+  are TRUE, and `inherits = FALSE` still looks at the one frame only.
+  Regression: `tests/eval.rs::exists_inherits_through_to_the_base_bindings`.
+  `baseenv()` is still missing (`could not find function "baseenv"`): rlang
+  has no base environment object to hand back.
 
-  ```r
-  exists("sum", envir = globalenv())    # R: TRUE   rlang: FALSE
-  exists("mean", envir = globalenv())   # R: TRUE   rlang: FALSE
-  exists("sum", envir = new.env())      # R: TRUE   rlang: FALSE
-  ```
+- **`missing()` on a forwarded missing argument gives `FALSE`** — fixed. A
+  formal bound to a promise of a bare symbol is followed into the environment
+  that wrote it, R's `do_missing` → `R_isMissing`, through any number of
+  hand-offs (`h <- function(z) g(z)`). A forwarded formal that its own default
+  filled in reads as supplied (R's `MISSING == 2`), and a promise of any other
+  expression is never missing. `k <- function(a, b) h(a, b); k(1)` with `h`
+  testing `missing(b)` no longer dies with `object 'b' not found`.
+  Regression: `tests/eval.rs::missing_follows_a_forwarded_bare_symbol`.
 
-  `baseenv()` is also missing (`could not find function "baseenv"`).
+- **`T` and `F` were keywords** — fixed. The lexer read them as `TRUE`/`FALSE`
+  literals, so `function(F)` was a parse error (`bad parameter False`) and
+  `T <- 5` could not shadow. They are now ordinary names resolved to the base
+  bindings. `isTRUE`/`isFALSE` coerced their argument (`isTRUE(5)` was TRUE);
+  they now require a logical, as R's `is.logical(x) && …` does.
+  Regression: `tests/eval.rs::t_and_f_are_bindings_not_keywords`.
 
-- **`missing()` on a forwarded missing argument gives `FALSE`.** R follows the
-  promise chain: a formal bound to a caller's missing formal is itself missing.
+- **`match.fun`, `getS3method` and `subset` were missing** — added. `match.fun`
+  looks a string or symbol up as a function from `parent.frame(2)`, as R's
+  does; `getS3method` requires a generic (an internal one, or a closure whose
+  body calls `UseMethod`, per utils' `findGeneric`) and finds a bound
+  `<f>.<class>`; `subset` ports `subset.default` and `subset.matrix`, reading
+  `select` unevaluated with the column names bound to their indices, and
+  dispatches to a user's `subset.<class>`. Residue: an error raised inside
+  `match.fun` reports `Error in match.fun(…)` where R names its inner
+  `get(as.character(FUN), mode = "function", envir = envir)` call; there is no
+  S3 methods table, so `getS3method("print", "default")` finds nothing; and
+  `subset.data.frame` is unavailable because data frames are not native.
+  Regression: `tests/eval.rs::match_fun_resolves_from_the_callers_caller`,
+  `get_s3_method_needs_a_generic_and_a_method`,
+  `subset_ports_the_default_and_matrix_methods`.
 
-  ```r
-  g <- function(y) missing(y)
-  f <- function(x) g(x)
-  f()     # R: [1] TRUE      rlang: [1] FALSE
-  ```
+- **No expression vectors: `parse(text = )` is missing.** `expression(…)`
+  and `parse` are both `could not find function` under `RLANG_NO_CRAN=1`,
+  because rlang has no `EXPRSXP` value type to return (a `typeof`
+  `"expression"` list whose `eval` runs each element and returns the last).
+  `eval(parse(text = "x <- 3; x * 2"))` therefore fails with `could not find
+  function "parse"`. Adding the type is the prerequisite.
+
+- **`pkg::name` drops the qualifier.** The parser reads `base::sum` as `sum`,
+  so a user binding shadows it: `sum <- 3; base::sum` is `[1] 3` where R
+  returns the primitive.
+
+- **Also open:** `Sys.time()`/`Sys.Date()` are missing; `with()` is lowered to
+  `eval(quote(expr), data)` and so never dispatches a user's `with.<class>`;
+  `as.numeric` dispatches `as.numeric.<class>` where R dispatches the
+  `as.double` methods; `@` compiles to `$`; `sys.call()` is `NULL` inside a
+  method reached through operator dispatch.
+
 
 - **Rejecting 8,000 lexically nested closure calls takes ~47 s and 5.7 GB on
   the debug build.** rlang does stop with `evaluation nested too deeply:

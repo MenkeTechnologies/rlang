@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 368 primitive functions and 35 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 371 primitive functions and 35 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 403 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 406 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 368 primitives and 35 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 371 primitives and 35 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -143,9 +143,9 @@
         <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">50</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">32</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">39</span></li>
-        <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">17</span></li>
+        <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">18</span></li>
         <li><a href="#ch-Matrices-and-arrays">Matrices and arrays</a> <span class="chapter-count">28</span></li>
-        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">93</span></li>
+        <li><a href="#ch-Environments-and-dispatch">Environments and dispatch</a> <span class="chapter-count">95</span></li>
         <li><a href="#ch-Operators">Operators</a> <span class="chapter-count">35</span></li>
       </ul>
     </section>
@@ -1264,13 +1264,13 @@
         <h3><a class="doc-anchor" href="#doc-isTRUE">#</a> <code>isTRUE</code></h3>
         <pre><code class="lang-r r">isTRUE(x)
 </code></pre>
-        <p>TRUE when x is a length-1 TRUE. The argument is coerced first, so isTRUE(1) answers TRUE here where GNU R — which demands an actual logical — answers FALSE.</p>
+        <p>TRUE when x is a logical of length 1 that is TRUE (attributes such as names are allowed). Nothing is coerced, so isTRUE(1) and isTRUE("TRUE") are FALSE.</p>
       </article>
       <article class="doc-entry" id="doc-isFALSE">
         <h3><a class="doc-anchor" href="#doc-isFALSE">#</a> <code>isFALSE</code></h3>
         <pre><code class="lang-r r">isFALSE(x)
 </code></pre>
-        <p>TRUE when x is a length-1 FALSE, with the same coercion caveat as isTRUE.</p>
+        <p>TRUE when x is a logical of length 1 that is FALSE; like isTRUE, nothing is coerced.</p>
       </article>
       <article class="doc-entry" id="doc-xor">
         <h3><a class="doc-anchor" href="#doc-xor">#</a> <code>xor</code></h3>
@@ -1567,7 +1567,7 @@
     </section>
     <section class="tutorial-section" id="ch-The-apply-family">
       <h2>The apply family</h2>
-      <p class="chapter-meta">17 entries</p>
+      <p class="chapter-meta">18 entries</p>
       <article class="doc-entry" id="doc-lapply">
         <h3><a class="doc-anchor" href="#doc-lapply">#</a> <code>lapply</code></h3>
         <pre><code class="lang-r r">lapply(X, FUN, ...)
@@ -1627,6 +1627,12 @@
         <pre><code class="lang-r r">split(x, f)
 </code></pre>
         <p>Split x into a list of groups, one per distinct value of f, named by the sorted levels.</p>
+      </article>
+      <article class="doc-entry" id="doc-subset">
+        <h3><a class="doc-anchor" href="#doc-subset">#</a> <code>subset</code></h3>
+        <pre><code class="lang-r r">subset(x, subset, select, drop = FALSE)
+</code></pre>
+        <p>R's subset.default and subset.matrix. For a vector or list, x[subset &amp; !is.na(subset)], where subset must be logical. For a matrix, the rows where subset is TRUE (all rows when it is omitted) and the columns select names, drop = FALSE keeping the matrix shape. select is evaluated unevaluated with each column name bound to its index, so select = c(a, c), select = a:b and select = -b pick columns by name. A subset.&lt;class&gt; method on an object with that class is dispatched to first. Data frames are not native here, so subset.data.frame is not available.</p>
       </article>
       <article class="doc-entry" id="doc-unsplit">
         <h3><a class="doc-anchor" href="#doc-unsplit">#</a> <code>unsplit</code></h3>
@@ -1845,7 +1851,7 @@
     </section>
     <section class="tutorial-section" id="ch-Environments-and-dispatch">
       <h2>Environments and dispatch</h2>
-      <p class="chapter-meta">93 entries</p>
+      <p class="chapter-meta">95 entries</p>
       <article class="doc-entry" id="doc-mget">
         <h3><a class="doc-anchor" href="#doc-mget">#</a> <code>mget</code></h3>
         <pre><code class="lang-r r">mget(x, envir)
@@ -1874,7 +1880,19 @@
         <h3><a class="doc-anchor" href="#doc-exists">#</a> <code>exists</code></h3>
         <pre><code class="lang-r r">exists(x, where, envir, inherits = TRUE)
 </code></pre>
-        <p>TRUE when the name is bound in the current environment chain or names a primitive. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE.</p>
+        <p>TRUE when the name is bound in the current environment chain or names a primitive or base constant. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE; every inheriting search ends in the base bindings, so exists("sum", envir = globalenv()) is TRUE.</p>
+      </article>
+      <article class="doc-entry" id="doc-match-fun">
+        <h3><a class="doc-anchor" href="#doc-match-fun">#</a> <code>match.fun</code></h3>
+        <pre><code class="lang-r r">match.fun(FUN)
+</code></pre>
+        <p>FUN itself when it is a function; otherwise FUN must be a single string or a symbol, and the function of that name is looked up — skipping bindings that are not functions — from parent.frame(2), the caller of the function that called match.fun, as R does. A name with no function bound raises "object 'f' of mode 'function' was not found". R's descend argument is not read.</p>
+      </article>
+      <article class="doc-entry" id="doc-getS3method">
+        <h3><a class="doc-anchor" href="#doc-getS3method">#</a> <code>getS3method</code></h3>
+        <pre><code class="lang-r r">getS3method(f, class, optional = FALSE, envir = parent.frame())
+</code></pre>
+        <p>The S3 method f.class as a function. f must name a generic: an internal generic rlang dispatches, or a function whose body calls UseMethod (directly, in its braces or in an if branch); the method is then looked up as a function from envir. Without a generic the error is "no function 'f' could be found", without a method "S3 method 'f.class' not found"; optional = TRUE returns NULL instead of either. R's registered-methods table does not exist here, so only bound methods are found.</p>
       </article>
       <article class="doc-entry" id="doc-get">
         <h3><a class="doc-anchor" href="#doc-get">#</a> <code>get</code></h3>
@@ -1916,7 +1934,7 @@
         <h3><a class="doc-anchor" href="#doc-missing">#</a> <code>missing</code></h3>
         <pre><code class="lang-r r">missing(x)
 </code></pre>
-        <p>TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. R accepts the quoted spelling missing("v") as well, and so does this.</p>
+        <p>TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. A formal bound to a bare symbol the caller passed on (g &lt;- function(y) f(y)) answers for that symbol in the caller: TRUE when it was itself an omitted formal without a default, followed through any number of such hand-offs. A forwarded formal that its own default filled in reads as supplied, as in R. R accepts the quoted spelling missing("v") as well, and so does this.</p>
       </article>
       <article class="doc-entry" id="doc-nargs">
         <h3><a class="doc-anchor" href="#doc-nargs">#</a> <code>nargs</code></h3>

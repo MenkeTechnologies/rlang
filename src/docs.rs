@@ -914,12 +914,12 @@ const PREDICATES: &[Entry] = &[
     (
         "isTRUE",
         "isTRUE(x)",
-        "TRUE when x is a length-1 TRUE. The argument is coerced first, so isTRUE(1) answers TRUE here where GNU R — which demands an actual logical — answers FALSE.",
+        "TRUE when x is a logical of length 1 that is TRUE (attributes such as names are allowed). Nothing is coerced, so isTRUE(1) and isTRUE(\"TRUE\") are FALSE.",
     ),
     (
         "isFALSE",
         "isFALSE(x)",
-        "TRUE when x is a length-1 FALSE, with the same coercion caveat as isTRUE.",
+        "TRUE when x is a logical of length 1 that is FALSE; like isTRUE, nothing is coerced.",
     ),
     (
         "xor",
@@ -1198,6 +1198,11 @@ const APPLY: &[Entry] = &[
         "Split x into a list of groups, one per distinct value of f, named by the sorted levels.",
     ),
     (
+        "subset",
+        "subset(x, subset, select, drop = FALSE)",
+        "R's subset.default and subset.matrix. For a vector or list, x[subset & !is.na(subset)], where subset must be logical. For a matrix, the rows where subset is TRUE (all rows when it is omitted) and the columns select names, drop = FALSE keeping the matrix shape. select is evaluated unevaluated with each column name bound to its index, so select = c(a, c), select = a:b and select = -b pick columns by name. A subset.<class> method on an object with that class is dispatched to first. Data frames are not native here, so subset.data.frame is not available.",
+    ),
+    (
         "unsplit",
         "unsplit(value, f, drop = FALSE)",
         "Reverse split(): a vector as long as f (as long as its first element when f is a list) of value[[1]]'s type, each group of value written back to the positions split(x, f) took it from, value recycled when it has fewer groups. A list of data frames is reassembled in the embedded R.",
@@ -1397,7 +1402,17 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "exists",
         "exists(x, where, envir, inherits = TRUE)",
-        "TRUE when the name is bound in the current environment chain or names a primitive. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE.",
+        "TRUE when the name is bound in the current environment chain or names a primitive or base constant. An environment given as envir, or positionally as where, is searched instead, together with its enclosures unless inherits = FALSE; every inheriting search ends in the base bindings, so exists(\"sum\", envir = globalenv()) is TRUE.",
+    ),
+    (
+        "match.fun",
+        "match.fun(FUN)",
+        "FUN itself when it is a function; otherwise FUN must be a single string or a symbol, and the function of that name is looked up — skipping bindings that are not functions — from parent.frame(2), the caller of the function that called match.fun, as R does. A name with no function bound raises \"object 'f' of mode 'function' was not found\". R's descend argument is not read.",
+    ),
+    (
+        "getS3method",
+        "getS3method(f, class, optional = FALSE, envir = parent.frame())",
+        "The S3 method f.class as a function. f must name a generic: an internal generic rlang dispatches, or a function whose body calls UseMethod (directly, in its braces or in an if branch); the method is then looked up as a function from envir. Without a generic the error is \"no function 'f' could be found\", without a method \"S3 method 'f.class' not found\"; optional = TRUE returns NULL instead of either. R's registered-methods table does not exist here, so only bound methods are found.",
     ),
     (
         "get",
@@ -1432,7 +1447,7 @@ const ENVIRONMENTS: &[Entry] = &[
     (
         "missing",
         "missing(x)",
-        "TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. R accepts the quoted spelling missing(\"v\") as well, and so does this.",
+        "TRUE when the caller supplied no argument for the formal. The argument is not evaluated, so missing(v) reads the name rather than its value and answers for an unsupplied parameter that has no binding at all. A formal with a default is bound before the body runs, and missing() still reports it as absent — the default is not something the caller supplied. A formal bound to a bare symbol the caller passed on (g <- function(y) f(y)) answers for that symbol in the caller: TRUE when it was itself an omitted formal without a default, followed through any number of such hand-offs. A forwarded formal that its own default filled in reads as supplied, as in R. R accepts the quoted spelling missing(\"v\") as well, and so does this.",
     ),
     (
         "nargs",

@@ -1366,7 +1366,8 @@ fn primitive_value(name: &str) -> Option<Value> {
 }
 
 /// R's built-in constants, bound in the base environment: `pi`, the letter and
-/// month name vectors. `T`/`F` are handled as literals by the lexer.
+/// month name vectors, and `T`/`F`, which are ordinary bindings (not
+/// keywords) and so can be shadowed: `F <- match.fun(F)` is legal R.
 fn base_constant(name: &str) -> Option<Value> {
     let letters = |upper: bool| {
         mk_str(
@@ -5227,6 +5228,9 @@ pub const PRIMITIVES: &[&str] = &[
     "vector",
     "setNames",
     "exists",
+    "subset",
+    "match.fun",
+    "getS3method",
     "get",
     "assign",
     "rm",
@@ -5403,9 +5407,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     // settled. Values that are not promises come straight back, so the common
     // call pays one enum test per argument.
     let args = if args.iter().any(|(_, v)| kind(v) == RKind::Promise) {
+        // `subset`'s `select` is read unevaluated (see its arm), so that one
+        // argument stays a promise past this door.
+        let lazy = match name {
+            "subset" => subset_slots(&args)?[2],
+            _ => None,
+        };
         let mut forced = Vec::with_capacity(args.len());
-        for (n, v) in args {
-            forced.push((n, crate::host::force_value(&v)?));
+        for (i, (n, v)) in args.into_iter().enumerate() {
+            match Some(i) == lazy {
+                true => forced.push((n, v)),
+                false => forced.push((n, crate::host::force_value(&v)?)),
+            }
         }
         // Forcing ran R code, and that code may have cleared the visibility
         // flag — `inherits(invisible(1), "numeric")` forces an `invisible` call
@@ -5437,7 +5450,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
     // native builtins can't operate on an opaque handle, so the whole call is
     // delegated to embedded R, which does understand it.
     if args.iter().any(|(_, v)| kind(v) == RKind::RForeign) {
-        return cran_call(name, &args);
+        return cran_call(name, &crate::host::force_all(args)?);
     }
     // A primitive R treats as generic hands off to a user's S3 method before
     // running its own implementation, so `print.myclass` wins over the default
@@ -8418,14 +8431,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 scalar_lgl(name != "any")
             })
         }
-        "isTRUE" => Ok(scalar_lgl(matches!(
-            as_lgl(&a.req(0, "x")?).as_slice(),
-            [Some(true)]
-        ))),
-        "isFALSE" => Ok(scalar_lgl(matches!(
-            as_lgl(&a.req(0, "x")?).as_slice(),
-            [Some(false)]
-        ))),
+        // R's `isTRUE <- function(x) is.logical(x) && length(x) == 1L &&
+        // !is.na(x) && x` (and `isFALSE` likewise): only a logical qualifies,
+        // so `isTRUE(5)` and `isTRUE("TRUE")` are FALSE, not coerced.
+        "isTRUE" | "isFALSE" => {
+            let x = a.req(0, "x")?;
+            let want = name == "isTRUE";
+            Ok(scalar_lgl(
+                kind(&x) == RKind::Lgl && matches!(as_lgl(&x).as_slice(), [Some(b)] if *b == want),
+            ))
+        }
         "xor" => {
             let x = as_lgl(&a.req(0, "x")?);
             let y = as_lgl(&a.req(1, "y")?);
@@ -10300,16 +10315,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // environment and — unless `inherits = FALSE` — its enclosures.
             let env = lookup_env_arg(&a, "where");
             let inherits = a.named("inherits").and_then(|v| lgl1(&v)).unwrap_or(true);
-            if env.is_some() || !inherits {
-                let e = env.unwrap_or_else(|| with_host(|h| h.env()));
-                return Ok(scalar_lgl(lookup_in(e, &n, inherits).is_some()));
-            }
-            // The base constants (`pi`, `letters`, `month.name`, …) are bindings
-            // in R's base environment just as the primitives are, so `exists`
-            // has to see them too — it reported FALSE for `pi` while `get("pi")`
-            // returned 3.141593.
+            let e = env.unwrap_or_else(|| with_host(|h| h.env()));
+            // Every enclosure chain in R ends in the base environment, where
+            // the primitives and the base constants (`pi`, `letters`,
+            // `month.name`, …) are bound — so an inheriting search from ANY
+            // environment sees them: `exists("sum", envir = globalenv())` is
+            // TRUE. rlang's chains stop at the global environment, so the base
+            // bindings are consulted once the walk runs out.
             Ok(scalar_lgl(
-                with_host(|h| h.exists(&n)) || is_primitive(&n) || base_constant(&n).is_some(),
+                lookup_in(e, &n, inherits).is_some()
+                    || inherits && (is_primitive(&n) || base_constant(&n).is_some()),
             ))
         }
         "get" => {
@@ -10326,6 +10341,136 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             found
                 .or_else(|| inherits.then(|| primitive_value(&n)).flatten())
                 .ok_or_else(|| format!("object '{n}' not found"))
+        }
+        // R's `match.fun(FUN, descend = TRUE)` (src/library/base/R/match.R): a
+        // function is returned as is; a single string or a symbol names one,
+        // looked up with `mode = "function"` from `parent.frame(2)` — the
+        // caller of the function that called `match.fun`, since the usual
+        // shape is `g <- function(f) { f <- match.fun(f); … }`.
+        "match.fun" => {
+            let f = a.req(0, "FUN")?;
+            if with_host(|h| h.is_function(&f)) {
+                return Ok(f);
+            }
+            let fname = match data(&f) {
+                RData::Str(s) if s.len() == 1 => s[0].clone().unwrap_or_else(|| "NA".into()),
+                RData::Sym(s) => s,
+                _ => {
+                    return Err(format!(
+                        "'{}' is not a function, character or symbol",
+                        deparse_value(&f)
+                    ))
+                }
+            };
+            let env = with_host(|h| h.parent_frame_env(1));
+            find_function(env, &fname)?
+                .ok_or_else(|| format!("object '{fname}' of mode 'function' was not found"))
+        }
+        // R's `getS3method(f, class, optional = FALSE, envir = parent.frame())`
+        // (src/library/utils/R/objects.R): `f` must be a generic — a known
+        // internal one, or a function whose body calls `UseMethod` (utils'
+        // `findGeneric`) — and the method is `<f>.<class>` looked up with
+        // `mode = "function"` from `envir`. rlang has no S3 methods table, so
+        // the registered-method fallback R consults next finds nothing here.
+        "getS3method" => {
+            let f = a.req(0, "f")?;
+            let cls = a.req(1, "class")?;
+            for (v, test) in [(&f, "f"), (&cls, "class")] {
+                if kind(v) != RKind::Str {
+                    return Err(format!("is.character({test}) is not TRUE"));
+                }
+                if len(v) != 1 {
+                    return Err(format!("length({test}) == 1L is not TRUE"));
+                }
+            }
+            let optional = a.get(2, "optional").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let env = match a.get(3, "envir") {
+                Some(e) => env_of(&e).ok_or("invalid 'envir' argument")?,
+                None => with_host(|h| h.env()),
+            };
+            let f = str1(&f).unwrap_or_else(|| "NA".into());
+            let cls = str1(&cls).unwrap_or_else(|| "NA".into());
+            let known = INTERNAL_GENERICS.contains(&f.as_str())
+                || matches!(f.as_str(), "Math" | "Ops" | "Summary" | "Complex");
+            let generic = match known {
+                true => f,
+                false => match find_function(env.clone(), &f)?.map(|g| use_method_generic(&g)) {
+                    Some(g) if !g.is_empty() => g,
+                    _ if optional => return Ok(null()),
+                    _ => return Err(format!("no function '{f}' could be found")),
+                },
+            };
+            let method = format!("{generic}.{cls}");
+            match find_function(env, &method)? {
+                Some(m) => Ok(m),
+                None if optional => Ok(null()),
+                None => Err(format!("S3 method '{method}' not found")),
+            }
+        }
+        // R's `subset` methods (src/library/base/R/subset.R), for the two
+        // shapes rlang holds natively. `subset.default(x, subset, ...)` is
+        // `x[subset & !is.na(subset)]`; `subset.matrix(x, subset, select,
+        // drop = FALSE, ...)` also picks columns, evaluating `select`
+        // UNevaluated with each column name bound to its index — which is why
+        // `call_primitive` leaves that one argument a promise — so
+        // `select = a:b` and `select = -a` name columns. A user's
+        // `subset.<class>` method is dispatched to first, as `UseMethod` would.
+        "subset" => {
+            let slots = subset_slots(&a.all)?;
+            let arg = |i: usize| slots[i].map(|ai| a.all[ai].1.clone());
+            let x = arg(0).ok_or("argument \"x\" is missing, with no default")?;
+            let dim = with_host(|h| h.attr(&x, "dim"));
+            if !dim.as_ref().is_some_and(|d| len(d) == 2) {
+                let s = arg(1).ok_or("argument \"subset\" is missing, with no default")?;
+                if kind(&s) != RKind::Lgl {
+                    return Err("'subset' must be logical".into());
+                }
+                return eval_r_with("x[subset & !is.na(subset)]", vec![("x", x), ("subset", s)]);
+            }
+            let vars = match arg(2) {
+                None => scalar_lgl(true),
+                Some(sel) => {
+                    // `nl <- as.list(1L:ncol(x)); names(nl) <- colnames(x);
+                    // eval(substitute(select), nl, parent.frame())`.
+                    let caller = with_host(|h| h.env());
+                    let expr = with_host(|h| h.promise_expr(&sel));
+                    match expr {
+                        Some((expr, _)) => {
+                            let ncol = dim
+                                .as_ref()
+                                .and_then(|d| as_dbl(d).get(1).copied().flatten())
+                                .unwrap_or(0.0) as usize;
+                            let colnames = with_host(|h| h.attr(&x, "dimnames"))
+                                .and_then(|dn| elements(&dn).get(1).cloned())
+                                .filter(|c| !is_null(c))
+                                .map(|c| as_str(&c));
+                            let nl = child_env(caller);
+                            if let Some(names) = colnames {
+                                for (j, n) in names.iter().enumerate().take(ncol) {
+                                    if let Some(n) = n.as_ref().filter(|n| !n.is_empty()) {
+                                        let idx = scalar_int(j as i64 + 1);
+                                        with_host(|h| h.bind(&nl, n, idx));
+                                    }
+                                }
+                            }
+                            in_env(nl, || eval_expr(&expr))?
+                        }
+                        // Already a value (`do.call`, a literal): R's
+                        // `substitute` hands that value back, and it evaluates
+                        // to itself.
+                        None => crate::host::force_value(&sel)?,
+                    }
+                }
+            };
+            let s = arg(1).unwrap_or_else(|| scalar_lgl(true));
+            if kind(&s) != RKind::Lgl {
+                return Err("'subset' must be logical".into());
+            }
+            let drop = arg(3).unwrap_or_else(|| scalar_lgl(false));
+            eval_r_with(
+                "x[subset & !is.na(subset), vars, drop = drop]",
+                vec![("x", x), ("subset", s), ("vars", vars), ("drop", drop)],
+            )
         }
         // `rm(..., list = , envir = )`: drop bindings from one environment —
         // the caller's unless `envir` names another — never its enclosures.
@@ -10406,9 +10551,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // TRUE when the caller supplied nothing for the formal. An omitted
             // one with no default is simply unbound; one with a default is
             // bound by the prologue, which records the name for exactly this.
+            // A formal bound to a promise of a bare symbol is R's forwarded
+            // argument: `do_missing` asks `R_isMissing` of that symbol in the
+            // environment the promise was written in.
             Ok(scalar_lgl(with_host(|h| {
-                !h.env().borrow().vars.contains_key(&n)
-                    || h.innermost_call().is_some_and(|f| f.defaulted.contains(&n))
+                let bound = h.env().borrow().vars.get(&n).cloned();
+                match bound {
+                    None => true,
+                    Some(_) if h.innermost_call().is_some_and(|f| f.defaulted.contains(&n)) => true,
+                    Some(v) => h
+                        .promise_symbol(&v)
+                        .is_some_and(|(s, e)| h.is_missing_in(&e, &s)),
+                }
             })))
         }
         "nargs" => {
@@ -13626,6 +13780,108 @@ fn lookup_in(env: crate::host::Env, name: &str, inherits: bool) -> Option<Value>
     match inherits {
         true => with_host(|h| h.lookup_from(env, name)),
         false => env.borrow().vars.get(name).cloned(),
+    }
+}
+
+/// The formals of R's `subset.matrix(x, subset, select, drop = FALSE, ...)`;
+/// `subset.default(x, subset, ...)` agrees on the first two.
+const SUBSET_FORMALS: [&str; 5] = ["x", "subset", "select", "drop", "..."];
+
+/// Which supplied argument binds each of `x`, `subset`, `select` and `drop`,
+/// by R's matching rules.
+fn subset_slots(args: &[(Option<String>, Value)]) -> Result<[Option<usize>; 4], String> {
+    let params: Vec<String> = SUBSET_FORMALS.iter().map(|s| s.to_string()).collect();
+    let tags: Vec<Option<String>> = args.iter().map(|(t, _)| t.clone()).collect();
+    let mut out = [None; 4];
+    for (ai, slot) in crate::host::match_positions(&params, &tags)?
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(pi) = slot.filter(|&pi| pi < out.len()) {
+            out[pi] = Some(ai);
+        }
+    }
+    Ok(out)
+}
+
+/// A fresh environment enclosed by `parent`.
+fn child_env(parent: crate::host::Env) -> crate::host::Env {
+    Rc::new(std::cell::RefCell::new(crate::host::EnvData {
+        vars: NameMap::default(),
+        parent: Some(parent),
+    }))
+}
+
+/// Evaluate the R expression `src` with `bindings` bound in a fresh
+/// environment enclosed by the caller's — how a primitive standing in for a
+/// base-R closure runs that closure's body as R wrote it.
+fn eval_r_with(src: &str, bindings: Vec<(&str, Value)>) -> Result<Value, String> {
+    let mut exprs = crate::parser::parse(src)?;
+    let e = exprs.pop().ok_or("empty expression")?;
+    let env = child_env(with_host(|h| h.env()));
+    for (n, v) in bindings {
+        with_host(|h| h.bind(&env, n, v));
+    }
+    in_env(env, || eval_expr(&e))
+}
+
+/// R's `get0(name, envir = env, mode = "function")`: the first binding of
+/// `name` up `env`'s enclosure chain that is a function, skipping any that is
+/// not (a promise is forced to tell), then the primitives — which live in R's
+/// base environment, where every chain ends.
+fn find_function(env: crate::host::Env, name: &str) -> Result<Option<Value>, String> {
+    let mut cur = Some(env);
+    while let Some(e) = cur {
+        let hit = e.borrow().vars.get(name).cloned();
+        if let Some(v) = hit {
+            let v = crate::host::force_value(&v)?;
+            if with_host(|h| h.is_function(&v)) {
+                return Ok(Some(v));
+            }
+        }
+        cur = e.borrow().parent.clone();
+    }
+    Ok(is_primitive(name).then(|| with_host(|h| h.alloc(RData::Builtin(name.to_string())))))
+}
+
+/// utils' `findGeneric` for a closure: the generic named by the `UseMethod`
+/// call its body makes — directly, as a statement of its braces, or in an
+/// `if` branch (`isUME`, `isUMEbrace`, `isUMEif`) — or "" when it makes none.
+/// A primitive dispatches internally, so only the internal generics count.
+fn use_method_generic(f: &Value) -> String {
+    fn ume(e: &Expr) -> String {
+        match e {
+            Expr::Call { fun, args } if matches!(fun.as_ref(), Expr::Ident(n) if n == "UseMethod") => {
+                match args.first().and_then(|a| a.value.as_ref()) {
+                    Some(Expr::Str(s) | Expr::Ident(s)) => s.clone(),
+                    _ => String::new(),
+                }
+            }
+            Expr::Block(stmts) => stmts
+                .iter()
+                .map(ume)
+                .find(|g| !g.is_empty())
+                .unwrap_or_default(),
+            Expr::If { then, els, .. } => {
+                let g = ume(then);
+                match (g.is_empty(), els) {
+                    (true, Some(e)) => ume(e),
+                    _ => g,
+                }
+            }
+            _ => String::new(),
+        }
+    }
+    match data(f) {
+        RData::Builtin(n) if INTERNAL_GENERICS.contains(&n.as_str()) => n,
+        RData::Closure { id, .. } => {
+            let src = with_host(|h| h.closures.get(id).map(|c| c.src.join("\n")));
+            match src.and_then(|s| crate::parser::parse(&s).ok()).as_deref() {
+                Some([Expr::Function { body, .. }]) => ume(body),
+                _ => String::new(),
+            }
+        }
+        _ => String::new(),
     }
 }
 
@@ -17019,6 +17275,7 @@ const INTERNAL_GENERICS: &[&str] = &[
     "cbind",
     "rbind",
     "split",
+    "subset",
 ];
 
 /// The result of an S3 method for `name`, or `None` when there is no method to
