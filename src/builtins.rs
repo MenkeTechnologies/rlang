@@ -17669,7 +17669,12 @@ fn signal_object_with_muffle(
     });
     match out {
         Err(e) => match with_host(|h| h.restart_invoke.take_if(|(t, _)| *t == id)) {
-            Some(_) => Ok(Signalled::Muffled),
+            Some(_) => {
+                // The transfer ends here and is not an error: the call the
+                // unwind recorded must not stick to the next real one.
+                with_host(|h| h.clear_error_call());
+                Ok(Signalled::Muffled)
+            }
             None => Err(e),
         },
         Ok(v) => Ok(v),
@@ -17852,6 +17857,7 @@ fn with_restarts(a: &Args) -> Result<Value, String> {
     let Some((id, args)) = with_host(|h| h.restart_invoke.take_if(|(t, _)| ids.contains(t))) else {
         return Err(e);
     };
+    with_host(|h| h.clear_error_call());
     match group
         .into_iter()
         .find(|r| r.id == id)

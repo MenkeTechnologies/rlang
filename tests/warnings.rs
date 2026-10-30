@@ -417,3 +417,17 @@ fn cumsum_overflow_warns_under_the_enclosing_context() {
         "Warning message:\ninteger overflow in 'cumsum'; use 'cumsum(as.numeric(.))' \nWarning message:\nIn f() : integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'\n[1] 2147483647         NA\nWarning message:\nIn print(cumsum(c(.Machine$integer.max, 1L))) :\n  integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'\n"
     );
 }
+
+#[test]
+fn a_restart_transfer_does_not_leave_its_call_on_the_next_error() {
+    // `invokeRestart` unwinds like an error; once the muffle restart takes it,
+    // the next real error must name its own call, not `invokeRestart(…)`.
+    assert_eq!(
+        merged(
+            r#"f <- function() warning("w"); h <- function() stop("bad")
+withCallingHandlers(f(), warning = function(w) invokeRestart("muffleWarning"))
+print(tryCatch(h(), error = function(e) deparse(conditionCall(e))))"#
+        ),
+        "[1] \"h()\"\n"
+    );
+}
