@@ -1439,3 +1439,17 @@ fn subset_ports_the_default_and_matrix_methods() {
         "[1] \"qq\""
     );
 }
+
+#[test]
+fn rank_places_missing_values_by_na_last() {
+    // R's rank.R: "keep" leaves NA, FALSE gives NAs the leading ranks and
+    // shifts the rest, NA drops them (names follow), TRUE puts them last.
+    assert_eq!(r("rank(c(3, NA, 1), na.last = \"keep\")"), "[1]  2 NA  1");
+    assert_eq!(r("rank(c(3, NA, 1, NA), na.last = FALSE)"), "[1] 4 1 3 2");
+    assert_eq!(r("rank(c(a = 3, b = NA, c = 1), na.last = NA)"), "a c \n2 1");
+    assert_eq!(r("rank(c(3, NA, 1))"), "[1] 2 3 1");
+    assert_eq!(
+        r("rank(c(2, NA, 2), na.last = \"keep\", ties.method = \"min\")"),
+        "[1]  1 NA  1"
+    );
+}

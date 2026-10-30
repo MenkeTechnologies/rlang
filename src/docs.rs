@@ -520,8 +520,8 @@ const ORDERING: &[Entry] = &[
     ),
     (
         "rank",
-        "rank(x, ties.method = \"average\")",
-        "Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = \"average\", a double vector), or with ties.method = \"first\", \"last\", \"min\" or \"max\" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order, and the missing values take the trailing ranks. \"random\" is not supported.",
+        "rank(x, na.last = TRUE, ties.method = \"average\")",
+        "Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = \"average\", a double vector), or with ties.method = \"first\", \"last\", \"min\" or \"max\" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order. na.last places the missing values: the trailing ranks by default, the leading ones for FALSE (the rest shifted up), NA for \"keep\", dropped for NA. \"random\" is not supported.",
     ),
     (
         "sort.list",

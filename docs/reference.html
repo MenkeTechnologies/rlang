@@ -674,9 +674,9 @@
       </article>
       <article class="doc-entry" id="doc-rank">
         <h3><a class="doc-anchor" href="#doc-rank">#</a> <code>rank</code></h3>
-        <pre><code class="lang-r r">rank(x, ties.method = "average")
+        <pre><code class="lang-r r">rank(x, na.last = TRUE, ties.method = "average")
 </code></pre>
-        <p>Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = "average", a double vector), or with ties.method = "first", "last", "min" or "max" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order, and the missing values take the trailing ranks. "random" is not supported.</p>
+        <p>Ranks with tied values sharing the average of the slots they occupy (R's default ties.method = "average", a double vector), or with ties.method = "first", "last", "min" or "max" an integer vector of the slots in appearance order, reversed, the smallest or the largest. Character input ranks in collation order. na.last places the missing values: the trailing ranks by default, the leading ones for FALSE (the rest shifted up), NA for "keep", dropped for NA. "random" is not supported.</p>
       </article>
       <article class="doc-entry" id="doc-sort-list">
         <h3><a class="doc-anchor" href="#doc-sort-list">#</a> <code>sort.list</code></h3>

@@ -7313,17 +7313,51 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 }
                 i = j;
             }
-            // `na.last = TRUE`, R's default for `rank`: the missing values take
-            // the trailing ranks, in the order they appear.
-            for (slot, i) in (0..n).filter(|&i| key.missing(i)).enumerate() {
-                ranks[i] = (good.len() + slot + 1) as f64;
+            // `na.last` places the missing values as R's `rank.R` does:
+            // `TRUE` (the default) gives them the trailing ranks in order of
+            // appearance, `FALSE` the leading ones with every other rank
+            // shifted up past them, `"keep"` leaves them `NA`, and `NA`
+            // drops them (names follow the kept elements).
+            let na_last = a.named("na.last");
+            let keep = na_last.as_ref().and_then(str1).as_deref() == Some("keep");
+            let na_last = if keep { Some(true) } else { na_last.map_or(Some(true), |v| lgl1(&v)) };
+            let missing: Vec<usize> = (0..n).filter(|&i| key.missing(i)).collect();
+            let mut ranks: Vec<Option<f64>> = ranks.into_iter().map(Some).collect();
+            match na_last {
+                _ if keep => missing.iter().for_each(|&i| ranks[i] = None),
+                Some(true) => {
+                    for (slot, &i) in missing.iter().enumerate() {
+                        ranks[i] = Some((good.len() + slot + 1) as f64);
+                    }
+                }
+                Some(false) => {
+                    for &i in &good {
+                        ranks[i] = ranks[i].map(|r| r + missing.len() as f64);
+                    }
+                    for (slot, &i) in missing.iter().enumerate() {
+                        ranks[i] = Some((slot + 1) as f64);
+                    }
+                }
+                None => {}
             }
+            let kept: Vec<usize> = match na_last {
+                None if !keep => (0..n).filter(|&i| !key.missing(i)).collect(),
+                _ => (0..n).collect(),
+            };
+            let ranks: Vec<Option<f64>> = kept.iter().map(|&i| ranks[i]).collect();
             // Average ranks are doubles (even with no ties); the other
             // methods answer whole ranks as an integer vector.
             let out = match ties.as_str() {
-                "average" => mk_dbl(ranks.into_iter().map(Some).collect()),
-                _ => mk_int(ranks.into_iter().map(|r| Some(r as i64)).collect()),
+                "average" => mk_dbl(ranks),
+                _ => mk_int(ranks.into_iter().map(|r| r.map(|r| r as i64)).collect()),
             };
+            if kept.len() < n {
+                let nm = names_of(&x);
+                if !nm.is_empty() {
+                    set_names_attr(&out, kept.iter().map(|&i| nm[i].clone()).collect());
+                }
+                return Ok(out);
+            }
             shaped_like(out, &x)
         }
         "which" => {
