@@ -218,7 +218,7 @@ const ATTRIBUTES: &[Entry] = &[
         "inherits(x, what, which = FALSE)",
         "TRUE when any string in `what` appears in class(x). With which = TRUE, an integer vector giving each `what`'s position in class(x), 0 where it is absent.",
     ),
-    ("oldClass", "oldClass(x)", "The `class` attribute of x, or NULL when x has only an implicit class."),
+    ("oldClass", "oldClass(x)", "The `class` attribute of x, or NULL when x has only an implicit class. oldClass(x) <- value sets it as is, a zero-length value removing it."),
     (
         "unclass",
         "unclass(x)",

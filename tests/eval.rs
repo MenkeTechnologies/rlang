@@ -1453,3 +1453,18 @@ fn rank_places_missing_values_by_na_last() {
         "[1]  1 NA  1"
     );
 }
+
+#[test]
+fn old_class_replacement_sets_the_attribute_as_do_classgets() {
+    assert_eq!(r("y <- 1; oldClass(y) <- c(\"p\", \"q\"); oldClass(y)"), "[1] \"p\" \"q\"");
+    // A zero-length value removes the attribute.
+    assert_eq!(r("x <- structure(1, class = \"a\"); oldClass(x) <- character(0); attributes(x)"), "NULL");
+    assert_eq!(
+        r("w <- 1; tryCatch(oldClass(w) <- \"factor\", error = conditionMessage)"),
+        "[1] \"adding class \\\"factor\\\" to an invalid object\""
+    );
+    assert_eq!(
+        r("w <- 1; tryCatch(oldClass(w) <- 3, error = conditionMessage)"),
+        "[1] \"attempt to set invalid 'class' attribute\""
+    );
+}

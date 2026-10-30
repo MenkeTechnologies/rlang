@@ -4720,6 +4720,29 @@ fn replacement(
             with_host(|h| h.set_attr(&out, "class", value.clone()));
             Ok(out)
         }
+        // R's `do_classgets` and the `classgets` it reaches through
+        // `setAttrib`: a zero-length value removes the attribute; anything
+        // else must be character, cannot land on `NULL`, and may name
+        // `"factor"` only on an integer vector.
+        "oldClass" => {
+            if len(value) == 0 {
+                let none = null();
+                with_host(|h| h.set_attr(&out, "class", none));
+                return Ok(out);
+            }
+            if kind(value) != RKind::Str {
+                return Err("attempt to set invalid 'class' attribute".into());
+            }
+            if is_null(x) {
+                return Err("attempt to set an attribute on NULL".into());
+            }
+            let factor = as_str(value).iter().any(|c| c.as_deref() == Some("factor"));
+            if factor && kind(x) != RKind::Int {
+                return Err("adding class \"factor\" to an invalid object".into());
+            }
+            with_host(|h| h.set_attr(&out, "class", value.clone()));
+            Ok(out)
+        }
         // R's `do_dimgets` / `dimgets`: `NULL` drops the dimensions and their
         // labels; anything else must be non-empty, non-missing, non-negative
         // and multiply out to the object's length, and setting it drops the
