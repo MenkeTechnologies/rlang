@@ -2988,8 +2988,11 @@ fn b_index(vm: &mut VM, _: u8) -> Value {
         return foreign_index(vm, "[", x, args_of(&argv));
     }
     let args = args_of(&argv);
-    let res = s3_subset_method("[", &x, || with_object(&x, &args))
-        .unwrap_or_else(|| index_single(&x, &args));
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("[", &x, || with_object(&x, &args))
+            .unwrap_or_else(|| index_single(&x, &args))
+    });
     match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -3003,8 +3006,11 @@ fn b_index2(vm: &mut VM, _: u8) -> Value {
         return foreign_index(vm, "[[", x, args_of(&argv));
     }
     let args = args_of(&argv);
-    let res = s3_subset_method("[[", &x, || with_object(&x, &args))
-        .unwrap_or_else(|| index_double(&x, &args));
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("[[", &x, || with_object(&x, &args))
+            .unwrap_or_else(|| index_double(&x, &args))
+    });
     match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -3025,10 +3031,13 @@ fn b_dollar(vm: &mut VM, _: u8) -> Value {
         // `df$col` on a foreign object is `df[["col"]]` in R.
         return foreign_index(vm, "[[", x, vec![(None, scalar_str(name))]);
     }
-    let res = s3_subset_method("$", &x, || {
-        vec![(None, x.clone()), (None, scalar_str(name.clone()))]
-    })
-    .unwrap_or_else(|| dollar_get(&x, &name));
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("$", &x, || {
+            vec![(None, x.clone()), (None, scalar_str(name.clone()))]
+        })
+        .unwrap_or_else(|| dollar_get(&x, &name))
+    });
     match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -3434,8 +3443,10 @@ fn take_positions(x: &Value, pos: &[Option<usize>]) -> Value {
 }
 
 /// The column-major linear positions an N-D subscript selects, paired with the
-/// indices each margin selected (which is what carries `dimnames` through).
-type ArraySelection = (Vec<Option<usize>>, Vec<Vec<usize>>);
+/// indices each margin selected (which is what carries `dimnames` through). An
+/// `NA` subscript selects `None` in its margin, and every cell it crosses is
+/// `None`: R reads `NA` there and refuses to write a longer value through it.
+type ArraySelection = (Vec<Option<usize>>, Vec<Vec<Option<usize>>>);
 
 /// The column-major linear positions an N-D subscript `a[i, j, …]` selects, plus
 /// the indices each margin selected. An empty subscript takes the whole margin;
@@ -3447,9 +3458,9 @@ fn array_positions(
     dimnames: &[Option<Vec<Option<String>>>],
 ) -> Result<ArraySelection, String> {
     let k = dims.len();
-    let sel: Vec<Vec<usize>> = (0..k)
+    let sel: Vec<Vec<Option<usize>>> = (0..k)
         .map(|d| match &args[d].1 {
-            Value::Undef => Ok((0..dims[d]).collect()),
+            Value::Undef => Ok((0..dims[d]).map(Some).collect()),
             v => {
                 let labels = dimnames.get(d).cloned().flatten().unwrap_or_default();
                 // Unlike a vector, an array has no room to grow into: a
@@ -3462,10 +3473,11 @@ fn array_positions(
                     RData::Lgl(b) if b.len() > dims[d] => {
                         return Err("(subscript) logical subscript too long".into())
                     }
-                    RData::Str(keys) => keys
-                        .iter()
-                        .flatten()
-                        .any(|k| !labels.iter().any(|l| l.as_deref() == Some(k.as_str()))),
+                    // A missing name matches no label: out of bounds too.
+                    RData::Str(keys) => keys.iter().any(|k| match k {
+                        Some(k) => !labels.iter().any(|l| l.as_deref() == Some(k.as_str())),
+                        None => true,
+                    }),
                     RData::Int(_) | RData::Dbl(_) => as_dbl(v)
                         .iter()
                         .flatten()
@@ -3475,7 +3487,7 @@ fn array_positions(
                 if oob {
                     return Err("subscript out of bounds".into());
                 }
-                resolve_index(v, dims[d], &labels).map(|p| p.into_iter().flatten().collect())
+                resolve_index(v, dims[d], &labels)
             }
         })
         .collect::<Result<_, String>>()?;
@@ -3489,8 +3501,8 @@ fn array_positions(
     let mut pos = Vec::with_capacity(total);
     let mut idx = vec![0usize; k];
     for _ in 0..total {
-        let lin: usize = (0..k).map(|d| sel[d][idx[d]] * stride[d]).sum();
-        pos.push(Some(lin));
+        let lin: Option<usize> = (0..k).map(|d| sel[d][idx[d]].map(|i| i * stride[d])).sum();
+        pos.push(lin);
         for d in 0..k {
             idx[d] += 1;
             if idx[d] < shape[d] {
@@ -3523,7 +3535,7 @@ fn array_index(
         Some(
             sel[d]
                 .iter()
-                .map(|&i| all.get(i).cloned().flatten())
+                .map(|i| i.and_then(|i| all.get(i).cloned().flatten()))
                 .collect(),
         )
     };
@@ -3808,11 +3820,15 @@ fn b_index_set(vm: &mut VM, _: u8) -> Value {
         return foreign_index_set(vm, "[<-", x, args_of(&argv), value);
     }
     let args = args_of(&argv);
-    let res = s3_subset_method("[<-", &x, || with_value(with_object(&x, &args), &value))
-        .unwrap_or_else(|| {
-            let inplace = may_mutate(vm, &x);
-            assign_index(&x, &args, &value, false, inplace)
-        });
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("[<-", &x, || with_value(with_object(&x, &args), &value)).unwrap_or_else(
+            || {
+                let inplace = may_mutate(vm, &x);
+                assign_index(&x, &args, &value, false, inplace)
+            },
+        )
+    });
     match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -3827,11 +3843,15 @@ fn b_index2_set(vm: &mut VM, _: u8) -> Value {
         return foreign_index_set(vm, "[[<-", x, args_of(&argv), value);
     }
     let args = args_of(&argv);
-    let res = s3_subset_method("[[<-", &x, || with_value(with_object(&x, &args), &value))
-        .unwrap_or_else(|| {
-            let inplace = may_mutate(vm, &x);
-            index2_assign(x.clone(), &args, &value, inplace)
-        });
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("[[<-", &x, || with_value(with_object(&x, &args), &value)).unwrap_or_else(
+            || {
+                let inplace = may_mutate(vm, &x);
+                index2_assign(x.clone(), &args, &value, inplace)
+            },
+        )
+    });
     match res {
         Ok(v) => v,
         Err(e) => abort(vm, e),
@@ -3878,13 +3898,16 @@ fn b_dollar_set(vm: &mut VM, _: u8) -> Value {
         // `df$n <- v` is `df[["n"]] <- v` in R.
         return foreign_index_set(vm, "[[<-", x, vec![(None, scalar_str(name))], value);
     }
-    let res = s3_subset_method("$<-", &x, || {
-        let args = vec![(None, x.clone()), (None, scalar_str(name.clone()))];
-        with_value(args, &value)
-    })
-    .unwrap_or_else(|| {
-        let inplace = may_mutate(vm, &x);
-        dollar_assign(x.clone(), &name, value, inplace)
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    let res = eval_op(site, || {
+        s3_subset_method("$<-", &x, || {
+            let args = vec![(None, x.clone()), (None, scalar_str(name.clone()))];
+            with_value(args, &value)
+        })
+        .unwrap_or_else(|| {
+            let inplace = may_mutate(vm, &x);
+            dollar_assign(x.clone(), &name, value, inplace)
+        })
     });
     match res {
         Ok(v) => v,
@@ -4043,13 +4066,7 @@ fn assign_index(
                 .collect();
             if d.len() == args.len() {
                 let (pos, _) = array_positions(args, &d, &dimnames_of(x))?;
-                // Unlike a vector, an array refuses a replacement that does
-                // not tile the selection.
-                if !pos.is_empty() && len(value) > 0 && pos.len() % len(value) != 0 {
-                    return Err(
-                        "number of items to replace is not a multiple of replacement length".into(),
-                    );
-                }
+                array_assign_checks(&pos, value, d.len() == 2)?;
                 let lin: Vec<Option<i64>> =
                     pos.into_iter().map(|p| p.map(|i| i as i64 + 1)).collect();
                 return assign_index(x, &[(None, mk_int(lin))], value, false, inplace);
@@ -4150,6 +4167,9 @@ fn assign_index(
 
     // Character index that names a new element appends it.
     let mut positions: Vec<usize> = Vec::new();
+    // `NA` subscripts select nothing to write but still count toward R's `n`,
+    // the selection length its empty-value and tiling checks read.
+    let mut na_selected = 0usize;
     let mut new_names: Vec<(usize, String)> = Vec::new();
     match data(idx) {
         RData::Str(keys) => {
@@ -4180,7 +4200,7 @@ fn assign_index(
                     Some(i) => positions.push(i),
                     // An `NA` subscript selects nothing to write, which is
                     // fine for a single value and an error for several.
-                    None if len(value) <= 1 => {}
+                    None if len(value) <= 1 => na_selected += 1,
                     None => return Err("NAs are not allowed in subscripted assignments".into()),
                 }
             }
@@ -4190,7 +4210,8 @@ fn assign_index(
     // An empty replacement (subassign.c): `[<-` leaves a NULL `x` NULL and
     // deletes from a list when it is NULL; `[[<-` deletes from a list or sets
     // one empty element. Into anything else it is R's error.
-    if !positions.is_empty() && len(value) == 0 {
+    let selected = positions.len() + na_selected;
+    if selected > 0 && len(value) == 0 {
         match (single_slot, kind(x)) {
             (false, RKind::Null) => return Ok(x.clone()),
             (false, RKind::List) if is_null(value) => {}
@@ -4199,9 +4220,8 @@ fn assign_index(
         }
     }
     // `VectorAssign` warns when the replacement does not tile the selection.
-    if !single_slot && !positions.is_empty() && len(value) > 0 && positions.len() % len(value) != 0
-    {
-        binop_warning("number of items to replace is not a multiple of replacement length")?;
+    if !single_slot && selected > 0 && len(value) > 0 && selected % len(value) != 0 {
+        op_warning("number of items to replace is not a multiple of replacement length")?;
     }
 
     // R's reference-count rule (`REFCNT`, real counting since R 4.0): a value
@@ -4762,10 +4782,12 @@ fn replacement(
             }
             let pos: Vec<Option<usize>> = (0..want).map(|i| (i < len(x)).then_some(i)).collect();
             let out = take_positions(x, &pos);
-            // Growing a named vector names the new slots `""`.
+            // Growing a named vector names the new slots `""`; shrinking one to
+            // nothing leaves `character(0)` names (`xlengthgets`), which is
+            // why the attribute is set as it stands.
             let names = names_of(x);
             if !names.is_empty() {
-                set_names(
+                set_names_attr(
                     &out,
                     (0..want)
                         .map(|i| names.get(i).cloned().unwrap_or_else(blank))
@@ -7928,7 +7950,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .position(|e| matches!(e, Some(v) if !int_in_range(*v)))
                 {
                     out[at..].iter_mut().for_each(|e| *e = None);
-                    signal_warning("integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'")?;
+                    // cum.c raises it with plain `warning()`, which names the
+                    // innermost closure context rather than `cumsum` itself.
+                    coercion_warning("integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'")?;
                 }
                 mk_int(out.into_iter().map(|e| e.map(|v| v as i64)).collect())
             } else {
@@ -20875,4 +20899,37 @@ fn duplicated_flags(x: &Value, from_last: bool, incomparables: Option<&Value>) -
         dup[i] = !never.contains(&keys[i]) && !seen.insert(keys[i].clone());
     }
     dup
+}
+
+/// The checks R's `MatrixAssign` (`matrix = true`) and `ArrayAssign` make on a
+/// selection `pos` (NA subscripts included, as `None`) before writing `value`:
+/// an empty value, a value that does not tile the selection — an error for an
+/// array, where a vector only warns — and `NA` subscripts under a value longer
+/// than one. The two order them differently: `MatrixAssign` looks for the `NA`
+/// first. A `NULL` value never counts as empty there: R reads the length of
+/// the `NILSXP` itself, which is not zero, so any non-empty selection fails as
+/// not a multiple.
+fn array_assign_checks(pos: &[Option<usize>], value: &Value, matrix: bool) -> Result<(), String> {
+    let n = pos.len();
+    let null = is_null(value);
+    let ny = len(value);
+    let na_check = || -> Result<(), String> {
+        match (null || ny > 1) && pos.iter().any(Option::is_none) {
+            true => Err("NAs are not allowed in subscripted assignments".into()),
+            false => Ok(()),
+        }
+    };
+    if matrix {
+        na_check()?;
+    }
+    if n > 0 && ny == 0 && !null {
+        return Err("replacement has length zero".into());
+    }
+    if n > 0 && (null || n % ny != 0) {
+        return Err("number of items to replace is not a multiple of replacement length".into());
+    }
+    if !matrix {
+        na_check()?;
+    }
+    Ok(())
 }

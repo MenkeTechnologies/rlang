@@ -1228,24 +1228,27 @@ impl Compiler {
             }
             Expr::Index { kind, obj, args } => {
                 self.expr(b, obj)?;
-                match kind {
+                let ip = match kind {
                     IndexKind::Dollar | IndexKind::At => {
                         // The name is a literal, not an evaluated expression.
                         match args.first().and_then(|a| a.value.clone()) {
                             Some(Expr::Str(n)) => self.kstr(b, &n),
                             _ => return Err("malformed $ access".into()),
                         }
-                        b.emit(Op::CallBuiltin(ops::DOLLAR, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::DOLLAR, 2), 0)
                     }
                     IndexKind::Single => {
                         self.args(b, args)?;
-                        b.emit(Op::CallBuiltin(ops::INDEX, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::INDEX, 2), 0)
                     }
                     IndexKind::Double => {
                         self.args(b, args)?;
-                        b.emit(Op::CallBuiltin(ops::INDEX2, 2), 0);
+                        b.emit(Op::CallBuiltin(ops::INDEX2, 2), 0)
                     }
-                }
+                };
+                // A subscript error names the subscript call
+                // (`Error in x[[5]] : subscript out of bounds`).
+                self.op_sites.push((ip, deparse_lines(e)));
             }
             Expr::If { cond, then, els } => {
                 self.expr(b, cond)?;
@@ -1906,26 +1909,30 @@ impl Compiler {
                 // Stack: [value]. Build [obj, args, value] with a rotate.
                 self.expr(b, obj)?;
                 self.mark_shared_intermediate(b, obj);
-                match kind {
+                let ip = match kind {
                     IndexKind::Dollar | IndexKind::At => {
                         match args.first().and_then(|a| a.value.clone()) {
                             Some(Expr::Str(n)) => self.kstr(b, &n),
                             _ => return Err("malformed $ assignment target".into()),
                         }
                         b.emit(Op::Rot, 0);
-                        b.emit(Op::CallBuiltin(ops::DOLLAR_SET, 3), 0);
+                        b.emit(Op::CallBuiltin(ops::DOLLAR_SET, 3), 0)
                     }
                     IndexKind::Single => {
                         self.args(b, args)?;
                         b.emit(Op::Rot, 0);
-                        b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
+                        b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0)
                     }
                     IndexKind::Double => {
                         self.args(b, args)?;
                         b.emit(Op::Rot, 0);
-                        b.emit(Op::CallBuiltin(ops::INDEX2_SET, 3), 0);
+                        b.emit(Op::CallBuiltin(ops::INDEX2_SET, 3), 0)
                     }
-                }
+                };
+                // A subassignment's warnings and errors name the whole
+                // assignment (`In x[5:6] <- 1:3 :`), as R's `applydefine`
+                // evaluates `[<-` under the assignment call.
+                self.op_sites.push((ip, self.assign_text.clone()));
                 self.assign_stack(b, obj, sup)
             }
             // `f(x, …)[i] <- v` — the replacement function reached through

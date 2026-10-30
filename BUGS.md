@@ -136,9 +136,13 @@ run that compared nothing — no cases generated, or an oracle that never answer
   fusevm ops that carry no call text, so the compiler attaches one constant per
   chunk mapping each operator's op index to its deparsed call, which nothing
   loads; the numeric hook (told the op index by fusevm) and the `BINOP` builtin
-  read it only when a warning or error actually fires. The remaining exception
-  is a subscript assignment: `x[5:6] <- 1:3` and `f[1] <- "z"` (R: ``In
-  `[<-.factor`(`*tmp*`, 1, value = "z")``) still warn without the call.
+  read it only when a warning or error actually fires. A subassignment's
+  `[<-` / `[[<-` / `$<-` op carries the whole assignment the same way, so
+  `x[5:6] <- 1:3` warns `In x[5:6] <- 1:3 :`, and a subscript read carries
+  its own expression, so `x[[5]]` fails `Error in x[[5]] : subscript out of
+  bounds`. The remaining exception is a
+  factor subassignment, where R names the method call its dispatch builds
+  (``In `[<-.factor`(`*tmp*`, 1, value = "z") :``) and rlang names none.
 
   **An error reports its call too**, off the same context stack:
   `Error in f() : boom`, a bare `Error: boom` for a `stop()` at top level, R's

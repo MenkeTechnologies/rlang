@@ -1,4 +1,5 @@
-//! The value and evaluation order of a complex assignment.
+//! The value and evaluation order of a complex assignment, and the subscript
+//! checks and errors of `[`, `[[`, `$` and their replacement forms.
 //!
 //! `x[i] <- v`, `x$a <- v` and `f(x) <- v` are R's `applydefine`: the
 //! right-hand side is evaluated first, the target is rebuilt and assigned back,
@@ -73,5 +74,68 @@ fn double_bracket_value_length_is_checked_before_the_subscript() {
     assert_eq!(
         merged("x <- 1:6; for (s in list(quote(x[[0]] <- NULL), quote(x[[NA]] <- NULL), quote(x[[NA]] <- 1L), quote(x[[2]] <- integer(0)), quote(x[[10]] <- 1:2))) print(tryCatch(eval(s), error = function(e) conditionMessage(e))); m <- matrix(1:4, 2); print(tryCatch(m[[1, 5]] <- integer(0), error = function(e) conditionMessage(e)))"),
         "[1] \"replacement has length zero\"\n[1] \"replacement has length zero\"\n[1] \"attempt to select more than one element in integerOneIndex\"\n[1] \"replacement has length zero\"\n[1] \"more elements supplied than there are to replace\"\n[1] \"replacement has length zero\"\n"
+    );
+}
+
+#[test]
+fn subassignment_warnings_name_the_assignment() {
+    // [<- and [[<- warn and fail under the whole assignment call, as applydefine evaluates them.
+    assert_eq!(
+        merged("x <- 1:10; x[5:6] <- 1:3; l <- list(a = 1:5); l$a[2:3] <- 1:3; f <- function() { y <- 1:4; y[1:3] <- 1:2; y }; z <- f(); r <- tryCatch(x[5:6] <- 1:3, warning = function(w) conditionCall(w)); print(r); x[[2]] <- 1:2"),
+        "Warning message:\nIn x[5:6] <- 1:3 :\n  number of items to replace is not a multiple of replacement length\nWarning message:\nIn l$a[2:3] <- 1:3 :\n  number of items to replace is not a multiple of replacement length\nWarning message:\nIn y[1:3] <- 1:2 :\n  number of items to replace is not a multiple of replacement length\nx[5:6] <- 1:3\nError in x[[2]] <- 1:2 : more elements supplied than there are to replace\nExecution halted\n"
+    );
+}
+
+#[test]
+fn a_matrix_subassignment_error_names_the_assignment() {
+    // An array that does not tile its selection is an error under the assignment call.
+    assert_eq!(
+        merged("m <- matrix(1:6, 2); m[1, ] <- 1:2"),
+        "Error in m[1, ] <- 1:2 : \n  number of items to replace is not a multiple of replacement length\nExecution halted\n"
+    );
+}
+
+#[test]
+fn na_subscripts_in_a_matrix_read_select_na_cells() {
+    // An NA row or column subscript selects NA cells, labelled NA, rather than nothing.
+    assert_eq!(
+        merged("m <- matrix(1:6, 2, dimnames = list(c(\"a\", \"b\"), c(\"x\", \"y\", \"z\"))); print(m[NA, ]); print(m[, c(NA, 1)]); print(m[NA, NA]); m2 <- matrix(1:4, 2); print(m2[c(TRUE, NA), ]); print(m2[NA_integer_, ]); a <- array(1:8, c(2, 2, 2)); print(a[NA, 1, ]); print(a[1, , NA])"),
+        "      x  y  z\n<NA> NA NA NA\n<NA> NA NA NA\n  <NA> x\na   NA 1\nb   NA 2\n     <NA> <NA> <NA>\n<NA>   NA   NA   NA\n<NA>   NA   NA   NA\n     [,1] [,2]\n[1,]    1    3\n[2,]   NA   NA\n[1] NA NA\n     [,1] [,2]\n[1,]   NA   NA\n[2,]   NA   NA\n     [,1] [,2]\n[1,]   NA   NA\n[2,]   NA   NA\n"
+    );
+}
+
+#[test]
+fn na_subscripts_and_empty_values_in_subassignment() {
+    // VectorAssign counts NA subscripts toward n; MatrixAssign and ArrayAssign refuse NA under a longer value, and a NULL value fails as not a multiple.
+    assert_eq!(
+        merged("x <- matrix(1:6, 2); for (s in list(quote(x[, c(1, 3)] <- NULL), quote(x[1, 1] <- NULL), quote(x[, 1] <- integer(0)), quote(x[NA, ] <- NULL), quote(x[NA] <- NULL), quote(x[NA] <- 1:2), quote(x[NA, ] <- c(10, 100, 2)), quote(x[0, ] <- NULL), quote(x[NA, 1] <- 5L))) print(tryCatch({ eval(s); \"ok\" }, error = function(e) conditionMessage(e))); a <- array(1:8, c(2, 2, 2)); for (s in list(quote(a[1, 1, 1] <- NULL), quote(a[NA, 1, 1] <- NULL), quote(a[NA, 1, 1] <- 1:2), quote(a[1, 1, ] <- integer(0)))) print(tryCatch({ eval(s); \"ok\" }, error = function(e) conditionMessage(e))); v <- 1:6; for (s in list(quote(v[NA] <- NULL), quote(v[c(NA, 2, 3)] <- 7:8))) print(tryCatch({ eval(s); v }, error = function(e) conditionMessage(e), warning = function(w) conditionMessage(w)))"),
+        "[1] \"number of items to replace is not a multiple of replacement length\"\n[1] \"number of items to replace is not a multiple of replacement length\"\n[1] \"replacement has length zero\"\n[1] \"NAs are not allowed in subscripted assignments\"\n[1] \"replacement has length zero\"\n[1] \"NAs are not allowed in subscripted assignments\"\n[1] \"NAs are not allowed in subscripted assignments\"\n[1] \"ok\"\n[1] \"ok\"\n[1] \"number of items to replace is not a multiple of replacement length\"\n[1] \"number of items to replace is not a multiple of replacement length\"\n[1] \"NAs are not allowed in subscripted assignments\"\n[1] \"replacement has length zero\"\n[1] \"replacement has length zero\"\n[1] \"NAs are not allowed in subscripted assignments\"\n"
+    );
+}
+
+#[test]
+fn a_missing_name_in_a_matrix_subscript_is_out_of_bounds() {
+    // A character NA matches no dimname.
+    assert_eq!(
+        merged("m <- matrix(1:6, 2, dimnames = list(c(\"a\", \"b\"), c(\"x\", \"y\", \"z\"))); m[c(\"a\", NA), \"y\"]"),
+        "Error in m[c(\"a\", NA), \"y\"] : subscript out of bounds\nExecution halted\n"
+    );
+}
+
+#[test]
+fn subscript_errors_name_the_subscript_call() {
+    // errorcall from [, [[ and $ names the subscript expression, inside closures too.
+    assert_eq!(
+        merged("x <- 1:3; f <- function() x[[5]]; print(tryCatch(x[[\"a\"]], error = function(e) conditionCall(e))); print(tryCatch(x$a, error = function(e) deparse(conditionCall(e)))); f()"),
+        "x[[\"a\"]]\n[1] \"x$a\"\nError in x[[5]] : subscript out of bounds\nCalls: f\nExecution halted\n"
+    );
+}
+
+#[test]
+fn length_assignment_keeps_names_even_when_emptied() {
+    // xlengthgets carries names to the new length, character(0) included, and pads with "".
+    assert_eq!(
+        merged("x <- c(a = 1, b = 2); length(x) <- 0; print(x); print(names(x)); l <- list(a = 1); length(l) <- 0; print(l); z <- c(a = 1); length(z) <- 3; print(z)"),
+        "named numeric(0)\ncharacter(0)\nnamed list()\n a       \n 1 NA NA \n"
     );
 }
