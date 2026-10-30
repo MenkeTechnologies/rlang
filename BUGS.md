@@ -581,6 +581,15 @@ run that compared nothing — no cases generated, or an oracle that never answer
   general first-class function synthesis (`as.function`, `body<-`, `Compose`,
   building a closure from a body expression). `Recall()` re-invokes the executing
   closure.
+- **Random numbers cover R's default generators only.** `set.seed`, `runif`,
+  `rnorm`, `sample` and `sample.int` are ports of R's Mersenne-Twister,
+  inversion and rejection-sampling code and reproduce R's seeded streams
+  exactly (`tests/random.rs`), but the other `RNGkind`s (Wichmann-Hill,
+  Knuth-TAOCP, L'Ecuyer, Box-Muller, …) are refused rather than emulated, the
+  state is held by the runtime instead of in `.Random.seed` (so saving and
+  restoring that variable does nothing), and the other distributions' `r*` / `d*` / `p*` / `q*`
+  functions (`rbinom`, `rpois`, `pt`, …) are not implemented — only the
+  normal's `dnorm` / `pnorm` / `qnorm`.
 
 ## Open defects found by the 2026-10-14 book audit
 

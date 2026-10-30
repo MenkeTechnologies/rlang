@@ -5110,6 +5110,14 @@ pub const PRIMITIVES: &[&str] = &[
     "zapsmall",
     "tabulate",
     "findInterval",
+    "set.seed",
+    "runif",
+    "rnorm",
+    "sample",
+    "sample.int",
+    "dnorm",
+    "pnorm",
+    "qnorm",
     "is.null",
     "is.na",
     "is.nan",
@@ -8137,6 +8145,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         // R's `tabulate(bin, nbins = max(1L, bin, na.rm = TRUE))` and its
         // `.Internal`: bins outside `1..nbins` and `NA`s are not counted.
+        "set.seed" => set_seed_call(&a),
+        "runif" | "rnorm" => random2_call(&a, name),
+        "sample" => sample_call(&a),
+        "sample.int" => sample_int_call(&a),
+        "dnorm" | "pnorm" | "qnorm" => norm_dist_call(&a, name),
         "tabulate" => {
             let bin = a.req(0, "bin")?;
             if !matches!(kind(&bin), RKind::Lgl | RKind::Int | RKind::Dbl) {
@@ -20271,4 +20284,374 @@ fn all_equal_call(a: &Args) -> Result<Value, String> {
         true => scalar_lgl(true),
         false => mk_str(msg.into_iter().map(Some).collect()),
     })
+}
+
+// ── random numbers and the normal distribution ──────────────────────────
+//
+// The generator and the samplers are ports of R's C code (see `crate::rng` and
+// `crate::nmath`); what lives here is the argument handling of the R-level
+// wrappers — `set.seed`, `stats::runif`/`rnorm` (`random2` in
+// stats/src/random.c), `sample`/`sample.int` (base R closures over
+// `.Internal(sample())`) and `stats::dnorm`/`pnorm`/`qnorm` (`math3_1` /
+// `math3_2` in stats/src/distn.c).
+
+/// Run `f` on the host's generator state.
+fn with_rng<T>(f: impl FnOnce(&mut crate::rng::Rng) -> T) -> T {
+    with_host(|h| f(&mut h.rng))
+}
+
+/// `set.seed(seed, kind = NULL, normal.kind = NULL, sample.kind = NULL)`.
+fn set_seed_call(a: &Args) -> Result<Value, String> {
+    use crate::rng::SampleKind;
+    let seed = a.req(0, "seed")?;
+    // The kinds are matched with `pmatch` against R's tables; only the default
+    // generators are implemented, so any other choice is refused outright.
+    let pick = |name: &str, i: usize, table: &[&str]| -> Result<Option<String>, String> {
+        let Some(v) = a.get(i, name).filter(|v| !is_null(v)) else {
+            return Ok(None);
+        };
+        let s = match (kind(&v), len(&v)) {
+            (RKind::Str, 1) => str1(&v).unwrap_or_default(),
+            _ if name == "kind" => {
+                return Err("'kind' must be a character string (RNG to be used).".into())
+            }
+            _ => return Err(format!("'{name}' must be a character string")),
+        };
+        let hits: Vec<&&str> = table.iter().filter(|t| t.starts_with(s.as_str())).collect();
+        let exact = table.iter().find(|t| **t == s);
+        match exact.or(if hits.len() == 1 { Some(hits[0]) } else { None }) {
+            Some(t) => Ok(Some(t.to_string())),
+            None if name == "kind" => Err(format!("'{s}' is not a valid abbreviation of an RNG")),
+            None => Err(format!("'{s}' is not a valid choice")),
+        }
+    };
+    let kinds = [
+        "Wichmann-Hill",
+        "Marsaglia-Multicarry",
+        "Super-Duper",
+        "Mersenne-Twister",
+        "Knuth-TAOCP",
+        "user-supplied",
+        "Knuth-TAOCP-2002",
+        "L'Ecuyer-CMRG",
+        "default",
+    ];
+    let n_kinds = [
+        "Buggy Kinderman-Ramage",
+        "Ahrens-Dieter",
+        "Box-Muller",
+        "user-supplied",
+        "Inversion",
+        "Kinderman-Ramage",
+        "default",
+    ];
+    let s_kinds = ["Rounding", "Rejection", "default"];
+    if let Some(k) = pick("kind", 1, &kinds)? {
+        if k != "Mersenne-Twister" && k != "default" {
+            return Err(format!("RNG kind \"{k}\" is not implemented"));
+        }
+    }
+    if let Some(k) = pick("normal.kind", 2, &n_kinds)? {
+        if k == "Buggy Kinderman-Ramage" {
+            return Err("buggy version of Kinderman-Ramage generator is not allowed".into());
+        }
+        if k != "Inversion" && k != "default" {
+            return Err(format!("normal kind \"{k}\" is not implemented"));
+        }
+    }
+    let sample_kind = match pick("sample.kind", 3, &s_kinds)?.as_deref() {
+        Some("Rounding") => {
+            signal_warning("non-uniform 'Rounding' sampler used")?;
+            Some(SampleKind::Rounding)
+        }
+        Some(_) => Some(SampleKind::Rejection),
+        None => None,
+    };
+    // `.Internal(set.seed())` reads the seed with `asInteger`: the first
+    // element, truncated toward zero, `NA` outside `int` with its warning.
+    // `NULL` reseeds from the clock, as `TimeToSeed` does.
+    if is_null(&seed) {
+        with_rng(|r| r.reseed_from_clock());
+    } else {
+        let first = match (len(&seed), kind(&seed)) {
+            (0, _) => None,
+            (_, RKind::Str) => {
+                let s = as_str(&seed).swap_remove(0);
+                let n = as_dbl(&mk_str(vec![s.clone()]))[0];
+                if s.is_some() && n.is_none() {
+                    signal_warning("NAs introduced by coercion")?;
+                }
+                n
+            }
+            (_, RKind::Lgl | RKind::Int | RKind::Dbl) => as_dbl(&seed)[0],
+            _ => None,
+        };
+        let seed = match first.filter(|d| !d.is_nan()) {
+            Some(d) if !int_in_range(d) => {
+                signal_warning(INT_COERCE_RANGE)?;
+                None
+            }
+            d => d.map(|d| d.trunc() as i32),
+        };
+        match seed {
+            Some(s) => with_rng(|r| r.set_seed(s)),
+            None => return Err("supplied seed is not a valid integer".into()),
+        }
+    }
+    if let Some(k) = sample_kind {
+        with_rng(|r| r.sample_kind = k);
+    }
+    with_host(|h| h.visible = false);
+    Ok(null())
+}
+
+/// `resultLength` from stats/src/random.c: a length-1 `n` is the count, a
+/// longer vector asks for as many values as it has elements.
+fn random_result_length(n: &Value) -> Result<usize, String> {
+    if !matches!(
+        kind(n),
+        RKind::Lgl | RKind::Int | RKind::Dbl | RKind::Str | RKind::List
+    ) {
+        return Err("invalid arguments".into());
+    }
+    if len(n) != 1 {
+        return Ok(len(n));
+    }
+    match as_dbl(n)[0] {
+        Some(d) if (0.0..=4_503_599_627_370_496.0).contains(&d) => Ok(d as usize),
+        _ => Err("invalid arguments".into()),
+    }
+}
+
+/// `random2` from stats/src/random.c, for `runif(n, min, max)` and
+/// `rnorm(n, mean, sd)`: parameters recycle over the result, an invalid
+/// parameter gives `NaN` and one "NAs produced" warning.
+fn random2_call(a: &Args, name: &str) -> Result<Value, String> {
+    let (p1, d1, p2, d2) = match name {
+        "runif" => ("min", 0.0, "max", 1.0),
+        _ => ("mean", 0.0, "sd", 1.0),
+    };
+    let n = random_result_length(&a.req(0, "n")?)?;
+    let pa = a.get(1, p1).unwrap_or_else(|| mk_dbl(vec![Some(d1)]));
+    let pb = a.get(2, p2).unwrap_or_else(|| mk_dbl(vec![Some(d2)]));
+    for v in [&pa, &pb] {
+        if !matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl) || is_factor(v) {
+            return Err("invalid arguments".into());
+        }
+    }
+    if n == 0 {
+        return Ok(mk_dbl(Vec::new()));
+    }
+    let (va, vb) = (as_dbl(&pa), as_dbl(&pb));
+    if va.is_empty() || vb.is_empty() {
+        signal_warning("NAs produced")?;
+        return Ok(mk_dbl(vec![None; n]));
+    }
+    let mut naflag = false;
+    let out: Vec<Option<f64>> = with_rng(|rng| {
+        (0..n)
+            .map(|i| {
+                // NA_real_ is a NaN to nmath: it fails every parameter check.
+                let x = va[i % va.len()].unwrap_or(f64::NAN);
+                let y = vb[i % vb.len()].unwrap_or(f64::NAN);
+                let r = match name {
+                    "runif" => crate::rng::runif(rng, x, y),
+                    _ => crate::rng::rnorm(rng, x, y),
+                };
+                naflag |= r.is_nan();
+                Some(r)
+            })
+            .collect()
+    });
+    if naflag {
+        signal_warning("NAs produced")?;
+    }
+    Ok(mk_dbl(out))
+}
+
+/// `.Internal(sample(n, size, replace, prob))` — `do_sample` in
+/// src/main/random.c — with `sample.int`'s argument defaults.
+fn sample_int(
+    n: &Value,
+    size: Option<Value>,
+    replace: Option<Value>,
+    prob: Option<Value>,
+) -> Result<Value, String> {
+    if len(n) != 1 {
+        return Err("length(n) == 1L is not TRUE".into());
+    }
+    let size = size.unwrap_or_else(|| n.clone());
+    if len(&size) != 1 {
+        return Err("invalid 'size' argument".into());
+    }
+    let replace = match replace {
+        None => false,
+        Some(r) if len(&r) == 1 => match as_lgl(&r)[0] {
+            Some(b) => b,
+            None => return Err("invalid 'replace' argument".into()),
+        },
+        Some(_) => return Err("invalid 'replace' argument".into()),
+    };
+    let prob = prob.filter(|p| !is_null(p));
+    if let Some(prob) = prob {
+        let n = as_int(n)[0].filter(|&v| int_in_range(v as f64));
+        let k = as_int(&size)[0].filter(|&v| int_in_range(v as f64));
+        let n = match n {
+            Some(n) if n >= 0 && !(k.is_some_and(|k| k > 0) && n == 0) => n as usize,
+            _ => return Err("invalid first argument".into()),
+        };
+        let k = match k {
+            Some(k) if k >= 0 => k as usize,
+            _ => return Err("invalid 'size' argument".into()),
+        };
+        if !replace && k > n {
+            return Err(
+                "cannot take a sample larger than the population when 'replace = FALSE'".into(),
+            );
+        }
+        let mut p: Vec<f64> = as_dbl(&prob)
+            .into_iter()
+            .map(|v| v.unwrap_or(f64::NAN))
+            .collect();
+        if p.len() != n {
+            return Err("incorrect number of probabilities".into());
+        }
+        crate::rng::fixup_prob(&mut p, k, replace)?;
+        let out = with_rng(|rng| crate::rng::sample_prob(rng, &mut p, k, replace));
+        return Ok(mk_int(out.into_iter().map(Some).collect()));
+    }
+    let dn = as_dbl(n)[0].unwrap_or(f64::NAN);
+    let k = match as_dbl(&size)[0] {
+        Some(k) if !k.is_nan() && k >= 0.0 => k as usize,
+        _ => return Err("invalid 'size' argument".into()),
+    };
+    if !dn.is_finite() || dn < 0.0 || dn > 4.5e15 || (k > 0 && dn == 0.0) {
+        return Err("invalid first argument".into());
+    }
+    if !replace && k as f64 > dn {
+        return Err(
+            "cannot take a sample larger than the population when 'replace = FALSE'".into(),
+        );
+    }
+    // `sample.int`'s `useHash` default.
+    let hashed = dn > 1e7 && !replace && k as f64 <= dn / 2.0;
+    let out = with_rng(|rng| match hashed {
+        true => crate::rng::sample_hashed(rng, dn, k),
+        false => crate::rng::sample_uniform(rng, dn, k, replace),
+    });
+    if dn > i32::MAX as f64 || k > i32::MAX as usize {
+        return Ok(mk_dbl(out.into_iter().map(Some).collect()));
+    }
+    Ok(mk_int(out.into_iter().map(|v| Some(v as i64)).collect()))
+}
+
+/// `sample.int(n, size = n, replace = FALSE, prob = NULL)`.
+fn sample_int_call(a: &Args) -> Result<Value, String> {
+    let n = a.req(0, "n")?;
+    sample_int(&n, a.get(1, "size"), a.get(2, "replace"), a.get(3, "prob"))
+}
+
+/// `sample(x, size, replace = FALSE, prob = NULL)`: a single number `x >= 1`
+/// samples `1:x`, anything else samples the elements of `x` through `[`.
+fn sample_call(a: &Args) -> Result<Value, String> {
+    let x = a.req(0, "x")?;
+    let (size, replace, prob) = (a.get(1, "size"), a.get(2, "replace"), a.get(3, "prob"));
+    let numeric = matches!(kind(&x), RKind::Int | RKind::Dbl) && !is_factor(&x);
+    let whole = len(&x) == 1 && numeric && as_dbl(&x)[0].is_some_and(|v| v.is_finite() && v >= 1.0);
+    // The errors and warnings of the inner call name it, as R's closure does.
+    let (call, n) = match whole {
+        true => ("sample.int(x, size, replace, prob)", x.clone()),
+        false => (
+            "sample.int(length(x), size, replace, prob)",
+            mk_int(vec![Some(len(&x) as i64)]),
+        ),
+    };
+    push_context(call);
+    let idx = sample_int(&n, size, replace, prob);
+    if idx.is_ok() {
+        with_host(|h| {
+            h.calls.pop();
+        });
+    }
+    let idx = idx?;
+    match whole {
+        true => Ok(idx),
+        false => index_single(&x, &[(None, idx)]),
+    }
+}
+
+/// `dnorm(x, mean, sd, log)`, `pnorm(q, mean, sd, lower.tail, log.p)` and
+/// `qnorm(p, mean, sd, lower.tail, log.p)`: `math3_1` / `math3_2` from
+/// stats/src/distn.c — recycle to the longest argument, keep that argument's
+/// attributes, `NA` in gives `NA` out, and a `NaN` produced from valid input
+/// warns "NaNs produced".
+fn norm_dist_call(a: &Args, name: &str) -> Result<Value, String> {
+    let first = match name {
+        "dnorm" => "x",
+        "pnorm" => "q",
+        _ => "p",
+    };
+    let sa = a.req(0, first)?;
+    let sb = a.get(1, "mean").unwrap_or_else(|| mk_dbl(vec![Some(0.0)]));
+    let sc = a.get(2, "sd").unwrap_or_else(|| mk_dbl(vec![Some(1.0)]));
+    let flag = |i: usize, nm: &str, default: bool| -> bool {
+        a.get(i, nm).and_then(|v| lgl1(&v)).unwrap_or(default)
+    };
+    let (i1, i2) = match name {
+        "dnorm" => (flag(3, "log", false), false),
+        _ => (flag(3, "lower.tail", true), flag(4, "log.p", false)),
+    };
+    for v in [&sa, &sb, &sc] {
+        if !matches!(kind(v), RKind::Lgl | RKind::Int | RKind::Dbl) || is_factor(v) {
+            return Err("Non-numeric argument to mathematical function".into());
+        }
+    }
+    let (na, nb, nc) = (len(&sa), len(&sb), len(&sc));
+    let copy_attrs_from = |src: &Value, out: &Value| {
+        for (k, v) in with_host(|h| h.attrs_of(src)) {
+            with_host(|h| h.set_attr(out, &k, v));
+        }
+    };
+    if na == 0 || nb == 0 || nc == 0 {
+        let out = mk_dbl(Vec::new());
+        if na == 0 {
+            copy_attrs_from(&sa, &out);
+        }
+        return Ok(out);
+    }
+    let n = na.max(nb).max(nc);
+    let (va, vb, vc) = (as_dbl(&sa), as_dbl(&sb), as_dbl(&sc));
+    let mut naflag = false;
+    let out: Vec<Option<f64>> = (0..n)
+        .map(|i| {
+            let (x, m, s) = (va[i % na], vb[i % nb], vc[i % nc]);
+            // if_NA_Math3_set: NA wins over NaN, either skips the function.
+            let (Some(x), Some(m), Some(s)) = (x, m, s) else {
+                return None;
+            };
+            if x.is_nan() || m.is_nan() || s.is_nan() {
+                return Some(f64::NAN);
+            }
+            let y = match name {
+                "dnorm" => crate::nmath::dnorm(x, m, s, i1),
+                "pnorm" => crate::nmath::pnorm(x, m, s, i1, i2),
+                _ => crate::nmath::qnorm(x, m, s, i1, i2),
+            };
+            naflag |= y.is_nan();
+            Some(y)
+        })
+        .collect();
+    if naflag {
+        signal_warning("NaNs produced")?;
+    }
+    let out = mk_dbl(out);
+    let src = if n == na {
+        &sa
+    } else if n == nb {
+        &sb
+    } else {
+        &sc
+    };
+    copy_attrs_from(src, &out);
+    Ok(out)
 }

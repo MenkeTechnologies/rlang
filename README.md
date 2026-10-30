@@ -232,8 +232,10 @@ Implemented and checked against the reference `Rscript`:
 - **Primitive library** — the apply family (`lapply`/`sapply`/`Map`/`Filter`/
   `Reduce`/`do.call`), string and regex functions (`paste`, `sprintf`, `substr`,
   `strsplit`, `grepl`, `sub`, `gsub`), numeric summaries (`sum`, `mean`,
-  `median`, `var`, `sd`, `cumsum`, `diff`), sequence and set functions, and
-  matrix helpers.
+  `median`, `var`, `sd`, `cumsum`, `diff`), sequence and set functions,
+  matrix helpers, and seeded random numbers (`set.seed`, `runif`, `rnorm`,
+  `sample`) that reproduce R's own streams, with the normal's `dnorm` /
+  `pnorm` / `qnorm`.
 - **R's printing** — `[n]` index prefixes with 80-column wrapping, shared decimal
   widths, quoted and left-justified character vectors, named-vector column pairs,
   `[i,]`/`[,j]` matrix layout, and `$name` / `[[n]]` list sections.

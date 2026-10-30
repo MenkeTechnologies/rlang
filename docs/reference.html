@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="rlang — Primitive reference. Every one of the 371 primitive functions and 35 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
+  <meta name="description" content="rlang — Primitive reference. Every one of the 379 primitive functions and 35 operators the current rlang build implements, each with its signature and what it does. MIT licensed.">
   <title>rlang &mdash; Primitive Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +114,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/rlang" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
-          <p class="docs-build-line">rlang v0.1.10 &middot; 406 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
+          <p class="docs-build-line">rlang v0.1.10 &middot; 414 entries &middot; 13 chapters &middot; generated from <code>rlang/docs.rs</code> &middot; MIT</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -130,7 +130,7 @@
     <main class="tutorial-main">
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PRIMITIVE REFERENCE</h2>
       <p class="tutorial-subtitle">Every primitive and operator the current build implements, with its signature and what it does. Jump via the chapter index, or <kbd>Ctrl+F</kbd> for a name.</p>
-      <p class="ref-intro">The 371 primitives and 35 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
+      <p class="ref-intro">The 379 primitives and 35 operators below are generated from the same corpus the language server completes from, which is checked against the runtime's own tables: a function listed here exists in the build, and a function missing here raises <code>could not find function</code> rather than failing silently. Each signature names the arguments the implementation actually reads, in the order it reads them &mdash; where that differs from GNU R, or where the answer differs, the description says so.</p>
     <section class="tutorial-section">
       <h2>Chapters</h2>
       <ul class="chapter-index">
@@ -140,7 +140,7 @@
         <li><a href="#ch-Sequences">Sequences</a> <span class="chapter-count">13</span></li>
         <li><a href="#ch-Ordering-and-sets">Ordering and sets</a> <span class="chapter-count">15</span></li>
         <li><a href="#ch-Numeric-summaries">Numeric summaries</a> <span class="chapter-count">19</span></li>
-        <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">50</span></li>
+        <li><a href="#ch-Elementwise-math">Elementwise math</a> <span class="chapter-count">58</span></li>
         <li><a href="#ch-Predicates">Predicates</a> <span class="chapter-count">32</span></li>
         <li><a href="#ch-Strings-and-regular-expressions">Strings and regular expressions</a> <span class="chapter-count">39</span></li>
         <li><a href="#ch-The-apply-family">The apply family</a> <span class="chapter-count">18</span></li>
@@ -829,7 +829,7 @@
     </section>
     <section class="tutorial-section" id="ch-Elementwise-math">
       <h2>Elementwise math</h2>
-      <p class="chapter-meta">50 entries</p>
+      <p class="chapter-meta">58 entries</p>
       <article class="doc-entry" id="doc-abs">
         <h3><a class="doc-anchor" href="#doc-abs">#</a> <code>abs</code></h3>
         <pre><code class="lang-r r">abs(x)
@@ -1129,6 +1129,54 @@
         <pre><code class="lang-r r">findInterval(x, vec, rightmost.closed = FALSE, all.inside = FALSE, left.open = FALSE, checkSorted = TRUE)
 </code></pre>
         <p>For each x, the index i of the interval vec[i] &lt;= x &lt; vec[i+1] of the sorted breakpoints (vec[i] &lt; x &lt;= vec[i+1] with left.open): 0 below the first, length(vec) past the last. rightmost.closed folds a hit on the closing breakpoint into the last interval, all.inside folds both ends in. An unsorted vec is an error.</p>
+      </article>
+      <article class="doc-entry" id="doc-set-seed">
+        <h3><a class="doc-anchor" href="#doc-set-seed">#</a> <code>set.seed</code></h3>
+        <pre><code class="lang-r r">set.seed(seed, kind = NULL, normal.kind = NULL, sample.kind = NULL)
+</code></pre>
+        <p>Seed R's default Mersenne-Twister stream exactly as R does, so every draw after it reproduces R's numbers. Only the default kinds are implemented: kind "Mersenne-Twister", normal.kind "Inversion", and sample.kind "Rejection" or "Rounding" (which warns, as in R). The state lives on the runtime, not in a .Random.seed variable.</p>
+      </article>
+      <article class="doc-entry" id="doc-runif">
+        <h3><a class="doc-anchor" href="#doc-runif">#</a> <code>runif</code></h3>
+        <pre><code class="lang-r r">runif(n, min = 0, max = 1)
+</code></pre>
+        <p>n uniform draws on (min, max); min and max recycle. An invalid pair gives NaN with one "NAs produced" warning. A vector n asks for length(n) draws.</p>
+      </article>
+      <article class="doc-entry" id="doc-rnorm">
+        <h3><a class="doc-anchor" href="#doc-rnorm">#</a> <code>rnorm</code></h3>
+        <pre><code class="lang-r r">rnorm(n, mean = 0, sd = 1)
+</code></pre>
+        <p>n normal draws by inversion (two uniforms through qnorm), R's default; mean and sd recycle, a negative sd gives NaN with "NAs produced".</p>
+      </article>
+      <article class="doc-entry" id="doc-sample">
+        <h3><a class="doc-anchor" href="#doc-sample">#</a> <code>sample</code></h3>
+        <pre><code class="lang-r r">sample(x, size, replace = FALSE, prob = NULL)
+</code></pre>
+        <p>A random permutation or sample: a single number x &gt;= 1 samples 1:x, anything else samples the elements of x through `[`, keeping names and factor levels. Draws with R's rejection sampler, or Walker's alias and R's inversion samplers under prob.</p>
+      </article>
+      <article class="doc-entry" id="doc-sample-int">
+        <h3><a class="doc-anchor" href="#doc-sample-int">#</a> <code>sample.int</code></h3>
+        <pre><code class="lang-r r">sample.int(n, size = n, replace = FALSE, prob = NULL)
+</code></pre>
+        <p>size integers from 1..n, as .Internal(sample()); for n &gt; 1e7 without replacement and size &lt;= n/2 it takes R's hashed sampler (.Internal(sample2())) as R's useHash default does.</p>
+      </article>
+      <article class="doc-entry" id="doc-dnorm">
+        <h3><a class="doc-anchor" href="#doc-dnorm">#</a> <code>dnorm</code></h3>
+        <pre><code class="lang-r r">dnorm(x, mean = 0, sd = 1, log = FALSE)
+</code></pre>
+        <p>The normal density, ported from nmath's dnorm4; arguments recycle to the longest, whose attributes the result keeps.</p>
+      </article>
+      <article class="doc-entry" id="doc-pnorm">
+        <h3><a class="doc-anchor" href="#doc-pnorm">#</a> <code>pnorm</code></h3>
+        <pre><code class="lang-r r">pnorm(q, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)
+</code></pre>
+        <p>The normal distribution function by Cody's rational approximations (nmath's pnorm5), including the upper tail and the log scale.</p>
+      </article>
+      <article class="doc-entry" id="doc-qnorm">
+        <h3><a class="doc-anchor" href="#doc-qnorm">#</a> <code>qnorm</code></h3>
+        <pre><code class="lang-r r">qnorm(p, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)
+</code></pre>
+        <p>The normal quantile by Wichura's AS 241 with R's asymptotic extreme-tail series; p outside [0, 1] is NaN with "NaNs produced".</p>
       </article>
     </section>
     <section class="tutorial-section" id="ch-Predicates">

@@ -641,6 +641,9 @@ pub struct RHost {
     /// How many warnings that statement raised, which keeps counting past the
     /// cap so the "50 or more" banner can say so.
     pub warn_count: usize,
+    /// The uniform random number stream behind `set.seed`, `runif`, `rnorm`
+    /// and `sample` (see `crate::rng`).
+    pub rng: crate::rng::Rng,
     /// Interned singletons so `NULL` and the common constants do not allocate a
     /// fresh heap cell on every evaluation.
     null: Option<Value>,
@@ -834,6 +837,7 @@ impl RHost {
             calls: Vec::new(),
             warnings: Vec::new(),
             warn_count: 0,
+            rng: crate::rng::Rng::default(),
             null: None,
         }
     }

@@ -839,6 +839,46 @@ const MATH: &[Entry] = &[
         "findInterval(x, vec, rightmost.closed = FALSE, all.inside = FALSE, left.open = FALSE, checkSorted = TRUE)",
         "For each x, the index i of the interval vec[i] <= x < vec[i+1] of the sorted breakpoints (vec[i] < x <= vec[i+1] with left.open): 0 below the first, length(vec) past the last. rightmost.closed folds a hit on the closing breakpoint into the last interval, all.inside folds both ends in. An unsorted vec is an error.",
     ),
+    (
+        "set.seed",
+        "set.seed(seed, kind = NULL, normal.kind = NULL, sample.kind = NULL)",
+        "Seed R's default Mersenne-Twister stream exactly as R does, so every draw after it reproduces R's numbers. Only the default kinds are implemented: kind \"Mersenne-Twister\", normal.kind \"Inversion\", and sample.kind \"Rejection\" or \"Rounding\" (which warns, as in R). The state lives on the runtime, not in a .Random.seed variable.",
+    ),
+    (
+        "runif",
+        "runif(n, min = 0, max = 1)",
+        "n uniform draws on (min, max); min and max recycle. An invalid pair gives NaN with one \"NAs produced\" warning. A vector n asks for length(n) draws.",
+    ),
+    (
+        "rnorm",
+        "rnorm(n, mean = 0, sd = 1)",
+        "n normal draws by inversion (two uniforms through qnorm), R's default; mean and sd recycle, a negative sd gives NaN with \"NAs produced\".",
+    ),
+    (
+        "sample",
+        "sample(x, size, replace = FALSE, prob = NULL)",
+        "A random permutation or sample: a single number x >= 1 samples 1:x, anything else samples the elements of x through `[`, keeping names and factor levels. Draws with R's rejection sampler, or Walker's alias and R's inversion samplers under prob.",
+    ),
+    (
+        "sample.int",
+        "sample.int(n, size = n, replace = FALSE, prob = NULL)",
+        "size integers from 1..n, as .Internal(sample()); for n > 1e7 without replacement and size <= n/2 it takes R's hashed sampler (.Internal(sample2())) as R's useHash default does.",
+    ),
+    (
+        "dnorm",
+        "dnorm(x, mean = 0, sd = 1, log = FALSE)",
+        "The normal density, ported from nmath's dnorm4; arguments recycle to the longest, whose attributes the result keeps.",
+    ),
+    (
+        "pnorm",
+        "pnorm(q, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)",
+        "The normal distribution function by Cody's rational approximations (nmath's pnorm5), including the upper tail and the log scale.",
+    ),
+    (
+        "qnorm",
+        "qnorm(p, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)",
+        "The normal quantile by Wichura's AS 241 with R's asymptotic extreme-tail series; p outside [0, 1] is NaN with \"NaNs produced\".",
+    ),
 ];
 
 const PREDICATES: &[Entry] = &[
