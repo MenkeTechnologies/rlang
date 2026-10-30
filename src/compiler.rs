@@ -1786,7 +1786,7 @@ impl Compiler {
                     &mut self.assign_text,
                     crate::deparse::deparse_first_line(&whole),
                 );
-                let out = self.rebuild(b, target, value, sup);
+                let out = self.complex_assign(b, target, value, sup);
                 self.assign_text = outer;
                 out?;
             }
@@ -1794,61 +1794,31 @@ impl Compiler {
         Ok(())
     }
 
-    /// Compile a complex assignment target: build the modified container, then
-    /// assign *that* back to the inner target, recursing outward-in.
-    fn rebuild(
+    /// Compile `target <- value` for an index or replacement-call target the way
+    /// R's `applydefine` runs it: the right-hand side is evaluated FIRST, before
+    /// the target's object or subscripts, and it — not the rebuilt container —
+    /// is the value of the whole assignment, so `y <- (names(x) <- "a")` binds
+    /// `"a"` and a function whose last statement is `x[2] <- 10` returns `10`.
+    /// The modified container is then assigned back to the inner target,
+    /// recursing outward-in through [`Self::assign_stack`].
+    fn complex_assign(
         &mut self,
         b: &mut ChunkBuilder,
         target: &Expr,
         value: &Expr,
         sup: bool,
     ) -> Result<(), String> {
-        match target {
-            Expr::Index { kind, obj, args } => {
-                self.expr(b, obj)?;
-                self.mark_shared_intermediate(b, obj);
-                match kind {
-                    IndexKind::Dollar | IndexKind::At => {
-                        match args.first().and_then(|a| a.value.clone()) {
-                            Some(Expr::Str(n)) => self.kstr(b, &n),
-                            _ => return Err("malformed $ assignment target".into()),
-                        }
-                        self.expr(b, value)?;
-                        b.emit(Op::CallBuiltin(ops::DOLLAR_SET, 3), 0);
-                    }
-                    IndexKind::Single => {
-                        self.args(b, args)?;
-                        self.expr(b, value)?;
-                        b.emit(Op::CallBuiltin(ops::INDEX_SET, 3), 0);
-                    }
-                    IndexKind::Double => {
-                        self.args(b, args)?;
-                        self.expr(b, value)?;
-                        b.emit(Op::CallBuiltin(ops::INDEX2_SET, 3), 0);
-                    }
-                }
-                self.assign_stack(b, obj, sup)
-            }
-            // `f(x, ...) <- v` is `x <- \`f<-\`(x, ..., value = v)`.
-            Expr::Call { fun, args } => {
-                let Expr::Ident(fname) = fun.as_ref() else {
-                    return Err("invalid function in complex assignment".into());
-                };
-                let Some(inner) = args.first().and_then(|a| a.value.clone()) else {
-                    return Err(format!("invalid target for {fname}<-"));
-                };
-                self.kstr(b, fname);
-                self.expr(b, &inner)?;
-                self.args(b, &args[1..])?;
-                self.expr(b, value)?;
-                let text = self.assign_text.clone();
-                self.kstr(b, &text);
-                b.emit(Op::CallBuiltin(ops::REPLACE, 5), 0);
-                self.assign_stack(b, &inner, sup)
-            }
-            // A target that is no name, index or call is R's runtime error.
-            _ => self.runtime_error(b, "invalid (do_set) left-hand side to assignment"),
+        // A target that is no name, index or call is R's runtime error, raised
+        // by `do_set` before the right-hand side is touched.
+        if !matches!(target, Expr::Index { .. } | Expr::Call { .. }) {
+            return self.runtime_error(b, "invalid (do_set) left-hand side to assignment");
         }
+        self.expr(b, value)?;
+        b.emit(Op::Dup, 0);
+        self.assign_stack(b, target, sup)?;
+        // Drop what the outermost store returned; the right-hand side remains.
+        b.emit(Op::Pop, 0);
+        Ok(())
     }
 
     /// The object of an assignment target has just been pushed. When it is a

@@ -83,8 +83,9 @@ no VM of its own. Highlights:
   length one, every value carries attributes (`names`, `dim`, `class`), and every
   operator recycles and propagates `NA`.
 - **Copy-on-modify** — `y <- x; y[1] <- 9` leaves `x` alone, and complex targets
-  (`l$v[2] <- 9`, `names(x) <- v`) compile the way R defines them: rebuild the
-  container, then re-bind it.
+  (`l$v[2] <- 9`, `names(x) <- v`) compile the way R defines them: evaluate the
+  right-hand side first, rebuild the container, re-bind it, and yield the
+  right-hand side as the value of the whole assignment.
 - **Three-valued logic** — `NA & FALSE` is FALSE and `NA | TRUE` is TRUE, because
   the answer is decided regardless of the missing value.
 - **S3 dispatch** — `UseMethod` walks the class vector then `.default`, with
@@ -279,7 +280,7 @@ R source → lexer → parser (AST) → lower to fusevm bytecode → fusevm VM +
 | **Vectors on the host heap** | Every R value is a `Value::Obj` handle into the `RHost` heap, because R has no scalars and any value can carry attributes. |
 | **Environments by reference** | Frames are `Rc<RefCell<..>>` environments chained to their enclosure — R's lexical scoping, and what lets `<<-` reach the defining frame. |
 | **R truthiness** | A condition must be a single non-`NA` logical, so conditions normalize through a `TRUTHY` op before a native branch. |
-| **Complex assignment** | `f(x) <- v` compiles to `` x <- `f<-`(x, v) `` and `x[i] <- v` rebuilds and re-binds `x`, so nested targets unwind through the same two rules. |
+| **Complex assignment** | `f(x) <- v` compiles to `` x <- `f<-`(x, v) `` and `x[i] <- v` rebuilds and re-binds `x`, so nested targets unwind through the same two rules; `v` is evaluated first and is the value of the expression. |
 
 ---
 
