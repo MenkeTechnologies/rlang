@@ -1468,3 +1468,18 @@ fn old_class_replacement_sets_the_attribute_as_do_classgets() {
         "[1] \"attempt to set invalid 'class' attribute\""
     );
 }
+
+#[test]
+fn out_dec_is_the_decimal_mark_of_printed_and_formatted_numbers() {
+    // R's encodeReal0 writes OutDec for the point; deparse keeps the point so
+    // its text still parses.
+    assert_eq!(
+        r("options(OutDec = \",\"); x <- c(format(1.5), as.character(2.25), format(1.5e-20), deparse(1.5)); options(OutDec = \".\"); x"),
+        "[1] \"1,5\"     \"2,25\"    \"1,5e-20\" \"1.5\""
+    );
+    assert_eq!(r("options(OutDec = \",\"); y <- getOption(\"OutDec\"); options(OutDec = \".\"); y"), "[1] \",\"");
+    assert_eq!(
+        r("tryCatch(options(OutDec = 1), error = conditionMessage)"),
+        "[1] \"invalid value for 'OutDec'\""
+    );
+}

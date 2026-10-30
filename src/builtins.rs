@@ -6886,8 +6886,8 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                     .iter()
                     .map(|e| {
                         e.map(|v| match (v.is_finite(), use_sci) {
-                            (true, true) => render_sci(v, sci_d),
-                            (true, false) => render_fixed(v, fixed_d),
+                            (true, true) => crate::host::out_dec(render_sci(v, sci_d)),
+                            (true, false) => crate::host::out_dec(render_fixed(v, fixed_d)),
                             (false, _) => render_fixed(v, 0),
                         })
                     })
@@ -15391,8 +15391,9 @@ fn deparse_atomic(d: &mut crate::deparse::Deparser, v: &Value, names: Option<&[O
         }
     }
     // Doubles are written at R's `DBL_DIG` (15) significant digits, not
-    // the 7 `print` uses, so the text reads back to the same number.
-    let text = crate::host::with_print_digits(15, || as_str(v));
+    // the 7 `print` uses, and with a point whatever `OutDec` is, so the
+    // text reads back to the same number.
+    let text = crate::host::with_print_digits(15, || crate::host::with_point(|| as_str(v)));
     let all_na = text.iter().all(Option::is_none);
     let typed_na = match x {
         RData::Int(_) => "NA_integer_",
@@ -19060,8 +19061,8 @@ fn format_dbl_run(xs: &[Option<f64>]) -> Vec<String> {
     let cells: Vec<String> = xs
         .iter()
         .map(|e| match e {
-            Some(x) if x.is_finite() && use_sci => render_sci(*x, sci_d),
-            Some(x) if x.is_finite() => render_fixed(*x, fixed_d),
+            Some(x) if x.is_finite() && use_sci => crate::host::out_dec(render_sci(*x, sci_d)),
+            Some(x) if x.is_finite() => crate::host::out_dec(render_fixed(*x, fixed_d)),
             Some(x) => render_fixed(*x, 0),
             None => "NA".into(),
         })

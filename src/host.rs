@@ -1906,6 +1906,33 @@ thread_local! {
     /// positive value biases towards fixed and a negative one towards
     /// scientific. R clamps it below at -9.
     static PRINT_SCIPEN: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    /// R's `getOption("OutDec")`, default `"."`: the decimal mark `print`,
+    /// `format` and `as.character` write in place of the point.
+    static OUT_DEC: std::cell::RefCell<String> = std::cell::RefCell::new(".".into());
+}
+
+/// Put `getOption("OutDec")` in place of the decimal point of one rendered
+/// number, as R's `encodeReal0` does for the fixed form and the scientific
+/// mantissa alike. `deparse` keeps the point, so only the user-facing
+/// formatters call this, never [`render_fixed`]/[`render_sci`] themselves.
+pub fn out_dec(s: String) -> String {
+    OUT_DEC.with(|d| {
+        let d = d.borrow();
+        if d.as_str() == "." {
+            s
+        } else {
+            s.replacen('.', &d, 1)
+        }
+    })
+}
+
+/// Run `f` with the decimal mark forced back to `"."` — for renderings that
+/// must read back as R source (`deparse`, `dput`), which R never localises.
+pub fn with_point<T>(f: impl FnOnce() -> T) -> T {
+    let prev = OUT_DEC.with(|d| std::mem::replace(&mut *d.borrow_mut(), ".".into()));
+    let out = f();
+    OUT_DEC.with(|d| *d.borrow_mut() = prev);
+    out
 }
 
 /// Significant digits `as.character`, `paste` and `toString` render doubles at.
@@ -1981,6 +2008,7 @@ pub fn option_get(name: &str) -> Option<OptionValue> {
     match name {
         "digits" => Some(OptionValue::Int(print_digits() as i64)),
         "scipen" => Some(OptionValue::Int(print_scipen() as i64)),
+        "OutDec" => Some(OptionValue::Str(OUT_DEC.with(|d| d.borrow().clone()))),
         // `warn` reads as 0 until something sets it, the way R's does.
         "warn" => Some(
             OTHER_OPTIONS
@@ -2025,6 +2053,17 @@ pub fn option_set(
                 warning = Some(format!("invalid 'scipen' {s}, used {SCIPEN_MIN}"));
             }
             set_print_scipen(s);
+        }
+        // R's `do_options`: a non-string is an error; a string that is not
+        // one character warns and is used anyway.
+        "OutDec" => {
+            let OptionValue::Str(dec) = value else {
+                return Err("invalid value for 'OutDec'".into());
+            };
+            if dec.chars().count() != 1 {
+                warning = Some("'OutDec' must be a string of one character".into());
+            }
+            OUT_DEC.with(|d| *d.borrow_mut() = dec);
         }
         _ => {
             OTHER_OPTIONS.with(|o| o.borrow_mut().insert(name.to_string(), value));
@@ -2144,11 +2183,11 @@ pub fn format_dbl(x: f64) -> String {
         return fixed;
     }
     let sci = render_sci(x, sci_decimals(x));
-    if prefers_fixed(fixed.chars().count(), sci.chars().count()) {
+    out_dec(if prefers_fixed(fixed.chars().count(), sci.chars().count()) {
         fixed
     } else {
         sci
-    }
+    })
 }
 
 // ===========================================================================
