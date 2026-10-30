@@ -1861,12 +1861,8 @@ fn call_infix(
 
 /// `x %in% table`.
 fn value_in(x: &Value, table: &Value) -> Value {
-    let hay: Vec<Option<String>> = as_str_labels(table);
-    let out = as_str_labels(x)
-        .into_iter()
-        .map(|e| Some(hay.contains(&e)))
-        .collect();
-    mk_lgl(out)
+    let hits = match_positions(x, table, None, None);
+    mk_lgl(hits.iter().map(|p| Some(p.is_some())).collect())
 }
 
 /// R's binary operators, vectorized with recycling and NA propagation.
@@ -5172,6 +5168,8 @@ pub const PRIMITIVES: &[&str] = &[
     "pnorm",
     "qnorm",
     "is.null",
+    "is.matrix",
+    "is.array",
     "is.na",
     "is.nan",
     "is.finite",
@@ -7173,15 +7171,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         }
         "unique" => {
             let x = a.req(0, "x")?;
-            let keys = as_str(&x);
-            let mut seen: Vec<Option<String>> = Vec::new();
-            let mut pos = Vec::new();
-            for (i, k) in keys.iter().enumerate() {
-                if !seen.contains(k) {
-                    seen.push(k.clone());
-                    pos.push(Some(i));
-                }
+            let from_last = a.named("fromLast").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let dup = duplicated_flags(&x, from_last, a.get(1, "incomparables").as_ref());
+            // `unique.matrix`: the distinct rows, as a matrix.
+            if matrix_rows(&x).is_some() {
+                let rows: Vec<usize> = (0..dup.len()).filter(|&i| !dup[i]).collect();
+                return Ok(take_rows(&x, &rows));
             }
+            let pos: Vec<Option<usize>> = (0..dup.len()).filter(|&i| !dup[i]).map(Some).collect();
             let out = take_positions(&x, &pos);
             // R's `unique` keeps a factor's full level table — the levels are a
             // property of the variable, not of the values that happen to remain.
@@ -7191,17 +7188,20 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         "setdiff" | "union" | "intersect" => {
             let x = a.req(0, "x")?;
             let y = a.req(1, "y")?;
-            let (xs, ys) = (as_str_labels(&x), as_str_labels(&y));
+            // Elements compare under `match`'s common-type equality, which is
+            // what R's definitions (`match(u, v, 0L)`, `unique(c(u, v))`) use.
+            let as_text = matches_as_text(&x) || matches_as_text(&y);
+            let (xs, ys) = (match_keys(&x, as_text), match_keys(&y, as_text));
+            let in_y: std::collections::HashSet<&MatchKey> = ys.iter().collect();
             let mut pos = Vec::new();
-            let mut seen: Vec<Option<String>> = Vec::new();
+            let mut seen: std::collections::HashSet<MatchKey> = Default::default();
             for (i, k) in xs.iter().enumerate() {
                 let keep = match name {
-                    "setdiff" => !ys.contains(k),
-                    "intersect" => ys.contains(k),
+                    "setdiff" => !in_y.contains(k),
+                    "intersect" => in_y.contains(k),
                     _ => true,
                 };
-                if keep && !seen.contains(k) {
-                    seen.push(k.clone());
+                if keep && seen.insert(k.clone()) {
                     pos.push(Some(i));
                 }
             }
@@ -7219,8 +7219,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             let mut ypos = Vec::new();
             if name == "union" {
                 for (i, k) in ys.iter().enumerate() {
-                    if !seen.contains(k) {
-                        seen.push(k.clone());
+                    if seen.insert(k.clone()) {
                         ypos.push(Some(i));
                     }
                 }
@@ -7230,35 +7229,27 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             Ok(concat(&Args::new(vec![(None, head), (None, tail)])))
         }
         "match" => {
-            // First position (1-based) of each `x` in `table`, else NA. String
-            // coercion gives a type-agnostic equality that matches R here.
-            let xs = as_str_labels(&a.req(0, "x")?);
-            let table = as_str_labels(&a.req(1, "table")?);
-            Ok(mk_int(
-                xs.iter()
-                    .map(|k| table.iter().position(|t| t == k).map(|p| p as i64 + 1))
-                    .collect(),
-            ))
+            // First position (1-based) of each `x` in `table`, else `nomatch`,
+            // under R's hash-table equality (see `match_positions`).
+            let nomatch = a
+                .get(2, "nomatch")
+                .and_then(|v| as_int(&v).first().copied().flatten());
+            Ok(mk_int(match_positions(
+                &a.req(0, "x")?,
+                &a.req(1, "table")?,
+                nomatch,
+                a.get(3, "incomparables").as_ref(),
+            )))
         }
         "is.element" => {
-            let el = as_str_labels(&a.req(0, "el")?);
-            let table = as_str_labels(&a.req(1, "table")?);
-            Ok(mk_lgl(el.iter().map(|k| Some(table.contains(k))).collect()))
+            let hits = match_positions(&a.req(0, "el")?, &a.req(1, "table")?, None, None);
+            Ok(mk_lgl(hits.iter().map(|p| Some(p.is_some())).collect()))
         }
         "duplicated" => {
-            let keys = as_str(&a.req(0, "x")?);
-            let mut seen: Vec<Option<String>> = Vec::new();
-            Ok(mk_lgl(
-                keys.iter()
-                    .map(|k| {
-                        let dup = seen.contains(k);
-                        if !dup {
-                            seen.push(k.clone());
-                        }
-                        Some(dup)
-                    })
-                    .collect(),
-            ))
+            let x = a.req(0, "x")?;
+            let from_last = a.named("fromLast").and_then(|v| lgl1(&v)).unwrap_or(false);
+            let dup = duplicated_flags(&x, from_last, a.get(1, "incomparables").as_ref());
+            Ok(mk_lgl(dup.into_iter().map(Some).collect()))
         }
         "rank" => {
             // Average ranks with ties, like R's default `ties.method="average"`.
@@ -7547,15 +7538,14 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
         // R's `anyDuplicated`: the 1-based index of the first element equal
         // to an earlier one (a later one with `fromLast`), or 0.
         "anyDuplicated" => {
-            let keys = as_str(&a.req(0, "x")?);
+            let x = a.req(0, "x")?;
             let from_last = a.named("fromLast").and_then(|v| lgl1(&v)).unwrap_or(false);
-            let order: Vec<usize> = if from_last {
-                (0..keys.len()).rev().collect()
-            } else {
-                (0..keys.len()).collect()
+            let dup = duplicated_flags(&x, from_last, a.get(1, "incomparables").as_ref());
+            // The first duplicate met in scan order: from the end with `fromLast`.
+            let hit = match from_last {
+                true => dup.iter().rposition(|&d| d),
+                false => dup.iter().position(|&d| d),
             };
-            let mut seen = std::collections::HashSet::new();
-            let hit = order.into_iter().find(|&i| !seen.insert(keys[i].clone()));
             Ok(scalar_int(hit.map_or(0, |i| i as i64 + 1)))
         }
         "scale" => in_method("scale.default", || scale_default(&a)),
@@ -8291,6 +8281,16 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
 
         // ── predicates ──────────────────────────────────────────────────
         "is.null" => Ok(scalar_lgl(is_null(&a.get(0, "x").unwrap_or_else(null)))),
+        // `is.matrix` / `is.array` read only the `dim` attribute: two extents
+        // make a matrix, any number an array. A data frame has none.
+        "is.matrix" | "is.array" => {
+            let x = a.req(0, "x")?;
+            let rank = with_host(|h| h.attr(&x, "dim")).map(|d| len(&d));
+            Ok(scalar_lgl(match name {
+                "is.matrix" => rank == Some(2),
+                _ => rank.is_some(),
+            }))
+        }
         "is.na" => {
             let x = a.req(0, "x")?;
             let out: Vec<Option<bool>> = match data(&x) {
@@ -13742,10 +13742,18 @@ fn factor_levels(x: &Value) -> Vec<String> {
             }
         }
         u.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        as_str(&mk_dbl(u.into_iter().map(Some).collect()))
+        // `levels <- unique(as.character(y)[ind])`: two numbers that print
+        // alike (`0.1 + 0.2` and `0.3`) are one level.
+        let mut labels: Vec<String> = Vec::new();
+        for s in as_str(&mk_dbl(u.into_iter().map(Some).collect()))
             .into_iter()
             .flatten()
-            .collect()
+        {
+            if !labels.contains(&s) {
+                labels.push(s);
+            }
+        }
+        labels
     } else {
         let mut u: Vec<String> = Vec::new();
         for v in as_str(x).into_iter().flatten() {
@@ -19053,8 +19061,45 @@ fn format_factor(v: &Value) -> Vec<String> {
     };
     // An ordered factor separates its levels with `<`.
     let sep = if ordered { " < " } else { " " };
-    out.push(format!("Levels: {}", levels.join(sep)));
+    out.push(levels_line(&levels, sep));
     out
+}
+
+/// `print.factor`'s `Levels:` line. It never wraps: when the levels do not fit
+/// the width less the 15 columns R reserves, it keeps as many leading levels as
+/// fit, then `...` and the last level, and leads with the level count —
+/// `10 Levels: a b c ... j`.
+fn levels_line(levels: &[String], sep: &str) -> String {
+    const WIDTH: usize = 80;
+    let n = levels.len();
+    let room = WIDTH - ("Levels: ".len() + 3 + 1 + 3);
+    let sep_w = crate::strwidth::display_width(sep);
+    let mut lenl = Vec::with_capacity(n);
+    let mut total = 0;
+    for l in levels {
+        total += crate::strwidth::display_width(l) + sep_w;
+        lenl.push(total);
+    }
+    let maxl = if n <= 1 || lenl[n - 1] <= room {
+        n
+    } else {
+        // `which.max(lenl > width) - 1`: the levels before the first that
+        // overflows.
+        let first_over = lenl.iter().position(|&w| w > room).unwrap_or(0) + 1;
+        first_over.saturating_sub(1).max(1)
+    };
+    if n <= maxl {
+        return format!("Levels: {}", levels.join(sep));
+    }
+    let mut shown: Vec<&str> = levels[..(maxl - 1).max(1)]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    shown.push("...");
+    if maxl > 1 {
+        shown.push(&levels[n - 1]);
+    }
+    format!("{n} Levels: {}", shown.join(sep))
 }
 
 /// The `[i]`-prefixed, width-wrapped cell layout R uses for an unnamed vector.
@@ -20707,4 +20752,127 @@ fn norm_dist_call(a: &Args, name: &str) -> Result<Value, String> {
     };
     copy_attrs_from(src, &out);
     Ok(out)
+}
+
+// ── R's hash-table equality: match, %in%, unique, duplicated ────────────
+//
+// `src/main/unique.c` compares numbers as numbers and strings as strings: two
+// doubles are the same element when `requal` says so, which is `==` on the
+// values (so `-0` is `0`), `NA` only with `NA`, and `NaN` only with `NaN`. The
+// `0.1 + 0.2` and `0.3` that print alike are different elements, so neither
+// may be keyed by its printed text.
+
+/// One element as R's hash tables compare it.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum MatchKey {
+    Na,
+    NaN,
+    /// A number's bits, with `-0` folded onto `0`.
+    Num(u64),
+    Str(String),
+}
+
+/// Whether `match5` compares `x` as character: a factor goes through
+/// `as.character`, and a string, a list or any other non-number makes the
+/// common type `STRSXP`.
+fn matches_as_text(x: &Value) -> bool {
+    is_factor(x) || !matches!(kind(x), RKind::Null | RKind::Lgl | RKind::Int | RKind::Dbl)
+}
+
+/// `x`'s elements as match keys, coerced the way `match5` coerces: to
+/// character when `as_text`, else to double.
+fn match_keys(x: &Value, as_text: bool) -> Vec<MatchKey> {
+    if as_text {
+        return as_str_labels(x)
+            .into_iter()
+            .map(|e| e.map_or(MatchKey::Na, MatchKey::Str))
+            .collect();
+    }
+    as_dbl(x)
+        .into_iter()
+        .map(|e| match e {
+            None => MatchKey::Na,
+            Some(v) if v.is_nan() => MatchKey::NaN,
+            Some(v) => MatchKey::Num((v + 0.0).to_bits()),
+        })
+        .collect()
+}
+
+/// `match(x, table, nomatch, incomparables)`: the first position of each `x`
+/// in `table`, both coerced to their common type first.
+fn match_positions(
+    x: &Value,
+    table: &Value,
+    nomatch: Option<i64>,
+    incomparables: Option<&Value>,
+) -> Vec<Option<i64>> {
+    let as_text = matches_as_text(x) || matches_as_text(table);
+    let mut first = std::collections::HashMap::new();
+    for (i, k) in match_keys(table, as_text).into_iter().enumerate() {
+        first.entry(k).or_insert(i as i64 + 1);
+    }
+    let never: std::collections::HashSet<MatchKey> = match incomparables {
+        Some(v) if !(kind(v) == RKind::Lgl && len(v) == 1 && lgl1(v) == Some(false)) => {
+            match_keys(v, as_text).into_iter().collect()
+        }
+        _ => Default::default(),
+    };
+    match_keys(x, as_text)
+        .into_iter()
+        .map(|k| match never.contains(&k) {
+            true => nomatch,
+            false => first.get(&k).copied().or(nomatch),
+        })
+        .collect()
+}
+
+/// `duplicated(x, incomparables, fromLast)`: whether each element already
+/// occurred — scanning from the end with `fromLast`. List elements compare with
+/// `identical`, everything else by [`MatchKey`]. A matrix is
+/// `duplicated.matrix`: one flag per row, each row keyed by its elements pasted
+/// with `"\r"`, as R's method does.
+fn duplicated_flags(x: &Value, from_last: bool, incomparables: Option<&Value>) -> Vec<bool> {
+    let rows = matrix_rows(x);
+    let n = rows.unwrap_or_else(|| len(x));
+    let order: Vec<usize> = match from_last {
+        true => (0..n).rev().collect(),
+        false => (0..n).collect(),
+    };
+    let mut dup = vec![false; n];
+    if let Some(nr) = rows {
+        let cells = as_str_labels(x);
+        let ncol = cells.len().checked_div(nr).unwrap_or(0);
+        let mut seen = std::collections::HashSet::new();
+        for r in order {
+            let row: Vec<String> = (0..ncol)
+                .map(|c| cells[r + c * nr].clone().unwrap_or_else(|| "NA".into()))
+                .collect();
+            dup[r] = !seen.insert(row.join("\r"));
+        }
+        return dup;
+    }
+    if kind(x) == RKind::List && !is_factor(x) {
+        let items = elements(x);
+        let mut kept: Vec<usize> = Vec::new();
+        for i in order {
+            match kept.iter().any(|&j| identical(&items[i], &items[j])) {
+                true => dup[i] = true,
+                false => kept.push(i),
+            }
+        }
+        return dup;
+    }
+    let as_text = matches_as_text(x);
+    let keys = match_keys(x, as_text);
+    let never: std::collections::HashSet<MatchKey> = match incomparables {
+        Some(v) if !(kind(v) == RKind::Lgl && len(v) == 1 && lgl1(v) == Some(false)) => {
+            match_keys(v, as_text).into_iter().collect()
+        }
+        _ => Default::default(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    for i in order {
+        dup[i] = !never.contains(&keys[i]) && !seen.insert(keys[i].clone());
+    }
+    dup
 }

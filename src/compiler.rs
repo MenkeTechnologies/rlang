@@ -767,6 +767,36 @@ impl Compiler {
                             return self.expr(b, &call_thunk(body));
                         }
                     }
+                    // `local(expr, envir)` is R's
+                    // `eval.parent(substitute(eval(quote(expr), envir)))`: the
+                    // expression, unevaluated, run in the given environment.
+                    if name == "local" && args.len() == 2 {
+                        let named =
+                            |n: &str| args.iter().position(|a| a.name.as_deref() == Some(n));
+                        let expr_at =
+                            named("expr").unwrap_or(usize::from(named("envir") == Some(0)));
+                        if let (Some(inner), Some(scope)) =
+                            (args[expr_at].value.clone(), args[1 - expr_at].value.clone())
+                        {
+                            let call = vec![
+                                Arg {
+                                    name: None,
+                                    value: Some(quote_call(&inner, false)),
+                                },
+                                Arg {
+                                    name: None,
+                                    value: Some(scope),
+                                },
+                            ];
+                            return self.expr(
+                                b,
+                                &Expr::Call {
+                                    fun: Box::new(Expr::Ident("eval".into())),
+                                    args: call,
+                                },
+                            );
+                        }
+                    }
                     // `with(data, expr)` and `evalq(expr, envir)` are `eval`
                     // of the *unevaluated* expression, which R reaches through
                     // `substitute`. Lowering to `eval(quote(expr), …)` keeps

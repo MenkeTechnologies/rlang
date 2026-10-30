@@ -485,28 +485,28 @@ const ORDERING: &[Entry] = &[
     ),
     (
         "unique",
-        "unique(x)",
-        "The first occurrence of each distinct value, keeping the original order. Values are compared by their character form, so 1 and \"1\" are the same key.",
+        "unique(x, incomparables = FALSE, fromLast = FALSE)",
+        "The first occurrence of each distinct value (the last with fromLast), keeping the original order. Numbers compare by value, as R's hash tables do (0.1 + 0.2 and 0.3 are distinct), strings by text, list elements with identical; a matrix keeps its distinct rows.",
     ),
     (
         "setdiff",
         "setdiff(x, y)",
-        "The de-duplicated elements of x that do not occur in y.",
+        "The de-duplicated elements of x that do not occur in y, compared as match() compares them.",
     ),
     (
         "union",
         "union(x, y)",
-        "The de-duplicated elements of x followed by the elements of y not already present.",
+        "The de-duplicated elements of x followed by the elements of y not already present, compared as match() compares them.",
     ),
     (
         "intersect",
         "intersect(x, y)",
-        "The de-duplicated elements of x that also occur in y.",
+        "The de-duplicated elements of x that also occur in y, compared as match() compares them.",
     ),
     (
         "match",
-        "match(x, table)",
-        "The first 1-based position of each element of x within `table`, NA where absent. Comparison is by character form, which makes it type-agnostic.",
+        "match(x, table, nomatch = NA_integer_, incomparables = NULL)",
+        "The first 1-based position of each element of x within `table`, nomatch where absent. Both sides are coerced to their common type first, as match5 does: character when either is text, a factor or a list, else numbers compared by value, with NA matching only NA and NaN only NaN.",
     ),
     (
         "is.element",
@@ -515,8 +515,8 @@ const ORDERING: &[Entry] = &[
     ),
     (
         "duplicated",
-        "duplicated(x)",
-        "TRUE at each position whose value has already appeared earlier in x.",
+        "duplicated(x, incomparables = FALSE, fromLast = FALSE)",
+        "TRUE at each position whose value has already appeared earlier in x (later, with fromLast), under unique()'s equality; incomparables are never duplicates, and a matrix is compared by rows.",
     ),
     (
         "rank",
@@ -884,6 +884,8 @@ const MATH: &[Entry] = &[
 const PREDICATES: &[Entry] = &[
     ("is.atomic", "is.atomic(x)", "TRUE for a logical, integer, double or character vector. NULL is not atomic, as in R 4.4 and later, and neither is a list."),
     ("is.null", "is.null(x)", "TRUE when x is NULL. A zero-length vector is not NULL and answers FALSE."),
+    ("is.matrix", "is.matrix(x)", "TRUE when x has a dim attribute of length 2."),
+    ("is.array", "is.array(x)", "TRUE when x has a dim attribute, of any length (a matrix is an array)."),
     (
         "is.na",
         "is.na(x)",

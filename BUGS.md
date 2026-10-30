@@ -189,7 +189,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   between two runs of R itself, so it is not a parity target for anyone.
 - **`local()` works; part of the environment surface does not.**
   `local(expr)` compiles to `(function() expr)()`, which is R's own definition,
-  so it gets a fresh environment enclosing the caller's. `sys.function()`,
+  so it gets a fresh environment enclosing the caller's; `local(expr, envir)`
+  compiles to `eval(quote(expr), envir)`, as R's `eval.parent(substitute(…))`
+  amounts to. `sys.function()`,
   `parent.frame()` and `eval(expr, envir)` all work.
 - **Formulas (`~`) parse and become real formula objects** — `lhs ~ rhs` is
   deparsed to R source and built in the CRAN bridge, so `lm(y ~ x, data = df)`,
