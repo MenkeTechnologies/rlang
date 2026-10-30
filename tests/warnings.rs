@@ -408,3 +408,12 @@ fn assigning_into_a_factor_matches_levels_and_warns_on_unknown_ones() {
         "[1] b b\nLevels: a b\n"
     );
 }
+
+#[test]
+fn cumsum_overflow_warns_under_the_enclosing_context() {
+    // cum.c raises it with plain warning(), so it names the innermost closure call, or none at top level.
+    assert_eq!(
+        merged("x <- cumsum(c(.Machine$integer.max, 1L)); f <- function() cumsum(c(.Machine$integer.max, 1L)); y <- f(); print(cumsum(c(.Machine$integer.max, 1L)))"),
+        "Warning message:\ninteger overflow in 'cumsum'; use 'cumsum(as.numeric(.))' \nWarning message:\nIn f() : integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'\n[1] 2147483647         NA\nWarning message:\nIn print(cumsum(c(.Machine$integer.max, 1L))) :\n  integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'\n"
+    );
+}
