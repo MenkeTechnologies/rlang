@@ -479,7 +479,21 @@ fn recursion_too_deep_for_the_native_stack_is_an_r_error() {
 #[test]
 fn a_nest_too_deep_to_parse_is_refused_not_a_crash() {
     let deep = format!("x <- {}1{}", "(".repeat(100_000), ")".repeat(100_000));
-    let out = merged(&deep);
+    // Run from a script file: Linux caps one argv string at 128 KiB
+    // (MAX_ARG_STRLEN), so `-e` cannot carry this 200 KB program there.
+    let script = std::env::temp_dir().join(format!("rlang-deep-nest-{}.R", std::process::id()));
+    std::fs::write(&script, deep).expect("write script");
+    let out = Command::new(env!("CARGO_BIN_EXE_Rscript"))
+        .arg(&script)
+        .env("RLANG_NO_CRAN", "1")
+        .output()
+        .expect("run Rscript binary");
+    std::fs::remove_file(&script).ok();
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(out.contains("C stack usage  "), "{out}");
     assert!(out.ends_with("Execution halted\n"), "{out}");
 }
