@@ -2323,8 +2323,9 @@ pub fn in_op_site<T>(site: OpSite, f: impl FnOnce() -> T) -> T {
 }
 
 /// The operator call R's `warningcall` names for a warning the current operator
-/// raises — `1:3 + 1:2` for its recycling warning — as one line, the way
-/// [`ctx_text`] shows a call; `None` outside an operator, or where the chunk
+/// raises — `1:3 + 1:2` for its recycling warning — as one line: the first
+/// line of [`ctx_source`], which is how a diagnostic shows a call; `None`
+/// outside an operator, or where the chunk
 /// recorded no site for it.
 pub fn op_site_call() -> Option<String> {
     op_site_value().map(|v| ctx_text(&v))
