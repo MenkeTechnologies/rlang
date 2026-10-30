@@ -772,6 +772,17 @@ against GNU R 4.6.0 (2026-04-24), `/usr/local/bin/Rscript`.
   /usr/bin/time -l Rscript deep.R    # rlang: 47.35 real, 5708693504 max RSS
   ```
 
+- **A long operator chain compiles in quadratic time and memory.** Every
+  operator and subscript site stores its own full deparse for the call its
+  warnings and errors name, so `1 + 1 + … + 1` deparses each prefix of the
+  chain: 16,000 terms take ~10 minutes and 715 MB on the debug build. The same
+  cost is behind the nested-call entry above. A program too deep for the
+  native stack is refused with R's `C stack usage … is too close to the limit`
+  (the parser, the compiler and the evaluator each check, R's `R_CheckStack`)
+  rather than aborting; the open part is the time it takes to get there.
+  Fixing it needs the call text built lazily, from a representation shared
+  between nested sites, instead of one string per site.
+
 `options()$digits` being `NULL` (with `getOption("digits")` answering 7) is the
 case already recorded under *Printing and formatting*: a bare `options()`
 returns only what has been set.

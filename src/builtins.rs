@@ -5585,7 +5585,18 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             return res;
         }
     }
-    let a = Args::new(args);
+    primitive_body(name, Args::new(args))
+}
+
+/// The primitive library itself, kept out of [`call_primitive`] so that its
+/// frame — every arm's locals, hundreds of kilobytes in an unoptimised build —
+/// is only on the native stack while a primitive is running. The arguments
+/// were forced above in the small frame; when they were promises (`unlist(
+/// lapply(…))`), the R code they ran recursed from there rather than from
+/// inside this one, and a callback recursion pays for one such frame per level
+/// rather than two.
+#[inline(never)]
+fn primitive_body(name: &str, a: Args) -> Result<Value, String> {
     match name {
         // ── construction and coercion ───────────────────────────────────
         "c" => Ok(concat(&a)),

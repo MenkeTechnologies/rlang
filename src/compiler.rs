@@ -666,6 +666,12 @@ impl Compiler {
     }
 
     fn expr(&mut self, b: &mut ChunkBuilder, e: &Expr) -> Result<(), String> {
+        // Compiling recurses once per level of nesting (a long `1 + 1 + …`
+        // chain once per operator), so a nest too deep for the native stack
+        // is refused here rather than overflowing it.
+        if let Some(msg) = crate::host::stack_exhausted() {
+            return Err(msg);
+        }
         // Statement position is consumed here: it applies to this expression
         // only, and is handed on explicitly by the few constructs whose value is
         // the value of a sub-expression (`{ }`, `if`).
@@ -751,420 +757,7 @@ impl Compiler {
                 self.expr(b, inner)?;
                 b.emit(Op::CallBuiltin(ops::SET_VISIBLE, 1), 0);
             }
-            Expr::Call { fun, args } => {
-                // `switch` is a lazy special form (only the selected branch may
-                // run), so it compiles to a jump table rather than an eager call.
-                if let Expr::Ident(name) = fun.as_ref() {
-                    if name == "switch" && !args.is_empty() {
-                        return self.switch_expr(b, args);
-                    }
-                    // `local(expr)` evaluates `expr` in a fresh environment
-                    // whose parent is the caller's — which is exactly what
-                    // calling a zero-argument closure does, and is how R's own
-                    // `local` is defined.
-                    if name == "local" && args.len() == 1 {
-                        if let Some(body) = args[0].value.clone() {
-                            return self.expr(b, &call_thunk(body));
-                        }
-                    }
-                    // `local(expr, envir)` is R's
-                    // `eval.parent(substitute(eval(quote(expr), envir)))`: the
-                    // expression, unevaluated, run in the given environment.
-                    if name == "local" && args.len() == 2 {
-                        let named =
-                            |n: &str| args.iter().position(|a| a.name.as_deref() == Some(n));
-                        let expr_at =
-                            named("expr").unwrap_or(usize::from(named("envir") == Some(0)));
-                        if let (Some(inner), Some(scope)) =
-                            (args[expr_at].value.clone(), args[1 - expr_at].value.clone())
-                        {
-                            let call = vec![
-                                Arg {
-                                    name: None,
-                                    value: Some(quote_call(&inner, false)),
-                                },
-                                Arg {
-                                    name: None,
-                                    value: Some(scope),
-                                },
-                            ];
-                            return self.expr(
-                                b,
-                                &Expr::Call {
-                                    fun: Box::new(Expr::Ident("eval".into())),
-                                    args: call,
-                                },
-                            );
-                        }
-                    }
-                    // `with(data, expr)` and `evalq(expr, envir)` are `eval`
-                    // of the *unevaluated* expression, which R reaches through
-                    // `substitute`. Lowering to `eval(quote(expr), …)` keeps
-                    // the expression from running before the scope exists.
-                    if matches!(name.as_str(), "with" | "evalq") && args.len() >= 2 {
-                        let (expr_at, scope_at) = if name == "with" { (1, 0) } else { (0, 1) };
-                        if let Some(inner) = args[expr_at].value.clone() {
-                            let mut call = vec![
-                                Arg {
-                                    name: None,
-                                    value: Some(quote_call(&inner, false)),
-                                },
-                                Arg {
-                                    name: None,
-                                    value: args[scope_at].value.clone(),
-                                },
-                            ];
-                            call.extend(args[2..].iter().cloned());
-                            return self.expr(
-                                b,
-                                &Expr::Call {
-                                    fun: Box::new(Expr::Ident("eval".into())),
-                                    args: call,
-                                },
-                            );
-                        }
-                    }
-                    // `delayedAssign(x, value)` binds `x` to an unevaluated
-                    // promise for `value`, forced at first use. It lowers to
-                    // `assign(x, <promise of value>)`, which is what a closure
-                    // argument already is. `assign.env` becomes `envir`.
-                    if name == "delayedAssign" && args.len() >= 2 {
-                        let tag = |a: &Arg, n: &str| a.name.as_deref() == Some(n);
-                        let mut rest: Vec<Arg> = args.to_vec();
-                        let pick = |rest: &mut Vec<Arg>, n: &str, pos: usize| -> Option<Arg> {
-                            if let Some(i) = rest.iter().position(|a| tag(a, n)) {
-                                return Some(rest.remove(i));
-                            }
-                            let unnamed: Vec<usize> = rest
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, a)| a.name.is_none())
-                                .map(|(i, _)| i)
-                                .collect();
-                            unnamed.get(pos).map(|&i| rest.remove(i))
-                        };
-                        let x = pick(&mut rest, "x", 0);
-                        let value = pick(&mut rest, "value", 0);
-                        let _eval_env = pick(&mut rest, "eval.env", 0);
-                        let assign_env = pick(&mut rest, "assign.env", 0);
-                        if let (Some(x), Some(value)) = (x, value) {
-                            if let Some(v) = value.value {
-                                let mut call = vec![
-                                    Arg {
-                                        name: None,
-                                        value: x.value,
-                                    },
-                                    Arg {
-                                        name: None,
-                                        value: Some(Expr::Call {
-                                            fun: Box::new(Expr::Ident(".rlang_promise".into())),
-                                            args: vec![Arg {
-                                                name: None,
-                                                value: Some(thunk(v)),
-                                            }],
-                                        }),
-                                    },
-                                ];
-                                if let Some(env) = assign_env {
-                                    call.push(Arg {
-                                        name: Some("envir".into()),
-                                        value: env.value,
-                                    });
-                                }
-                                self.expr(
-                                    b,
-                                    &Expr::Call {
-                                        fun: Box::new(Expr::Ident("assign".into())),
-                                        args: call,
-                                    },
-                                )?;
-                                b.emit(Op::Pop, 0);
-                                b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
-                                return Ok(());
-                            }
-                        }
-                    }
-                    // `quote(x)` yields the expression, not its value, so the
-                    // argument must not be compiled at all. Its deparse is
-                    // carried across as a string the way a formula's is, and
-                    // `.rlang_quote` parses it back into a language object.
-                    if matches!(name.as_str(), "quote" | "bquote") && args.len() == 1 {
-                        if let Some(inner) = args[0].value.clone() {
-                            return self.expr(b, &quote_call(&inner, name == "bquote"));
-                        }
-                    }
-                    // `missing(x)` asks about the *name*, so its argument must
-                    // not be evaluated — an omitted formal with no default is
-                    // unbound, and compiling `x` would raise "object not found"
-                    // rather than answer. R accepts the quoted spelling too, so
-                    // lowering the symbol to it keeps one implementation.
-                    if name == "missing" && args.len() == 1 {
-                        if let Some(Expr::Ident(sym)) = args[0].value.clone() {
-                            let mut call = args.to_vec();
-                            call[0] = Arg {
-                                name: None,
-                                value: Some(Expr::Str(sym)),
-                            };
-                            return self.expr(
-                                b,
-                                &Expr::Call {
-                                    fun: Box::new(Expr::Ident("missing".into())),
-                                    args: call,
-                                },
-                            );
-                        }
-                    }
-                    // `substitute(x)` reads the *expression* a caller passed,
-                    // so like `quote` its argument is carried across as source
-                    // rather than compiled. A second argument is the lookup
-                    // table and is evaluated normally.
-                    if name == "substitute" && !args.is_empty() {
-                        if let Some(inner) = args[0].value.clone() {
-                            let mut call = args.to_vec();
-                            call[0] = Arg {
-                                name: None,
-                                value: Some(Expr::Str(deparse_lines(&inner))),
-                            };
-                            return self.expr(
-                                b,
-                                &Expr::Call {
-                                    fun: Box::new(Expr::Ident(".rlang_substitute".into())),
-                                    args: call,
-                                },
-                            );
-                        }
-                    }
-                }
-                // `tryCatch` / `try` / `on.exit` take their body *unevaluated*:
-                // rlang evaluates arguments eagerly, so the body is wrapped in a
-                // zero-argument closure here and the builtin decides when — and
-                // whether — to call it. A closure body runs on its own nested
-                // VM, so an error inside it unwinds only that far, which is what
-                // makes it catchable. The rewritten list shadows `args` rather
-                // than being re-compiled as a fresh call, which would re-enter
-                // this rewrite and thunk the thunk forever.
-                let thunked = match fun.as_ref() {
-                    Expr::Ident(name) => thunk_lazy_args(name, args),
-                    _ => None,
-                };
-                let args: &[Arg] = thunked.as_deref().unwrap_or(args);
-                // Arguments taken as names, not values (NSE): the package of
-                // `library(pkg)` / `require(pkg)`, and every bare symbol of
-                // `rm(x, y)`. Each is compiled as its string name, here, before
-                // the promise rewrite below would wrap the symbol in a thunk.
-                let nse_names = match fun.as_ref() {
-                    Expr::Ident(n) => match n.as_str() {
-                        "library" | "require" | "requireNamespace" | "loadNamespace" => Some(1),
-                        "rm" | "remove" => Some(usize::MAX),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let named_args: Option<Vec<Arg>> = nse_names.map(|first_n| {
-                    args.iter()
-                        .enumerate()
-                        .map(|(i, a)| match &a.value {
-                            Some(Expr::Ident(sym))
-                                if i < first_n && (first_n == 1 || a.name.is_none()) =>
-                            {
-                                Arg {
-                                    name: a.name.clone(),
-                                    value: Some(Expr::Str(sym.clone())),
-                                }
-                            }
-                            _ => a.clone(),
-                        })
-                        .collect()
-                });
-                let args: &[Arg] = named_args.as_deref().unwrap_or(args);
-                // `table`'s dimension names are its arguments as written, so they
-                // are read here, before the promise rewrite below wraps them.
-                let table_dnn: Option<Vec<String>> = match fun.as_ref() {
-                    Expr::Ident(n)
-                        if n == "table"
-                            && !args.iter().any(|a| matches!(a.value, Some(Expr::Dots))) =>
-                    {
-                        Some(
-                            args.iter()
-                                .filter(|a| a.name.is_none())
-                                .map(|a| match &a.value {
-                                    Some(Expr::Ident(sym)) => sym.clone(),
-                                    _ => String::new(),
-                                })
-                                .collect(),
-                        )
-                    }
-                    _ => None,
-                };
-                // `rbind`/`cbind` label the binding seam with the deparsed
-                // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
-                // receives values, not expressions, so the deparsed text is
-                // read here — before the promise rewrite below wraps every
-                // symbol in `.rlang_promise(function() x)` — and rides along
-                // as two vectors, one element per argument: `.deparse.sym`
-                // carries a bare symbol's name (R's default `deparse.level =
-                // 1`) and `.deparse.txt` the full deparse (`deparse.level =
-                // 2`). Skipped when `...` is present — its runtime expansion
-                // would slide the arguments out of alignment with the vectors.
-                let bind_labels: Option<Vec<BindLabel>> = match fun.as_ref() {
-                    Expr::Ident(n)
-                        if (n == "rbind" || n == "cbind")
-                            && !args.is_empty()
-                            && !args.iter().any(|a| {
-                                matches!(a.value, Some(Expr::Dots)) || a.value.is_none()
-                            }) =>
-                    {
-                        Some(
-                            args.iter()
-                                .map(|a| {
-                                    let e = a.value.as_ref().expect("checked above");
-                                    let sym = match e {
-                                        Expr::Ident(s) => Some(s.clone()),
-                                        _ => None,
-                                    };
-                                    (sym, deparse_expr(e))
-                                })
-                                .collect(),
-                        )
-                    }
-                    _ => None,
-                };
-                // R binds a CLOSURE's arguments as promises: the expression is
-                // evaluated on first read, in the caller's environment, and not
-                // at all if the formal is never read. `f <- function(x) 42;
-                // f(stop("boom"))` is 42 in R, and was an error here.
-                //
-                // The same predicate as the context above decides it, because
-                // it asks the same question — is this call a closure's? A name
-                // that turns out to be a primitive after all gets its arguments
-                // forced at `call_primitive`'s door, so the promise never
-                // reaches a builtin's hands.
-                let promised = match fun.as_ref() {
-                    // Slot mode is only ever on for a unit with no `function`
-                    // in it (see `slot_locals`), so there is no closure for a
-                    // promise to be bound in and nothing can observe the
-                    // difference — while a thunk compiled here WOULD read a
-                    // slot that only the enclosing frame has.
-                    _ if !self.locals.is_empty() => None,
-                    Expr::Ident(name) if !makes_context(name) => None,
-                    // The rewrite's own call, and the rest of the compiler's
-                    // internal shims, take what they are handed: promising a
-                    // `.rlang_promise` argument would re-enter this rewrite on
-                    // the thunk it just built, forever.
-                    Expr::Ident(name) if name.starts_with(".rlang_") => None,
-                    _ => promise_args(args),
-                };
-                let args: &[Arg] = promised.as_deref().unwrap_or(args);
-                // R's contexts carry the call that created them, and every
-                // condition raised inside one reports it (`In f(1) : …`), while
-                // `sys.call()` hands it back as data. The deparse is fixed at
-                // compile time and rides under the callee, so it nests with the
-                // call itself and needs no save/restore: `CALL` takes it as its
-                // third operand and pushes it on the host's context stack for
-                // as long as the call runs. The *whole* deparse is carried, not
-                // just the line a diagnostic shows, because a language object
-                // built from it has to parse back to the same call.
-                self.kstr(b, &deparse_lines(e));
-                // R makes a closure's context *before* forcing its argument
-                // promises, and none at all for a primitive, so a condition
-                // raised while evaluating an argument reports the enclosing
-                // call only in the first case. Opening the context here, ahead
-                // of the arguments, is that difference. A callee that is not a
-                // plain name cannot be a primitive.
-                let opens = match fun.as_ref() {
-                    Expr::Ident(name) => makes_context(name),
-                    _ => true,
-                };
-                if opens {
-                    b.emit(Op::CallBuiltin(ops::OPEN_CALL, 1), 0);
-                }
-                // A named callee resolves in function position, skipping
-                // non-function bindings (`c <- 1; c(1, 2)` still concatenates).
-                match fun.as_ref() {
-                    Expr::Ident(name) => {
-                        self.kstr(b, name);
-                        b.emit(Op::CallBuiltin(ops::GETFUN, 1), 0);
-                    }
-                    other => self.expr(b, other)?,
-                }
-                let call_op = match opens {
-                    true => ops::CALL_OPENED,
-                    false => ops::CALL,
-                };
-                // `table(z)` labels its dimension with the deparsed argument
-                // (R's `deparse.level = 1`: a bare symbol names it, anything
-                // else leaves it ""). The names were read before the promise
-                // rewrite wrapped the symbols, and ride along as `.dnn`, one
-                // per unnamed argument; a lone non-symbol argument passes none.
-                if let Some(names) = table_dnn {
-                    let mut rewritten = args.to_vec();
-                    let dnn = match names.len() {
-                        1 if names[0].is_empty() => None,
-                        1 => Some(Expr::Str(names[0].clone())),
-                        _ => Some(Expr::Call {
-                            fun: Box::new(Expr::Ident("c".into())),
-                            args: names
-                                .into_iter()
-                                .map(|n| Arg {
-                                    name: None,
-                                    value: Some(Expr::Str(n)),
-                                })
-                                .collect(),
-                        }),
-                    };
-                    if let Some(dnn) = dnn {
-                        rewritten.push(Arg {
-                            name: Some(".dnn".into()),
-                            value: Some(dnn),
-                        });
-                    }
-                    self.args(b, &rewritten)?;
-                    b.emit(Op::CallBuiltin(call_op, 3), 0);
-                    return Ok(());
-                }
-                // The seam labels `rbind`/`cbind` read off the argument
-                // expressions (taken above, before the promise rewrite) ride
-                // along as `.deparse.sym` and `.deparse.txt`.
-                if let Some(labels) = bind_labels {
-                    let label = |f: &dyn Fn(&BindLabel) -> Option<String>| Arg {
-                        name: None,
-                        value: Some(Expr::Call {
-                            fun: Box::new(Expr::Ident("c".into())),
-                            args: labels
-                                .iter()
-                                .map(|l| Arg {
-                                    name: None,
-                                    value: Some(match f(l) {
-                                        Some(s) => Expr::Str(s),
-                                        None => Expr::Na(NaKind::Character),
-                                    }),
-                                })
-                                .collect(),
-                        }),
-                    };
-                    let mut rewritten = args.to_vec();
-                    rewritten.push(Arg {
-                        name: Some(".deparse.sym".into()),
-                        ..label(&|(sym, _)| sym.clone())
-                    });
-                    rewritten.push(Arg {
-                        name: Some(".deparse.txt".into()),
-                        ..label(&|(_, txt)| Some(txt.clone()))
-                    });
-                    self.args(b, &rewritten)?;
-                    b.emit(Op::CallBuiltin(call_op, 3), 0);
-                    return Ok(());
-                }
-                self.args(b, args)?;
-                b.emit(Op::CallBuiltin(call_op, 3), 0);
-                // The body of a lazy call is a promise: a `break`/`next` in it
-                // leaves through this call to the loop that encloses it.
-                let defers =
-                    thunked.is_some() && !matches!(fun.as_ref(), Expr::Ident(n) if n == "on.exit");
-                if defers && (!self.loops.is_empty() || self.lazy_loop) {
-                    self.dispatch_loop_signal(b);
-                }
-            }
+            Expr::Call { fun, args } => self.call_expr(b, e, fun, args)?,
             Expr::Formula { lhs, rhs } => {
                 // A formula is unevaluated language: deparse it back to R source
                 // and build the formula object in the embedded R.
@@ -1330,6 +923,427 @@ impl Compiler {
                 value,
                 super_assign,
             } => self.assign(b, target, value, *super_assign)?,
+        }
+        Ok(())
+    }
+
+    /// A call: the special forms the compiler lowers itself, then an ordinary
+    /// call. Kept out of [`Compiler::expr`] so that `expr`'s frame, which every
+    /// level of a nested expression holds on the native stack (a long `1 + 1 +
+    /// …` chain recurses once per operator), does not carry this arm's locals.
+    #[inline(never)]
+    fn call_expr(
+        &mut self,
+        b: &mut ChunkBuilder,
+        e: &Expr,
+        fun: &Expr,
+        args: &[Arg],
+    ) -> Result<(), String> {
+        // `switch` is a lazy special form (only the selected branch may
+        // run), so it compiles to a jump table rather than an eager call.
+        if let Expr::Ident(name) = fun {
+            if name == "switch" && !args.is_empty() {
+                return self.switch_expr(b, args);
+            }
+            // `local(expr)` evaluates `expr` in a fresh environment
+            // whose parent is the caller's — which is exactly what
+            // calling a zero-argument closure does, and is how R's own
+            // `local` is defined.
+            if name == "local" && args.len() == 1 {
+                if let Some(body) = args[0].value.clone() {
+                    return self.expr(b, &call_thunk(body));
+                }
+            }
+            // `local(expr, envir)` is R's
+            // `eval.parent(substitute(eval(quote(expr), envir)))`: the
+            // expression, unevaluated, run in the given environment.
+            if name == "local" && args.len() == 2 {
+                let named = |n: &str| args.iter().position(|a| a.name.as_deref() == Some(n));
+                let expr_at = named("expr").unwrap_or(usize::from(named("envir") == Some(0)));
+                if let (Some(inner), Some(scope)) =
+                    (args[expr_at].value.clone(), args[1 - expr_at].value.clone())
+                {
+                    let call = vec![
+                        Arg {
+                            name: None,
+                            value: Some(quote_call(&inner, false)),
+                        },
+                        Arg {
+                            name: None,
+                            value: Some(scope),
+                        },
+                    ];
+                    return self.expr(
+                        b,
+                        &Expr::Call {
+                            fun: Box::new(Expr::Ident("eval".into())),
+                            args: call,
+                        },
+                    );
+                }
+            }
+            // `with(data, expr)` and `evalq(expr, envir)` are `eval`
+            // of the *unevaluated* expression, which R reaches through
+            // `substitute`. Lowering to `eval(quote(expr), …)` keeps
+            // the expression from running before the scope exists.
+            if matches!(name.as_str(), "with" | "evalq") && args.len() >= 2 {
+                let (expr_at, scope_at) = if name == "with" { (1, 0) } else { (0, 1) };
+                if let Some(inner) = args[expr_at].value.clone() {
+                    let mut call = vec![
+                        Arg {
+                            name: None,
+                            value: Some(quote_call(&inner, false)),
+                        },
+                        Arg {
+                            name: None,
+                            value: args[scope_at].value.clone(),
+                        },
+                    ];
+                    call.extend(args[2..].iter().cloned());
+                    return self.expr(
+                        b,
+                        &Expr::Call {
+                            fun: Box::new(Expr::Ident("eval".into())),
+                            args: call,
+                        },
+                    );
+                }
+            }
+            // `delayedAssign(x, value)` binds `x` to an unevaluated
+            // promise for `value`, forced at first use. It lowers to
+            // `assign(x, <promise of value>)`, which is what a closure
+            // argument already is. `assign.env` becomes `envir`.
+            if name == "delayedAssign" && args.len() >= 2 {
+                let tag = |a: &Arg, n: &str| a.name.as_deref() == Some(n);
+                let mut rest: Vec<Arg> = args.to_vec();
+                let pick = |rest: &mut Vec<Arg>, n: &str, pos: usize| -> Option<Arg> {
+                    if let Some(i) = rest.iter().position(|a| tag(a, n)) {
+                        return Some(rest.remove(i));
+                    }
+                    let unnamed: Vec<usize> = rest
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| a.name.is_none())
+                        .map(|(i, _)| i)
+                        .collect();
+                    unnamed.get(pos).map(|&i| rest.remove(i))
+                };
+                let x = pick(&mut rest, "x", 0);
+                let value = pick(&mut rest, "value", 0);
+                let _eval_env = pick(&mut rest, "eval.env", 0);
+                let assign_env = pick(&mut rest, "assign.env", 0);
+                if let (Some(x), Some(value)) = (x, value) {
+                    if let Some(v) = value.value {
+                        let mut call = vec![
+                            Arg {
+                                name: None,
+                                value: x.value,
+                            },
+                            Arg {
+                                name: None,
+                                value: Some(Expr::Call {
+                                    fun: Box::new(Expr::Ident(".rlang_promise".into())),
+                                    args: vec![Arg {
+                                        name: None,
+                                        value: Some(thunk(v)),
+                                    }],
+                                }),
+                            },
+                        ];
+                        if let Some(env) = assign_env {
+                            call.push(Arg {
+                                name: Some("envir".into()),
+                                value: env.value,
+                            });
+                        }
+                        self.expr(
+                            b,
+                            &Expr::Call {
+                                fun: Box::new(Expr::Ident("assign".into())),
+                                args: call,
+                            },
+                        )?;
+                        b.emit(Op::Pop, 0);
+                        b.emit(Op::CallBuiltin(ops::NULL_INVISIBLE, 0), 0);
+                        return Ok(());
+                    }
+                }
+            }
+            // `quote(x)` yields the expression, not its value, so the
+            // argument must not be compiled at all. Its deparse is
+            // carried across as a string the way a formula's is, and
+            // `.rlang_quote` parses it back into a language object.
+            if matches!(name.as_str(), "quote" | "bquote") && args.len() == 1 {
+                if let Some(inner) = args[0].value.clone() {
+                    return self.expr(b, &quote_call(&inner, name == "bquote"));
+                }
+            }
+            // `missing(x)` asks about the *name*, so its argument must
+            // not be evaluated — an omitted formal with no default is
+            // unbound, and compiling `x` would raise "object not found"
+            // rather than answer. R accepts the quoted spelling too, so
+            // lowering the symbol to it keeps one implementation.
+            if name == "missing" && args.len() == 1 {
+                if let Some(Expr::Ident(sym)) = args[0].value.clone() {
+                    let mut call = args.to_vec();
+                    call[0] = Arg {
+                        name: None,
+                        value: Some(Expr::Str(sym)),
+                    };
+                    return self.expr(
+                        b,
+                        &Expr::Call {
+                            fun: Box::new(Expr::Ident("missing".into())),
+                            args: call,
+                        },
+                    );
+                }
+            }
+            // `substitute(x)` reads the *expression* a caller passed,
+            // so like `quote` its argument is carried across as source
+            // rather than compiled. A second argument is the lookup
+            // table and is evaluated normally.
+            if name == "substitute" && !args.is_empty() {
+                if let Some(inner) = args[0].value.clone() {
+                    let mut call = args.to_vec();
+                    call[0] = Arg {
+                        name: None,
+                        value: Some(Expr::Str(deparse_lines(&inner))),
+                    };
+                    return self.expr(
+                        b,
+                        &Expr::Call {
+                            fun: Box::new(Expr::Ident(".rlang_substitute".into())),
+                            args: call,
+                        },
+                    );
+                }
+            }
+        }
+        // `tryCatch` / `try` / `on.exit` take their body *unevaluated*:
+        // rlang evaluates arguments eagerly, so the body is wrapped in a
+        // zero-argument closure here and the builtin decides when — and
+        // whether — to call it. A closure body runs on its own nested
+        // VM, so an error inside it unwinds only that far, which is what
+        // makes it catchable. The rewritten list shadows `args` rather
+        // than being re-compiled as a fresh call, which would re-enter
+        // this rewrite and thunk the thunk forever.
+        let thunked = match fun {
+            Expr::Ident(name) => thunk_lazy_args(name, args),
+            _ => None,
+        };
+        let args: &[Arg] = thunked.as_deref().unwrap_or(args);
+        // Arguments taken as names, not values (NSE): the package of
+        // `library(pkg)` / `require(pkg)`, and every bare symbol of
+        // `rm(x, y)`. Each is compiled as its string name, here, before
+        // the promise rewrite below would wrap the symbol in a thunk.
+        let nse_names = match fun {
+            Expr::Ident(n) => match n.as_str() {
+                "library" | "require" | "requireNamespace" | "loadNamespace" => Some(1),
+                "rm" | "remove" => Some(usize::MAX),
+                _ => None,
+            },
+            _ => None,
+        };
+        let named_args: Option<Vec<Arg>> = nse_names.map(|first_n| {
+            args.iter()
+                .enumerate()
+                .map(|(i, a)| match &a.value {
+                    Some(Expr::Ident(sym)) if i < first_n && (first_n == 1 || a.name.is_none()) => {
+                        Arg {
+                            name: a.name.clone(),
+                            value: Some(Expr::Str(sym.clone())),
+                        }
+                    }
+                    _ => a.clone(),
+                })
+                .collect()
+        });
+        let args: &[Arg] = named_args.as_deref().unwrap_or(args);
+        // `table`'s dimension names are its arguments as written, so they
+        // are read here, before the promise rewrite below wraps them.
+        let table_dnn: Option<Vec<String>> = match fun {
+            Expr::Ident(n)
+                if n == "table" && !args.iter().any(|a| matches!(a.value, Some(Expr::Dots))) =>
+            {
+                Some(
+                    args.iter()
+                        .filter(|a| a.name.is_none())
+                        .map(|a| match &a.value {
+                            Some(Expr::Ident(sym)) => sym.clone(),
+                            _ => String::new(),
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        // `rbind`/`cbind` label the binding seam with the deparsed
+        // argument (`rbind(x, x)` gives rownames "x", "x"). A builtin
+        // receives values, not expressions, so the deparsed text is
+        // read here — before the promise rewrite below wraps every
+        // symbol in `.rlang_promise(function() x)` — and rides along
+        // as two vectors, one element per argument: `.deparse.sym`
+        // carries a bare symbol's name (R's default `deparse.level =
+        // 1`) and `.deparse.txt` the full deparse (`deparse.level =
+        // 2`). Skipped when `...` is present — its runtime expansion
+        // would slide the arguments out of alignment with the vectors.
+        let bind_labels: Option<Vec<BindLabel>> = match fun {
+            Expr::Ident(n)
+                if (n == "rbind" || n == "cbind")
+                    && !args.is_empty()
+                    && !args
+                        .iter()
+                        .any(|a| matches!(a.value, Some(Expr::Dots)) || a.value.is_none()) =>
+            {
+                Some(
+                    args.iter()
+                        .map(|a| {
+                            let e = a.value.as_ref().expect("checked above");
+                            let sym = match e {
+                                Expr::Ident(s) => Some(s.clone()),
+                                _ => None,
+                            };
+                            (sym, deparse_expr(e))
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        // R binds a CLOSURE's arguments as promises: the expression is
+        // evaluated on first read, in the caller's environment, and not
+        // at all if the formal is never read. `f <- function(x) 42;
+        // f(stop("boom"))` is 42 in R, and was an error here.
+        //
+        // The same predicate as the context above decides it, because
+        // it asks the same question — is this call a closure's? A name
+        // that turns out to be a primitive after all gets its arguments
+        // forced at `call_primitive`'s door, so the promise never
+        // reaches a builtin's hands.
+        let promised = match fun {
+            // Slot mode is only ever on for a unit with no `function`
+            // in it (see `slot_locals`), so there is no closure for a
+            // promise to be bound in and nothing can observe the
+            // difference — while a thunk compiled here WOULD read a
+            // slot that only the enclosing frame has.
+            _ if !self.locals.is_empty() => None,
+            Expr::Ident(name) if !makes_context(name) => None,
+            // The rewrite's own call, and the rest of the compiler's
+            // internal shims, take what they are handed: promising a
+            // `.rlang_promise` argument would re-enter this rewrite on
+            // the thunk it just built, forever.
+            Expr::Ident(name) if name.starts_with(".rlang_") => None,
+            _ => promise_args(args),
+        };
+        let args: &[Arg] = promised.as_deref().unwrap_or(args);
+        // R's contexts carry the call that created them, and every
+        // condition raised inside one reports it (`In f(1) : …`), while
+        // `sys.call()` hands it back as data. The deparse is fixed at
+        // compile time and rides under the callee, so it nests with the
+        // call itself and needs no save/restore: `CALL` takes it as its
+        // third operand and pushes it on the host's context stack for
+        // as long as the call runs. The *whole* deparse is carried, not
+        // just the line a diagnostic shows, because a language object
+        // built from it has to parse back to the same call.
+        self.kstr(b, &deparse_lines(e));
+        // R makes a closure's context *before* forcing its argument
+        // promises, and none at all for a primitive, so a condition
+        // raised while evaluating an argument reports the enclosing
+        // call only in the first case. Opening the context here, ahead
+        // of the arguments, is that difference. A callee that is not a
+        // plain name cannot be a primitive.
+        let opens = match fun {
+            Expr::Ident(name) => makes_context(name),
+            _ => true,
+        };
+        if opens {
+            b.emit(Op::CallBuiltin(ops::OPEN_CALL, 1), 0);
+        }
+        // A named callee resolves in function position, skipping
+        // non-function bindings (`c <- 1; c(1, 2)` still concatenates).
+        match fun {
+            Expr::Ident(name) => {
+                self.kstr(b, name);
+                b.emit(Op::CallBuiltin(ops::GETFUN, 1), 0);
+            }
+            other => self.expr(b, other)?,
+        }
+        let call_op = match opens {
+            true => ops::CALL_OPENED,
+            false => ops::CALL,
+        };
+        // `table(z)` labels its dimension with the deparsed argument
+        // (R's `deparse.level = 1`: a bare symbol names it, anything
+        // else leaves it ""). The names were read before the promise
+        // rewrite wrapped the symbols, and ride along as `.dnn`, one
+        // per unnamed argument; a lone non-symbol argument passes none.
+        if let Some(names) = table_dnn {
+            let mut rewritten = args.to_vec();
+            let dnn = match names.len() {
+                1 if names[0].is_empty() => None,
+                1 => Some(Expr::Str(names[0].clone())),
+                _ => Some(Expr::Call {
+                    fun: Box::new(Expr::Ident("c".into())),
+                    args: names
+                        .into_iter()
+                        .map(|n| Arg {
+                            name: None,
+                            value: Some(Expr::Str(n)),
+                        })
+                        .collect(),
+                }),
+            };
+            if let Some(dnn) = dnn {
+                rewritten.push(Arg {
+                    name: Some(".dnn".into()),
+                    value: Some(dnn),
+                });
+            }
+            self.args(b, &rewritten)?;
+            b.emit(Op::CallBuiltin(call_op, 3), 0);
+            return Ok(());
+        }
+        // The seam labels `rbind`/`cbind` read off the argument
+        // expressions (taken above, before the promise rewrite) ride
+        // along as `.deparse.sym` and `.deparse.txt`.
+        if let Some(labels) = bind_labels {
+            let label = |f: &dyn Fn(&BindLabel) -> Option<String>| Arg {
+                name: None,
+                value: Some(Expr::Call {
+                    fun: Box::new(Expr::Ident("c".into())),
+                    args: labels
+                        .iter()
+                        .map(|l| Arg {
+                            name: None,
+                            value: Some(match f(l) {
+                                Some(s) => Expr::Str(s),
+                                None => Expr::Na(NaKind::Character),
+                            }),
+                        })
+                        .collect(),
+                }),
+            };
+            let mut rewritten = args.to_vec();
+            rewritten.push(Arg {
+                name: Some(".deparse.sym".into()),
+                ..label(&|(sym, _)| sym.clone())
+            });
+            rewritten.push(Arg {
+                name: Some(".deparse.txt".into()),
+                ..label(&|(_, txt)| Some(txt.clone()))
+            });
+            self.args(b, &rewritten)?;
+            b.emit(Op::CallBuiltin(call_op, 3), 0);
+            return Ok(());
+        }
+        self.args(b, args)?;
+        b.emit(Op::CallBuiltin(call_op, 3), 0);
+        // The body of a lazy call is a promise: a `break`/`next` in it
+        // leaves through this call to the loop that encloses it.
+        let defers = thunked.is_some() && !matches!(fun, Expr::Ident(n) if n == "on.exit");
+        if defers && (!self.loops.is_empty() || self.lazy_loop) {
+            self.dispatch_loop_signal(b);
         }
         Ok(())
     }

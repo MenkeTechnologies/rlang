@@ -451,3 +451,35 @@ print(tryCatch(as.integer("a"), warning = function(w) "warning"))"#
         "[1] \"(converted from warning) NAs introduced by coercion\"\n[1] \"warning\"\n"
     );
 }
+
+#[test]
+fn recursion_too_deep_for_the_native_stack_is_an_r_error() {
+    // R_CheckStack: a callback recursion that would exhaust the native stack
+    // raises R's stackOverflowError, which an exiting handler takes, instead
+    // of aborting the process.
+    let rec = "f <- function(n) if (n == 0) 0 else unlist(lapply(1, function(i) f(n - 1)))";
+    assert_eq!(
+        merged(&format!(
+            "{rec}\nprint(tryCatch(f(100000), error = function(e) class(e)))"
+        )),
+        "[1] \"CStackOverflowError\" \"stackOverflowError\"  \"error\"              \n[4] \"condition\"          \n"
+    );
+    // Uncaught, it is R's call-less error and the script halts.
+    let out = merged(&format!("{rec}\nf(100000)\nprint(1)"));
+    assert!(out.starts_with("Error: C stack usage  "), "{out}");
+    assert!(
+        out.ends_with(" is too close to the limit\nExecution halted\n"),
+        "{out}"
+    );
+    // Each level must not cost the stack two copies of the primitive
+    // library's frame: 700 levels through `unlist(lapply(…))` complete.
+    assert_eq!(merged(&format!("{rec}\nprint(f(700))")), "[1] 0\n");
+}
+
+#[test]
+fn a_nest_too_deep_to_parse_is_refused_not_a_crash() {
+    let deep = format!("x <- {}1{}", "(".repeat(100_000), ")".repeat(100_000));
+    let out = merged(&deep);
+    assert!(out.contains("C stack usage  "), "{out}");
+    assert!(out.ends_with("Execution halted\n"), "{out}");
+}

@@ -310,6 +310,12 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Expr, String> {
+        // Every level of a nested expression passes through here, so this is
+        // where a nest too deep for the native stack is refused rather than
+        // overflowing it.
+        if let Some(msg) = crate::host::stack_exhausted() {
+            return Err(format!("line {}: {msg}", self.line()));
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,

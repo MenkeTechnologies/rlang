@@ -2792,6 +2792,97 @@ pub fn call_value(
 /// call runs its body on a nested VM, so depth costs real stack).
 pub const MAX_DEPTH: usize = 5000;
 
+thread_local! {
+    /// This thread's native stack as `(highest address, size)`, read once.
+    /// `None` where the platform does not say (wasm), which turns the check off
+    /// the way R's `R_CStackLimit = -1` does.
+    static STACK_BOUNDS: std::cell::OnceCell<Option<(usize, usize)>> =
+        const { std::cell::OnceCell::new() };
+}
+
+/// The calling thread's stack: its highest address and its size.
+#[cfg(target_vendor = "apple")]
+fn thread_stack_bounds() -> Option<(usize, usize)> {
+    // SAFETY: both calls only read the running thread's own attributes.
+    unsafe {
+        let me = libc::pthread_self();
+        let top = libc::pthread_get_stackaddr_np(me) as usize;
+        Some((top, libc::pthread_get_stacksize_np(me)))
+    }
+}
+
+/// The calling thread's stack: its highest address and its size.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn thread_stack_bounds() -> Option<(usize, usize)> {
+    // SAFETY: `attr` is initialised by `pthread_getattr_np` before it is read
+    // and destroyed once; the calls only read the running thread's attributes.
+    unsafe {
+        let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+        if libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()) != 0 {
+            return None;
+        }
+        let mut low: *mut libc::c_void = std::ptr::null_mut();
+        let mut size: libc::size_t = 0;
+        let ok = libc::pthread_attr_getstack(attr.as_ptr(), &mut low, &mut size) == 0;
+        libc::pthread_attr_destroy(attr.as_mut_ptr());
+        ok.then(|| (low as usize + size, size))
+    }
+}
+
+/// The calling thread's stack: unknown on this platform.
+#[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+fn thread_stack_bounds() -> Option<(usize, usize)> {
+    None
+}
+
+/// Native stack a single step between two checks may still need: one R call
+/// level, which in an unoptimised build holds the primitive library's frame
+/// and three nested VMs. R's `R_CheckStack2(extra)` takes the same allowance. On a small stack
+/// (a test harness's 2 MB thread) it is capped at a quarter of the stack, so
+/// that ordinary shallow programs still run there.
+const STACK_STEP: usize = 2 * 1024 * 1024;
+
+/// The native stack in use, when it has come within R's 5% margin (plus
+/// `STACK_STEP`) of the thread's limit — R's `R_CheckStack` test. Every
+/// recursion that a program's shape drives (the evaluator, the parser and the
+/// compiler) asks this before going a level deeper. A frame count such as
+/// [`MAX_DEPTH`] cannot stand in for it: how much stack one level costs is a
+/// property of the build, and it grows as the frames that run a level grow.
+pub fn stack_exhausted() -> Option<String> {
+    let (top, size) = STACK_BOUNDS.with(|b| *b.get_or_init(thread_stack_bounds))?;
+    let here = 0u8;
+    let usage = top.saturating_sub(std::ptr::addr_of!(here) as usize);
+    let limit = (size as f64 * 0.95) as usize;
+    (usage + STACK_STEP.min(size / 4) > limit)
+        .then(|| format!("C stack usage  {usage} is too close to the limit"))
+}
+
+/// [`stack_exhausted`] for the evaluator: R's `stackOverflowError`, a condition
+/// `tryCatch(error =)` takes, rather than letting the next frame overflow and
+/// abort the process.
+pub fn check_stack() -> Result<(), String> {
+    let Some(msg) = stack_exhausted() else {
+        return Ok(());
+    };
+    with_host(|h| {
+        if h.error.is_none() {
+            // R signals it with no call ("to avoid using stack in deparsing")
+            // and skips calling handlers; an exiting handler still takes it.
+            h.set_error_call(None);
+            h.error_classes = [
+                "CStackOverflowError",
+                "stackOverflowError",
+                "error",
+                "condition",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        }
+    });
+    Err(msg)
+}
+
 /// Call a closure: match the arguments to the formals, push a frame whose
 /// environment encloses the closure's captured environment, and run the body.
 pub fn call_closure(
@@ -2809,6 +2900,7 @@ pub fn call_closure(
     if with_host(|h| h.frames.len()) >= MAX_DEPTH {
         return Err("evaluation nested too deeply: infinite recursion?".into());
     }
+    check_stack()?;
     // A forced promise is its caller's own expression, evaluated where it
     // was written: R makes no environment for it, so `environment()` or an
     // assignment inside one sees the writer's frame, not a child of it.
