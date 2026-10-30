@@ -310,7 +310,7 @@ const OUTPUT: &[Entry] = &[
     (
         "warning",
         "warning(...)",
-        "Signal a `simpleWarning` condition and continue. Uncaught, it is queued under the default `options(warn = 0)` and the whole batch prints when the top-level statement finishes; `warn = 1` prints it at once and a negative `warn` drops it.",
+        "Signal a `simpleWarning` condition and continue. Uncaught, it is queued under the default `options(warn = 0)` and the whole batch prints when the top-level statement finishes; `warn = 1` prints it at once, `warn = 2` or higher raises it as an error, `(converted from warning) msg`, carrying the warning's call, and a negative `warn` drops it.",
     ),
     (
         "stop",
@@ -380,7 +380,7 @@ const OUTPUT: &[Entry] = &[
     (
         "options",
         "options(...)",
-        "Set, query or restore global options. A tagged argument sets one and the call returns the previous values as a named list, invisibly, so `old <- options(digits = 3)` then `options(old)` restores. An untagged string queries without setting and returns visibly; an untagged list restores every named element. `digits` (significant digits for printing, 1..22, default 7) and `scipen` (the penalty added to a scientific rendering's width before it is compared with the fixed one, so positive favours fixed; clamped below at -9, default 0) are the two the printing code reads; any other name is stored and read back but has no effect. A digits outside 1..22 is an error, as in R. Unlike R, options() with no arguments does not enumerate a full default set.",
+        "Set, query or restore global options. A tagged argument sets one and the call returns the previous values as a named list, invisibly, so `old <- options(digits = 3)` then `options(old)` restores. An untagged string queries without setting and returns visibly; an untagged list restores every named element. `digits` (significant digits for printing, 1..22, default 7) and `scipen` (the penalty added to a scientific rendering's width before it is compared with the fixed one, so positive favours fixed; clamped below at -9, default 0) are the two the printing code reads, and `warn` decides what an uncaught warning does (see warning()); any other name is stored and read back but has no effect. A digits outside 1..22 is an error, as in R. Unlike R, options() with no arguments does not enumerate a full default set.",
     ),
     (
         "getOption",

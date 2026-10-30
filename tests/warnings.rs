@@ -431,3 +431,23 @@ print(tryCatch(h(), error = function(e) deparse(conditionCall(e))))"#
         "[1] \"h()\"\n"
     );
 }
+
+#[test]
+fn warn_two_converts_an_uncaught_warning_to_an_error() {
+    // R's vwarningcall_dflt: errorcall(call, "(converted from warning) %s").
+    // The error carries the warning's call and stops the script.
+    assert_eq!(
+        merged(r#"options(warn = 2); f <- function() warning("boom"); f(); print("after")"#),
+        "Error in f() : (converted from warning) boom\nExecution halted\n"
+    );
+    // It is a simpleError a tryCatch(error =) takes; a warning handler still
+    // sees the warning first, because conversion is the default action.
+    assert_eq!(
+        merged(
+            r#"options(warn = 2)
+print(tryCatch(as.integer("a"), error = function(e) conditionMessage(e)))
+print(tryCatch(as.integer("a"), warning = function(w) "warning"))"#
+        ),
+        "[1] \"(converted from warning) NAs introduced by coercion\"\n[1] \"warning\"\n"
+    );
+}

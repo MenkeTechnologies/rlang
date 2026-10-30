@@ -2591,7 +2591,7 @@ fn warning_line(w: &Warning, overhead: usize) -> String {
 }
 
 /// The current `options(warn = )`, which defaults to 0 as it does in R.
-fn warn_level() -> i64 {
+pub fn warn_level() -> i64 {
     match option_get("warn") {
         Some(OptionValue::Int(n)) => n,
         Some(OptionValue::Dbl(x)) if x.is_finite() => x.trunc() as i64,

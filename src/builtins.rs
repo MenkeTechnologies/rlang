@@ -1868,17 +1868,38 @@ fn value_in(x: &Value, table: &Value) -> Value {
 /// R's binary operators, vectorized with recycling and NA propagation.
 /// Emit a warning the way R's top-level handler does: the banner, the message,
 /// and — for a warning carrying no call — a trailing space before the newline.
-fn r_warning(msg: &str, call: Option<String>) {
-    crate::host::queue_warning(msg, call);
+///
+/// R's `vwarningcall_dflt` turns the warning into an error under
+/// `options(warn = 2)` or higher: `errorcall(call, "(converted from warning)
+/// %s")`, so it reaches calling handlers and `tryCatch(error =)` as a
+/// `simpleError` carrying the warning's call.
+fn r_warning(msg: &str, call: Option<String>) -> Result<(), String> {
+    if crate::host::warn_level() < 2 {
+        crate::host::queue_warning(msg, call);
+        return Ok(());
+    }
+    let text = format!("(converted from warning) {msg}");
+    let classes: Vec<String> = ["simpleError", "error", "condition"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let obj = mk_condition(&text, &["simpleError", "error", "condition"], call.clone());
+    signal_to_handlers(&obj, &classes)?;
+    with_host(|h| {
+        h.set_error_call(call);
+        h.error_classes = classes;
+        h.error_condition = None;
+    });
+    Err(text)
 }
 
 /// `warning(msg)`'s own default action. R's `do_warning` calls `findCall`,
 /// which walks past `warning()`'s own context — a builtin makes none — to the
 /// enclosing closure call, so `f <- function(x) warning("w"); f(1)` reports
 /// `In f(1) : w` and a top-level `warning("w")` reports no call at all.
-fn user_warning(msg: &str) {
+fn user_warning(msg: &str) -> Result<(), String> {
     let call = with_host(|h| h.enclosing_call());
-    crate::host::queue_warning(msg, call);
+    r_warning(msg, call)
 }
 
 /// R's `CoercionWarning`, which raises its warning with plain `warning()`
@@ -6438,9 +6459,9 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                 // Nothing took it — R's default action is to report and carry on.
                 Signalled::Fell => {
                     if warn && !wants_call(&a) {
-                        crate::host::queue_warning(&text, None);
+                        r_warning(&text, None)?;
                     } else if warn {
-                        user_warning(&text);
+                        user_warning(&text)?;
                     } else {
                         crate::host::emit_stderr(&text);
                     }
@@ -6631,7 +6652,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                         let (prev, warning) = crate::host::option_set(name, r_to_option_value(v)?)?;
                         record(name, prev);
                         if let Some(w) = warning {
-                            r_warning(&w, with_host(|h| h.current_call()));
+                            r_warning(&w, with_host(|h| h.current_call()))?;
                         }
                     }
                     // An untagged list is a restore: every named element is set.
@@ -6652,7 +6673,7 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
                                 crate::host::option_set(name, r_to_option_value(e)?)?;
                             record(name, prev);
                             if let Some(w) = warning {
-                                r_warning(&w, with_host(|h| h.current_call()));
+                                r_warning(&w, with_host(|h| h.current_call()))?;
                             }
                         }
                     }
@@ -12776,7 +12797,7 @@ fn cov_cor(a: &Args, is_cor: bool) -> Result<Value, String> {
         r_warning(
             "the standard deviation is zero",
             with_host(|h| h.current_call()),
-        );
+        )?;
     }
     let res = mk_dbl(out);
     if !xm && !ym {
@@ -17623,7 +17644,7 @@ fn signal_warning_in(msg: &str, call: Option<String>) -> Result<(), String> {
         .map(|s| s.to_string())
         .collect();
     match signal_condition_with_muffle(msg, &classes, "muffleWarning", call.clone())? {
-        Signalled::Fell => r_warning(msg, call),
+        Signalled::Fell => r_warning(msg, call)?,
         Signalled::Muffled => {}
         Signalled::Unwind => {
             raise_condition(msg.to_string(), classes, call, None);
@@ -17917,7 +17938,7 @@ fn resignal_condition(name: &str, cond: Value) -> Result<Value, String> {
             raise_condition(text, classes, call, Some(cond));
             return Ok(null());
         }
-        Signalled::Fell if warn => crate::host::queue_warning(&text, call),
+        Signalled::Fell if warn => r_warning(&text, call)?,
         Signalled::Fell => crate::host::emit_stderr(&text),
         Signalled::Muffled => {}
     }

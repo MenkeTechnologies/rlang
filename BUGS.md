@@ -127,7 +127,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   different allowances R gives the singular, numbered and `warn = 1` banners.
   *Where* the batch prints is R's as well: an uncaught warning is queued under
   the default `options(warn = 0)` and the whole batch is written once the
-  top-level statement finishes, after that statement's own stdout.
+  top-level statement finishes, after that statement's own stdout. Under
+  `warn = 2` or higher the default action is R's instead: an error,
+  `(converted from warning) msg`, carrying the warning's call.
 
   **An operator names its own call**, as R's `warningcall` / `errorcall` do:
   `1:5 + 1:2` warns `In 1:5 + 1:2 : longer object length …`,
