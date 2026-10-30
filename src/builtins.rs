@@ -23,8 +23,10 @@ pub fn install(vm: &mut VM) {
     // unboxed numbers directly; when either operand is a boxed R value (vector,
     // NA, attributed), the VM delegates here — the same vector arithmetic the
     // `BINOP` builtin runs. This is also what puts the VM in strict numeric mode.
-    vm.set_numeric_hook(std::sync::Arc::new(|op, a, b| {
-        let name = match op {
+    // The hook is told the op's index, which is how a warning the arithmetic
+    // raises finds the operator call to name (see `host::op_site_call`).
+    vm.set_sited_numeric_hook(std::sync::Arc::new(|call: fusevm::NumericCall<'_>| {
+        let name = match call.op {
             fusevm::NumOp::Add => "+",
             fusevm::NumOp::Sub => "-",
             fusevm::NumOp::Mul => "*",
@@ -39,7 +41,8 @@ pub fn install(vm: &mut VM) {
             fusevm::NumOp::Eq => "==",
             fusevm::NumOp::Ne => "!=",
         };
-        binop(name, a, b)
+        let site = crate::host::OpSite::Op(call.ip);
+        eval_op(site, || binop(name, call.a, call.b))
     }));
     // R's `integer` is a C `int`, and `INT_MIN` is reserved as `NA_integer_`, so
     // the representable range is ±`INT_MAX`. rlang's native integers are fusevm
@@ -1706,11 +1709,36 @@ fn b_missing(vm: &mut VM, _: u8) -> Value {
 
 // ── operators ───────────────────────────────────────────────────────────
 
+/// Evaluate an operator written at `site`. A warning it raises names the
+/// operator call (see [`op_warning`]), and so does an error: R's arithmetic,
+/// comparison and `:` report through `errorcall(call, …)`, so `1 + "a"` fails
+/// as `Error in 1 + "a" :` rather than naming the enclosing call.
+fn eval_op(
+    site: crate::host::OpSite,
+    f: impl FnOnce() -> Result<Value, String>,
+) -> Result<Value, String> {
+    crate::host::in_op_site(site, || {
+        f().inspect_err(|e| {
+            let call = crate::host::op_site_source();
+            with_host(|h| {
+                // An error already recorded (a `stop()` inside an `Ops`
+                // method) keeps the call it was raised with.
+                if h.error.is_none() && call.is_some() {
+                    h.set_error_call(call);
+                    h.error = Some(e.clone());
+                }
+            });
+        })
+    })
+}
+
 fn b_binop(vm: &mut VM, _: u8) -> Value {
     let op = name_of(&vm.pop());
     let rhs = vm.pop();
     let lhs = vm.pop();
-    match binop(&op, &lhs, &rhs) {
+    // The dispatch loop has already stepped past this `CallBuiltin`.
+    let site = crate::host::OpSite::Op(vm.ip - 1);
+    match eval_op(site, || binop(&op, &lhs, &rhs)) {
         Ok(v) => v,
         Err(e) => abort(vm, e),
     }
@@ -1778,8 +1806,8 @@ fn b_special(vm: &mut VM, _: u8) -> Value {
     let lhs = vm.pop();
     let out = match name.as_str() {
         // `%%` and `%/%` lex to the empty and "/" names.
-        "" => binop("%%", &lhs, &rhs),
-        "/" => binop("%/%", &lhs, &rhs),
+        "" => eval_op(crate::host::OpSite::Text(call), || binop("%%", &lhs, &rhs)),
+        "/" => eval_op(crate::host::OpSite::Text(call), || binop("%/%", &lhs, &rhs)),
         "in" => Ok(value_in(&lhs, &rhs)),
         other => {
             // A user-defined infix operator is an ordinary function named
@@ -1864,12 +1892,6 @@ fn coercion_warning(msg: &str) -> Result<(), String> {
     signal_warning_in(msg, with_host(|h| h.context_call()))
 }
 
-/// A warning raised from an arithmetic or comparison operator. R names that
-/// call — `In 1:3 + 1:2 : longer object length …` — which rlang cannot: `+ - *
-/// /` lower to native fusevm ops carrying no call text, and pushing one on
-/// every arithmetic op would cost the hot path the whole design exists to keep
-/// native. Reported with no call, which is the shape R uses when there is none,
-/// rather than with the enclosing call, which would name the wrong one.
 /// One element of R's `strtoi`: C `strtol(s, &endp, base)` (leading
 /// whitespace, an optional sign, base 0 sniffing `0x` → 16 and `0` → 8, base
 /// 16 accepting a `0x` prefix), `NA` for an empty string, unconsumed trailing
@@ -2020,6 +2042,22 @@ fn format_hexmode(x: &Value, width: Option<f64>, upper: bool) -> Value {
     out
 }
 
+/// A warning an operator raises with R's `warningcall(call, …)`, naming the
+/// operator call itself — `In 1:3 + 1:2 : longer object length …`. The call
+/// comes from the operator-site table the compiler attached to the running
+/// chunk ([`crate::host::op_site_call`]), looked up only now that a warning
+/// fires, so the native `+ - *` path carries no call text. An operator reached
+/// some other way — `` `+`(x, y) `` as a value, `Reduce(`+`, …)` — has no site
+/// and warns without a call.
+fn op_warning(msg: &str) -> Result<(), String> {
+    signal_warning_in(msg, crate::host::op_site_call())
+}
+
+/// A warning raised beside an operator or a subscript assignment whose call
+/// rlang does not track: `Ops.factor`'s, where R names the method call, and a
+/// subassignment's, where R names the assignment. Reported with no call — the
+/// shape R uses when there is none — rather than with the enclosing call, which
+/// would name the wrong one.
 fn binop_warning(msg: &str) -> Result<(), String> {
     signal_warning_in(msg, None)
 }
@@ -2352,7 +2390,7 @@ fn binop_internal(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             compare(op, &as_text(lhs), &as_text(rhs))
         }
         "&" | "|" => logic(op, lhs, rhs),
-        ":" => Ok(colon(lhs, rhs)),
+        ":" => colon(lhs, rhs),
         other => Err(format!("invalid operator '{other}'")),
     }
 }
@@ -2369,7 +2407,7 @@ fn recycle_len(a: usize, b: usize) -> Result<usize, String> {
     if hi % lo != 0 {
         // A real condition, so `tryCatch(warning = )` and `suppressWarnings`
         // reach it the way they reach `warning()`.
-        binop_warning("longer object length is not a multiple of shorter object length")?;
+        op_warning("longer object length is not a multiple of shorter object length")?;
     }
     Ok(hi)
 }
@@ -2512,7 +2550,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
                 true => Value::Int(r as i64),
                 false => {
                     if r.is_finite() {
-                        binop_warning(INT_OVERFLOW)?;
+                        op_warning(INT_OVERFLOW)?;
                     }
                     mk_int(vec![None])
                 }
@@ -2574,7 +2612,7 @@ fn arith(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
             })
             .collect();
         if overflowed {
-            binop_warning(INT_OVERFLOW)?;
+            op_warning(INT_OVERFLOW)?;
         }
         mk_int(ints)
     } else {
@@ -2681,33 +2719,47 @@ fn logic(op: &str, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     Ok(v)
 }
 
-/// `from:to` — an integer sequence when both ends are whole numbers.
-fn colon(lhs: &Value, rhs: &Value) -> Value {
+/// `from:to`, R's `do_colon` and `seq_colon` (src/main/seq.c): only the first
+/// element of each end counts, with one warning when either has more; an empty
+/// or missing end is an error; whole-number ends give an integer sequence while
+/// every value stays inside `int`, and any other start gives doubles.
+fn colon(lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    let (l1, l2) = (len(lhs), len(rhs));
+    if l1 != 1 || l2 != 1 {
+        if l1 == 0 || l2 == 0 {
+            return Err("argument of length 0".into());
+        }
+        let n = if l1 > 1 { l1 } else { l2 };
+        op_warning(&format!(
+            "numerical expression has {n} elements: only the first used"
+        ))?;
+    }
     let from = num1(lhs).unwrap_or(f64::NAN);
     let to = num1(rhs).unwrap_or(f64::NAN);
     if from.is_nan() || to.is_nan() {
-        return mk_int(vec![None]);
+        return Err("NA/NaN argument".into());
     }
+    let r = (to - from).abs();
+    if r >= 4_503_599_627_370_496.0 {
+        return Err("result would be too long a vector".into());
+    }
+    let step = if from <= to { 1.0 } else { -1.0 };
+    let in_int = |x: f64| x > i32::MIN as f64 && x <= i32::MAX as f64;
+    let n = (r + 1.0 + f32::EPSILON as f64) as usize;
+    // R_compact_intrange for two whole ends; otherwise an integer start whose
+    // effective end (`from ± (n - 1)`) still fits.
     let whole = from == from.trunc() && to == to.trunc();
-    let mut out = Vec::new();
-    if from <= to {
-        let mut x = from;
-        while x <= to + 1e-10 {
-            out.push(Some(x));
-            x += 1.0;
-        }
+    let use_int = if whole {
+        in_int(from) && in_int(to)
     } else {
-        let mut x = from;
-        while x >= to - 1e-10 {
-            out.push(Some(x));
-            x -= 1.0;
-        }
-    }
-    if whole {
-        mk_int(out.into_iter().map(|e| e.map(|x| x as i64)).collect())
-    } else {
-        mk_dbl(out)
-    }
+        from == from.trunc() && in_int(from) && in_int(from + step * (n as f64 - 1.0))
+    };
+    let n = if whole { r as usize + 1 } else { n };
+    let seq = (0..n).map(|i| from + step * i as f64);
+    Ok(match use_int {
+        true => mk_int(seq.map(|x| Some(x as i64)).collect()),
+        false => mk_dbl(seq.map(Some).collect()),
+    })
 }
 
 // ── conditions and loop support ─────────────────────────────────────────
@@ -3950,6 +4002,14 @@ fn assign_index(
     if args.len() >= 2 && single_slot {
         // `m[[i, j]] <- v` addresses exactly one cell, per dimension, by
         // `get1index` — R's `do_subassign2_dflt`, with its own wording.
+        // An atomic target's value length is checked before any subscript.
+        if kind(x) != RKind::List {
+            match len(value) {
+                0 => return Err("replacement has length zero".into()),
+                1 => {}
+                _ => return Err("more elements supplied than there are to replace".into()),
+            }
+        }
         let d = match with_host(|h| h.attr(x, "dim")) {
             Some(_) => dims_of(x),
             None => return Err("[[ ]] improper number of subscripts".into()),
@@ -3970,13 +4030,6 @@ fn assign_index(
                 _ => return Err("[[ ]] subscript out of bounds".into()),
             }
             stride *= d[k];
-        }
-        if kind(x) != RKind::List {
-            match len(value) {
-                0 => return Err("replacement has length zero".into()),
-                1 => {}
-                _ => return Err("more elements supplied than there are to replace".into()),
-            }
         }
         return assign_index(
             x,
@@ -4016,6 +4069,18 @@ fn assign_index(
         let all = mk_int((1..=len(x) as i64).map(Some).collect());
         return assign_index(x, &[(None, all)], value, false, inplace);
     };
+    // An atomic target takes exactly one value through `[[<-`, and R checks
+    // that before it looks at the subscript (`do_subassign2_dflt`), so
+    // `x[[0]] <- NULL` is "replacement has length zero", not an index error.
+    // A subscript longer than one is a recursive index, which an atomic vector
+    // refuses first (below).
+    if single_slot && len(idx) <= 1 && kind(x) != RKind::List && kind(x) != RKind::Null {
+        match len(value) {
+            0 => return Err("replacement has length zero".into()),
+            1 => {}
+            _ => return Err("more elements supplied than there are to replace".into()),
+        }
+    }
     // `x[[NA]] <- v`: an integer or logical `NA` reaches `integerOneIndex` as
     // `INT_MIN`, which that function reads as a negative subscript.
     if single_slot
@@ -4024,18 +4089,6 @@ fn assign_index(
         && as_int(idx)[0].is_none()
     {
         return Err("attempt to select more than one element in integerOneIndex".into());
-    }
-    // An atomic target takes exactly one value through `[[<-`, and R checks
-    // that before it looks at the subscript.
-    // A subscript longer than one is a recursive index, which an atomic vector
-    // refuses first (below).
-    if single_slot
-        && len(idx) <= 1
-        && kind(x) != RKind::List
-        && kind(x) != RKind::Null
-        && len(value) > 1
-    {
-        return Err("more elements supplied than there are to replace".into());
     }
     // `x[[i]] <- v` resolves a numeric `i` through `OneIndex`, whose messages
     // name that function rather than `get1index`.

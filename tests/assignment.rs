@@ -66,3 +66,12 @@ fn nested_and_super_replacement_targets() {
         "[1] 77\n[1] 77  2  3\na B \n1 2 \n[1] 3\nList of 1\n $ a:List of 2\n  ..$ b: num 1\n  ..$ c: num 3\n[1] z b\nLevels: z b\n"
     );
 }
+
+#[test]
+fn double_bracket_value_length_is_checked_before_the_subscript() {
+    // do_subassign2_dflt rejects an empty or long value for an atomic target before resolving the index.
+    assert_eq!(
+        merged("x <- 1:6; for (s in list(quote(x[[0]] <- NULL), quote(x[[NA]] <- NULL), quote(x[[NA]] <- 1L), quote(x[[2]] <- integer(0)), quote(x[[10]] <- 1:2))) print(tryCatch(eval(s), error = function(e) conditionMessage(e))); m <- matrix(1:4, 2); print(tryCatch(m[[1, 5]] <- integer(0), error = function(e) conditionMessage(e)))"),
+        "[1] \"replacement has length zero\"\n[1] \"replacement has length zero\"\n[1] \"attempt to select more than one element in integerOneIndex\"\n[1] \"replacement has length zero\"\n[1] \"more elements supplied than there are to replace\"\n[1] \"replacement has length zero\"\n"
+    );
+}

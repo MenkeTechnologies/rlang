@@ -2225,8 +2225,125 @@ fn run_closure_chunk(id: usize) -> Result<Value, String> {
     r
 }
 
+// ===========================================================================
+// Operator call sites, for the warnings an operator raises.
+// ===========================================================================
+
+/// The tag that opens a chunk's operator-site table: one constant, an array of
+/// this tag followed by `(op index, deparsed operator call)` pairs. The
+/// compiler attaches it when it builds the chunk ([`op_sites_constant`]);
+/// nothing loads it, so it costs the running program nothing, and it travels
+/// with the chunk through the bytecode cache. It is read only when an operator
+/// actually warns.
+const OP_SITES_TAG: &str = "\u{1}rlang.op_sites";
+
+/// The constant holding a chunk's operator sites.
+pub fn op_sites_constant(sites: Vec<(usize, String)>) -> Value {
+    let mut table = Vec::with_capacity(1 + 2 * sites.len());
+    table.push(Value::str(OP_SITES_TAG));
+    for (ip, text) in sites {
+        table.push(Value::Int(ip as i64));
+        table.push(Value::str(text));
+    }
+    Value::Array(std::sync::Arc::new(table))
+}
+
+/// Which operator the innermost running VM is evaluating.
+#[derive(Clone)]
+pub enum OpSite {
+    /// A native `+ - *` or a `BINOP` builtin: its op index in the running chunk.
+    Op(usize),
+    /// `%%` / `%/%`, whose `SPECIAL` op carries the call text itself.
+    Text(Value),
+}
+
+/// The chunk the innermost VM is running and the operator it is in.
+struct OpContext {
+    chunk: *const Chunk,
+    site: Option<OpSite>,
+}
+
+thread_local! {
+    static OP_CONTEXT: RefCell<OpContext> = const {
+        RefCell::new(OpContext {
+            chunk: std::ptr::null(),
+            site: None,
+        })
+    };
+}
+
+/// Run `f` as the evaluation of the operator at `site` in the running chunk, so
+/// a warning raised inside can name it.
+pub fn in_op_site<T>(site: OpSite, f: impl FnOnce() -> T) -> T {
+    let prev = OP_CONTEXT.with(|c| c.borrow_mut().site.replace(site));
+    let out = f();
+    OP_CONTEXT.with(|c| c.borrow_mut().site = prev);
+    out
+}
+
+/// The operator call R's `warningcall` names for a warning the current operator
+/// raises — `1:3 + 1:2` for its recycling warning — as one line, the way
+/// [`ctx_text`] shows a call; `None` outside an operator, or where the chunk
+/// recorded no site for it.
+pub fn op_site_call() -> Option<String> {
+    op_site_value().map(|v| ctx_text(&v))
+}
+
+/// [`op_site_call`] as whole R source, for the call of an error the operator
+/// raises (`Error in 1 + "a" : …`), which the error report folds itself.
+pub fn op_site_source() -> Option<String> {
+    op_site_value().map(|v| ctx_source(&v))
+}
+
+/// The current operator's deparsed call, as the constant that holds it.
+fn op_site_value() -> Option<Value> {
+    let (chunk, site) = OP_CONTEXT.with(|c| {
+        let c = c.borrow();
+        (c.chunk, c.site.clone())
+    });
+    match site? {
+        OpSite::Text(v) => Some(v),
+        OpSite::Op(_) if chunk.is_null() => None,
+        OpSite::Op(ip) => {
+            // SAFETY: `chunk` belongs to the VM that `drive` is running further
+            // down this thread's stack. `drive` puts the previous pointer back
+            // before that VM can be moved or dropped, and a running VM never
+            // mutates its own chunk.
+            let chunk = unsafe { &*chunk };
+            let table = chunk.constants.iter().rev().find_map(|c| match c {
+                Value::Array(t) if matches!(t.first(), Some(Value::Str(s)) if s.as_str() == OP_SITES_TAG) => {
+                    Some(t)
+                }
+                _ => None,
+            })?;
+            table[1..].chunks_exact(2).find_map(|pair| match pair {
+                [Value::Int(at), text] if *at == ip as i64 => Some(text.clone()),
+                _ => None,
+            })
+        }
+    }
+}
+
 /// Run a prepared VM to completion and read its outcome.
 fn drive(vm: &mut VM) -> Result<Value, String> {
+    // A nested VM starts a fresh operator context: none of the caller's sites
+    // are its own, and its op indices address its own chunk.
+    let outer = OP_CONTEXT.with(|c| {
+        std::mem::replace(
+            &mut *c.borrow_mut(),
+            OpContext {
+                chunk: &vm.chunk as *const Chunk,
+                site: None,
+            },
+        )
+    });
+    let out = drive_unwound(vm);
+    OP_CONTEXT.with(|c| *c.borrow_mut() = outer);
+    out
+}
+
+/// [`drive`]'s body: run the VM, then cut the call stack back.
+fn drive_unwound(vm: &mut VM) -> Result<Value, String> {
     // An `OPEN_CALL` in this chunk whose `CALL_OPENED` never ran — an argument
     // errored, or a `return`/`break` jumped past it — would leave its context
     // behind. Unwinding lands here, so the stack is cut back to the depth this

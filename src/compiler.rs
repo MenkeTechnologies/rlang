@@ -55,6 +55,10 @@ struct Compiler {
     /// a `break`/`next` there has no loop of its own chunk to jump in, and
     /// raises a signal for the loop that encloses the lazy call instead.
     lazy_loop: bool,
+    /// `(op index, deparsed call)` for each binary operator lowered into the
+    /// chunk being built, attached to it as one constant when it is built (see
+    /// [`Compiler::finish_chunk`]) so a warning the operator raises can name it.
+    op_sites: Vec<(usize, String)>,
 }
 
 /// Builtins that reach into an environment by name; their presence makes it
@@ -532,6 +536,7 @@ fn compile_inner(exprs: &[Expr], use_slots: bool) -> Result<Program, String> {
             b.emit(Op::Pop, 0);
         }
     }
+    c.finish_chunk(&mut b, Vec::new());
     Ok(Program {
         main: b.build(),
         closures: c.closures,
@@ -590,6 +595,17 @@ impl Compiler {
     fn kstr(&mut self, b: &mut ChunkBuilder, s: &str) {
         let idx = b.add_constant(Value::str(s));
         b.emit(Op::LoadConst(idx), 0);
+    }
+
+    /// Close the chunk `b` is building: attach the operator sites lowered into
+    /// it, and hand the compiler back the sites of the chunk that encloses it.
+    /// A full constant pool just drops the table — its operators then warn
+    /// without naming a call, which is all a missing table ever costs.
+    fn finish_chunk(&mut self, b: &mut ChunkBuilder, outer: Vec<(usize, String)>) {
+        let sites = std::mem::replace(&mut self.op_sites, outer);
+        if !sites.is_empty() {
+            let _ = b.try_add_constant(crate::host::op_sites_constant(sites));
+        }
     }
 
     fn tmp_name(&mut self, b: &mut ChunkBuilder, tag: &str) -> u16 {
@@ -1146,15 +1162,17 @@ impl Compiler {
                     // through the VM's numeric hook (installed in builtins). Ops
                     // whose native semantics differ from R (`%%` sign, `^` NA
                     // rules, comparison NaN→NA) keep the builtin path.
-                    match native_binop(op) {
-                        Some(nop) => {
-                            b.emit(nop, 0);
-                        }
+                    let ip = match native_binop(op) {
+                        Some(nop) => b.emit(nop, 0),
                         None => {
                             self.kstr(b, binop_name(op));
-                            b.emit(Op::CallBuiltin(ops::BINOP, 3), 0);
+                            b.emit(Op::CallBuiltin(ops::BINOP, 3), 0)
                         }
-                    }
+                    };
+                    // R names the operator call in the warnings it raises
+                    // (`In 1:3 + 1:2 : longer object length …`); read only when
+                    // one fires — see `host::op_site_call`.
+                    self.op_sites.push((ip, deparse_lines(e)));
                 }
             },
             Expr::Special { name, lhs, rhs } => {
@@ -1714,6 +1732,7 @@ impl Compiler {
         let in_loop = lazy && (!saved.is_empty() || self.lazy_loop);
         let saved_lazy = std::mem::replace(&mut self.lazy_loop, in_loop);
         let mut fb = ChunkBuilder::new();
+        let outer_sites = std::mem::take(&mut self.op_sites);
         for p in params {
             let Some(default) = &p.default else { continue };
             // if (missing(p)) p <- <default>, the default bound as a promise:
@@ -1741,6 +1760,7 @@ impl Compiler {
         self.expr(&mut fb, body)?;
         self.loops = saved;
         self.lazy_loop = saved_lazy;
+        self.finish_chunk(&mut fb, outer_sites);
         self.closures.push(ClosureDef {
             params: params.iter().map(|p| p.name.clone()).collect(),
             chunk: fb.build(),

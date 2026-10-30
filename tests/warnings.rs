@@ -14,9 +14,8 @@
 //! The `In <call> :` prefix is asserted here too, including the two rules that
 //! are easy to get subtly wrong: *which* call a warning names — R's context
 //! stack, not the innermost call — and when the message folds onto its own
-//! line. The one case still without a prefix is a warning raised by an
-//! arithmetic operator, whose call rlang's native binary ops do not carry (see
-//! BUGS.md); it is asserted in the call-less form rlang actually produces.
+//! line. An operator names its own call (`In 1:3 + 1:2 :`), read from the
+//! operator-site table the compiler attaches to each chunk.
 
 use std::process::Command;
 
@@ -98,12 +97,11 @@ fn options_warn_selects_deferred_immediate_or_silent() {
 #[test]
 fn the_internal_warnings_r_raises_are_raised_too() {
     // Recycling that does not tile exactly. The result is still produced.
-    // R names the arithmetic call here — `In 1:3 + 1:2 :` — which rlang cannot
-    // (BUGS.md): `+` lowers to a native fusevm op carrying no call text. The
-    // call-less form is what it produces, and a wrong call would be worse.
+    // R names the arithmetic call itself, though `+` here is a native fusevm
+    // op: the text comes from the chunk's operator-site table.
     assert_eq!(
         merged("print(1:3 + 1:2)"),
-        "[1] 2 4 4\nWarning message:\nlonger object length is not a multiple of shorter object length \n"
+        "[1] 2 4 4\nWarning message:\nIn 1:3 + 1:2 :\n  longer object length is not a multiple of shorter object length\n"
     );
     // An exact multiple is silent — this is the half that a naive "warn on any
     // unequal lengths" check gets wrong.

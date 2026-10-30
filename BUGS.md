@@ -129,17 +129,16 @@ run that compared nothing — no cases generated, or an oracle that never answer
   the default `options(warn = 0)` and the whole batch is written once the
   top-level statement finishes, after that statement's own stdout.
 
-  **An arithmetic or comparison operator is the exception: its warning reports
-  no call where R names one.** `1:5 + 1:2` warns `In 1:5 + 1:2 : longer object
-  length …` in R and bare in rlang, and so does `2147483647L + 1L`. A subscript
-  assignment is the same: `x[5:6] <- 1:3` and `f[1] <- "z"` (R: ``In `[<-.factor`(`*tmp*`, 1, value = "z")``) warn without the call. The message,
-  the queueing and the batch position are right; only the `In <call> :` line is
-  absent. `+ - * /` lower to native fusevm ops that carry no call text, and
-  opening a context on every one would cost the hot path the design exists to
-  keep native — so the no-call shape R itself uses is reported rather than the
-  enclosing call, which would name the wrong one. Closing it without that cost
-  means a side table from code position to deparsed text, read only when a
-  warning actually fires; the eager form is what is ruled out, not the idea.
+  **An operator names its own call**, as R's `warningcall` / `errorcall` do:
+  `1:5 + 1:2` warns `In 1:5 + 1:2 : longer object length …`,
+  `2147483647L + 1L` warns `In 2147483647L + 1L : NAs produced by integer
+  overflow`, and `1 + "a"` fails `Error in 1 + "a" :`. `+ - *` lower to native
+  fusevm ops that carry no call text, so the compiler attaches one constant per
+  chunk mapping each operator's op index to its deparsed call, which nothing
+  loads; the numeric hook (told the op index by fusevm) and the `BINOP` builtin
+  read it only when a warning or error actually fires. The remaining exception
+  is a subscript assignment: `x[5:6] <- 1:3` and `f[1] <- "z"` (R: ``In
+  `[<-.factor`(`*tmp*`, 1, value = "z")``) still warn without the call.
 
   **An error reports its call too**, off the same context stack:
   `Error in f() : boom`, a bare `Error: boom` for a `stop()` at top level, R's
@@ -249,9 +248,9 @@ run that compared nothing — no cases generated, or an oracle that never answer
   `Summary.ordered`, and the type predicates exclude factors the way R's do
   (`is.numeric(f)` and `is.integer(f)` are FALSE). One cosmetic gap remains: the
   `Ops.factor` warning is emitted without R's `In Ops.factor(f, "b") :` call
-  prefix, because `+` lowers to a native fusevm op that never sees the argument
-  text — the same reason arithmetic's recycling warning carries no call. The
-  message body and the returned `NA`s match.
+  prefix: R names the method call its group dispatch builds, and rlang's
+  built-in factor arithmetic makes no such call. The message body and the
+  returned `NA`s match.
 - **N-D arrays** (`array`, N-D `a[i, j, k]` read/write, slice-drop, `, , k`
   printing, `aperm`, `apply` over any margin, and the labels `apply` carries from
   a margin onto its result) work, and so do the array-specific helpers
