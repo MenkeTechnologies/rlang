@@ -2183,11 +2183,13 @@ pub fn format_dbl(x: f64) -> String {
         return fixed;
     }
     let sci = render_sci(x, sci_decimals(x));
-    out_dec(if prefers_fixed(fixed.chars().count(), sci.chars().count()) {
-        fixed
-    } else {
-        sci
-    })
+    out_dec(
+        if prefers_fixed(fixed.chars().count(), sci.chars().count()) {
+            fixed
+        } else {
+            sci
+        },
+    )
 }
 
 // ===========================================================================

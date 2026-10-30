@@ -7364,7 +7364,11 @@ pub fn call_primitive(name: &str, args: Vec<(Option<String>, Value)>) -> Result<
             // drops them (names follow the kept elements).
             let na_last = a.named("na.last");
             let keep = na_last.as_ref().and_then(str1).as_deref() == Some("keep");
-            let na_last = if keep { Some(true) } else { na_last.map_or(Some(true), |v| lgl1(&v)) };
+            let na_last = if keep {
+                Some(true)
+            } else {
+                na_last.map_or(Some(true), |v| lgl1(&v))
+            };
             let missing: Vec<usize> = (0..n).filter(|&i| key.missing(i)).collect();
             let mut ranks: Vec<Option<f64>> = ranks.into_iter().map(Some).collect();
             match na_last {

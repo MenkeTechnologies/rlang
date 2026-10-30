@@ -1446,7 +1446,10 @@ fn rank_places_missing_values_by_na_last() {
     // shifts the rest, NA drops them (names follow), TRUE puts them last.
     assert_eq!(r("rank(c(3, NA, 1), na.last = \"keep\")"), "[1]  2 NA  1");
     assert_eq!(r("rank(c(3, NA, 1, NA), na.last = FALSE)"), "[1] 4 1 3 2");
-    assert_eq!(r("rank(c(a = 3, b = NA, c = 1), na.last = NA)"), "a c \n2 1");
+    assert_eq!(
+        r("rank(c(a = 3, b = NA, c = 1), na.last = NA)"),
+        "a c \n2 1"
+    );
     assert_eq!(r("rank(c(3, NA, 1))"), "[1] 2 3 1");
     assert_eq!(
         r("rank(c(2, NA, 2), na.last = \"keep\", ties.method = \"min\")"),
@@ -1456,9 +1459,15 @@ fn rank_places_missing_values_by_na_last() {
 
 #[test]
 fn old_class_replacement_sets_the_attribute_as_do_classgets() {
-    assert_eq!(r("y <- 1; oldClass(y) <- c(\"p\", \"q\"); oldClass(y)"), "[1] \"p\" \"q\"");
+    assert_eq!(
+        r("y <- 1; oldClass(y) <- c(\"p\", \"q\"); oldClass(y)"),
+        "[1] \"p\" \"q\""
+    );
     // A zero-length value removes the attribute.
-    assert_eq!(r("x <- structure(1, class = \"a\"); oldClass(x) <- character(0); attributes(x)"), "NULL");
+    assert_eq!(
+        r("x <- structure(1, class = \"a\"); oldClass(x) <- character(0); attributes(x)"),
+        "NULL"
+    );
     assert_eq!(
         r("w <- 1; tryCatch(oldClass(w) <- \"factor\", error = conditionMessage)"),
         "[1] \"adding class \\\"factor\\\" to an invalid object\""
@@ -1477,7 +1486,10 @@ fn out_dec_is_the_decimal_mark_of_printed_and_formatted_numbers() {
         r("options(OutDec = \",\"); x <- c(format(1.5), as.character(2.25), format(1.5e-20), deparse(1.5)); options(OutDec = \".\"); x"),
         "[1] \"1,5\"     \"2,25\"    \"1,5e-20\" \"1.5\""
     );
-    assert_eq!(r("options(OutDec = \",\"); y <- getOption(\"OutDec\"); options(OutDec = \".\"); y"), "[1] \",\"");
+    assert_eq!(
+        r("options(OutDec = \",\"); y <- getOption(\"OutDec\"); options(OutDec = \".\"); y"),
+        "[1] \",\""
+    );
     assert_eq!(
         r("tryCatch(options(OutDec = 1), error = conditionMessage)"),
         "[1] \"invalid value for 'OutDec'\""
